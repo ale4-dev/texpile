@@ -142,5 +142,15 @@ export const baseMarks = {
 		toDOM() {
 			return codeDom;
 		}
+	} as MarkSpec,
+
+	// the [label] of a description item, which the editor shows as leading bold text. It carries no
+	// styling of its own (the bold does that); it exists so the serializer can tell the label from
+	// prose that merely starts bold, and so editing the label edits the label
+	item_label: {
+		parseDOM: [{ tag: 'span[data-item-label]' }],
+		toDOM() {
+			return ['span', { 'data-item-label': '' }, 0];
+		}
 	} as MarkSpec
 };

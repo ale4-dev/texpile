@@ -1,14 +1,18 @@
 // \item[label] labels are shown in the editor as leading bold text, so the serializer has to take
 // that text back out before rewriting the bracket. Matching it against the raw source only worked
 // for plain ascii labels: a tie, a dash ligature, math or nested markup all missed, and the label
-// was written twice (once as [label], once as \textbf in the body).
+// was written twice (once as [label], once as \textbf in the body). The run now carries its own
+// mark, which also makes an edited label editable rather than demoted to bold body text.
 import { describe, it, expect } from 'vitest';
 import { Fragment, type Node } from 'prosemirror-model';
 import { parseLatexFile, serializeLatexFile } from '$lib/workspace/latexRoundtrip';
 
+function parse(body: string) {
+	return parseLatexFile(`\\documentclass{article}\n\\begin{document}\n${body}\n\\end{document}\n`);
+}
+
 function regenerate(body: string): string {
-	const file = `\\documentclass{article}\n\\begin{document}\n${body}\n\\end{document}\n`;
-	const parsed = parseLatexFile(file);
+	const parsed = parse(body);
 	// drop orig so every block goes through the deterministic rules, which is what an edit does
 	const kids: Node[] = [];
 	for (let i = 0; i < parsed.doc.childCount; i++) {
@@ -17,6 +21,20 @@ function regenerate(body: string): string {
 	}
 	const out = serializeLatexFile(parsed, parsed.doc.copy(Fragment.fromArray(kids)));
 	return out.slice(out.indexOf('\\begin{document}') + 16, out.lastIndexOf('\\end{document}')).trim();
+}
+
+/** replace the first inline node's text, keeping its marks, the way typing in the label would */
+function retypeLabel(body: string, typed: string): string {
+	const parsed = parse(body);
+	const list = parsed.doc.child(0);
+	const para = list.child(0);
+	const rest: Node[] = [];
+	para.forEach((n, _offset, i) => {
+		if (i > 0) rest.push(n);
+	});
+	const edited = para.type.create(para.attrs, [para.type.schema.text(typed, para.child(0).marks), ...rest]);
+	const next = list.type.create({ ...list.attrs, orig: null }, Fragment.fromArray([edited]));
+	return serializeLatexFile(parsed, parsed.doc.copy(Fragment.fromArray([next])));
 }
 
 describe('description item labels', () => {
@@ -33,17 +51,32 @@ describe('description item labels', () => {
 		});
 	}
 
-	it('drops the bracket rather than duplicating a label it cannot find', () => {
-		// a label whose text the user has since replaced: nothing in the body accounts for it
-		const file =
-			'\\documentclass{article}\n\\begin{document}\n\\begin{description}\n\\item[Term] body\n\\end{description}\n\\end{document}\n';
-		const parsed = parseLatexFile(file);
+	it('drops the bracket when the label text is gone entirely', () => {
+		const parsed = parse('\\begin{description}\n\\item[Term] body\n\\end{description}');
 		const list = parsed.doc.child(0);
 		const para = list.child(0);
+		// the whole leading run replaced by unmarked text: nothing is the label any more
 		const retyped = para.type.create(para.attrs, para.type.schema.text('something else entirely'));
 		const edited = list.type.create({ ...list.attrs, orig: null }, Fragment.fromArray([retyped]));
 		const out = serializeLatexFile(parsed, parsed.doc.copy(Fragment.fromArray([edited])));
 		expect(out).toMatch(/\\item\s+something else entirely/);
 		expect(out).not.toContain('[Term]');
+	});
+});
+
+// The label is ordinary bold text at the head of the item, so people edit it there. It used to be
+// written back from the source regardless of what the editor showed.
+describe('editing a description label', () => {
+	it('writes the label the user typed', () => {
+		const out = retypeLabel('\\begin{description}\n\\item[Term] body text\n\\end{description}', 'Concept');
+		expect(out).toContain('\\item[Concept]');
+		expect(out).not.toContain('[Term]');
+		expect(out).not.toContain('\\textbf{Concept}'); // not left behind in the body as well
+	});
+
+	// re-typing the same text must not turn the tie into the no-break space it renders as
+	it('keeps the source bytes when the label still says the same thing', () => {
+		const out = retypeLabel('\\begin{description}\n\\item[Case~1] body text\n\\end{description}', 'Case\u00a01');
+		expect(out).toContain('\\item[Case~1]');
 	});
 });

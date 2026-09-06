@@ -106,36 +106,44 @@ function runEnvName(node: Node, ctx: Ctx): string | null {
 	return null;
 }
 
-// letters and digits only: a label's source and the text it renders to differ by ties, dash
-// ligatures and quote curling, none of which survive the trip as themselves
+// letters and digits only: the same label written as source and re-serialized from the editor
+// differs by ties, dash ligatures and quote curling, so compare what survives all of those
 function labelKey(s: string): string {
-	return s.replace(/[^\p{L}\p{N}]/gu, '');
+	return s.replace(/\\[a-zA-Z@]+\s*/g, '').replace(/[^\p{L}\p{N}]/gu, '');
 }
 
 /**
- * The item's first paragraph without the label text createList put in front. A label can span
- * several inline nodes (`\item[A $x$ B]`), so nodes are consumed until they account for it;
- * null when they never do, and the caller then drops the [label] rather than write it twice.
+ * The label at the head of an item, and the paragraph with it removed.
+ *
+ * The run is identified by the item_label mark createList puts on it, not by matching text: a
+ * label can span several inline nodes (`\item[A $x$ B]`), and prose that merely repeats the
+ * label is not the label. `latex` is the run re-serialized, which is what an edited label has
+ * to be written back as; the caller prefers the untouched source when the two still agree.
  */
-function withoutLeadingLabel(item: Node, label: string): Node | null {
+function splitLeadingLabel(item: Node): { latex: string; body: Node } | null {
 	if (item.type.name !== 'paragraph') return null;
-	const want = labelKey(label.replace(/\\[a-zA-Z@]+\s*|[{}]/g, ''));
-	if (!want) return null;
-	let seen = '';
-	let taken = 0;
-	let size = 0;
-	while (taken < item.childCount && seen.length < want.length) {
-		seen += labelKey(item.child(taken).textContent);
-		size += item.child(taken).nodeSize;
-		taken++;
+	// through the LAST marked node, not the first unmarked one: an atom in the middle of a label
+	// (`\item[A $x$ B]` puts inline math there) carries no marks of its own
+	let last = -1;
+	for (let i = 0; i < item.childCount; i++) {
+		if (item.child(i).marks.some((m) => m.type.name === 'item_label')) last = i;
 	}
-	if (seen !== want) return null;
+	if (last < 0) return null;
+	let size = 0;
+	for (let i = 0; i <= last; i++) size += item.child(i).nodeSize;
+	// the label's own marks are the wrapper, not content: \item[\textbf{x}] would come back
+	// doubly bold otherwise
+	const bare = item.type.schema.node(
+		'paragraph',
+		null,
+		item.content.cut(0, size).content.map((n) => n.mark(n.marks.filter((m) => m.type.name !== 'item_label' && m.type.name !== 'strong')))
+	);
 	let rest = item.content.cut(size);
 	const next = rest.firstChild;
 	if (next?.isText && next.text && /^\s+$/.test(next.text)) rest = rest.cut(next.nodeSize);
 	else if (next?.isText && next.text && /^\s/.test(next.text))
 		rest = rest.replaceChild(0, next.type.schema.text(next.text.replace(/^\s+/, ''), next.marks));
-	return item.copy(rest);
+	return { latex: renderChildren(bare, false).trim(), body: item.copy(rest) };
 }
 
 const HEADING_CMD: Record<number, string> = {
@@ -401,17 +409,19 @@ const NODES: Record<string, NodeHandler> = {
 		// a description environment is remembered on the run's first node; the rest inherit it
 		const envName = runEnvName(node, ctx);
 		const env = envName ?? (kind === 'ordered' ? 'enumerate' : 'itemize');
-		// \item[label] as written. the editor shows the label as leading bold text (createList), so
-		// the bracket is only rewritten when that text can be found and taken back out; an empty
-		// label put nothing in the body and needs no removal
+		// \item[label]: the editor shows it as leading bold text, so it is taken back out of the
+		// body before the bracket is rewritten. The SOURCE label is preferred while the run still
+		// says the same thing, since re-serializing turns a tie into a no-break space and a `--`
+		// into a dash; once the run says something else, the user edited the label and that wins
 		const itemLabel = typeof node.attrs.itemLabel === 'string' ? node.attrs.itemLabel : null;
-		const labelled = itemLabel != null && node.childCount > 0 ? withoutLeadingLabel(node.child(0), itemLabel) : null;
-		const keepsLabel = itemLabel === '' || (itemLabel != null && labelled != null);
-		const itemCmd = keepsLabel ? `\\item[${itemLabel}]` : '\\item';
+		const labelled = node.childCount > 0 ? splitLeadingLabel(node.child(0)) : null;
+		const sourceHolds = itemLabel != null && labelled != null && labelKey(labelled.latex) === labelKey(itemLabel);
+		const label = labelled ? (sourceHolds ? itemLabel : labelled.latex) : itemLabel === '' ? '' : null;
+		const itemCmd = label == null ? '\\item' : `\\item[${label}]`;
 
 		const parts: string[] = [];
 		node.forEach((item, _offset, i) => {
-			const shown = i === 0 && labelled ? labelled : item;
+			const shown = i === 0 && labelled ? labelled.body : item;
 			const inner = serializeNode(shown, { parent: node, index: i, isLastChild: i === node.childCount - 1, inTableCell: ctx.inTableCell });
 			if (item.type.name === 'list') {
 				// only the FIRST of a run of same-kind sub-lists opens \item[]; the rest coalesce

@@ -171,3 +171,28 @@ describe('SavePipeline keeps an unlanded edit queued', () => {
 		expect(pipeline.pending).toBeNull();
 	});
 });
+
+// the era guard has to be precise: renaming some OTHER file must not cost a failed write its retry
+describe('SavePipeline retarget only speaks for its own path', () => {
+	const tick = () => new Promise((r) => setTimeout(r, 0));
+
+	it('keeps the retry when an unrelated file is renamed mid-write', async () => {
+		const { pipeline } = makePipeline({ autosaveActive: () => false, diskChanged: async () => true });
+		pipeline.schedule('/ws/main.tex', 'mine');
+		pipeline.flush();
+		pipeline.retarget('/ws/other.tex', '/ws/renamed.tex');
+		await pipeline.whenIdle();
+		await tick();
+		expect(pipeline.pending).toEqual({ path: '/ws/main.tex', content: 'mine' });
+	});
+
+	it('drops it when the rename covers the folder the write was aimed at', async () => {
+		const { pipeline } = makePipeline({ autosaveActive: () => false, diskChanged: async () => true });
+		pipeline.schedule('/ws/sec/main.tex', 'mine');
+		pipeline.flush();
+		pipeline.retarget('/ws/sec', '/ws/chapters');
+		await pipeline.whenIdle();
+		await tick();
+		expect(pipeline.pending).toBeNull();
+	});
+});

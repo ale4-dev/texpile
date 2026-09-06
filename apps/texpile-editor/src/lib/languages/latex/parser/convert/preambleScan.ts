@@ -1,7 +1,7 @@
 // memoized preamble scan: user-defined commands and packages the body conversion consults
 import type { Node, Root } from '@unified-latex/unified-latex-types';
 import type { ParseOptions } from '../types';
-import { heuristicMarkTexPrimitiveDefs } from '../heuristics';
+import { heuristicMarkTexPrimitiveDefs, envPairsFromNewcommands } from '../heuristics';
 import { parseLatex } from '../parser';
 import { listNewcommands } from '@unified-latex/unified-latex-util-macros';
 
@@ -32,6 +32,9 @@ export function scanPreambleText(preamble: string, parseOptions: ParseOptions): 
 			if (wantsNewcommands) {
 				try {
 					scan.newcommands = listNewcommands(preAst);
+					// an env shortcut defined with newcommand rather than def; the span between the pair is
+					// math either way, and reading it as prose text-escapes the maths
+					envPairsFromNewcommands(scan.newcommands, scan.delimPairs);
 				} catch {
 					/* ditto */
 				}

@@ -37,6 +37,8 @@ export class SavePipeline {
 	// bumped whenever a queued edit is deliberately abandoned, so a write already in flight cannot
 	// re-queue itself afterwards
 	private era = 0;
+	/** paths of writes that have been handed to the chain but have not settled yet */
+	private inFlight = new Set<string>();
 
 	constructor(private deps: SaveDeps) {}
 
@@ -77,7 +79,9 @@ export class SavePipeline {
 		if (!p) return;
 		this._pending = null;
 		const era = this.era;
+		this.inFlight.add(p.path);
 		void this.enqueue(p.path, p.content, false).then((landed) => {
+			this.inFlight.delete(p.path);
 			// a write that did not land (the external-write guard, a locked file) keeps the edit
 			// queued, so the next flush retries it instead of dropping it. Not across a discard
 			// though: the file was deleted, or the user took the disk version, and re-queueing
@@ -115,13 +119,15 @@ export class SavePipeline {
 	/** repoint a queued autosave when its file (or a parent folder) is renamed/moved, so the edit
 	 * lands in the new path instead of re-creating the old one. */
 	retarget(from: string, to: string) {
-		// nothing queued means a write is in flight instead; if it fails it must not come back
-		// pointed at a path this rename just emptied
+		const sep = from.includes('\\') ? '\\' : '/';
+		const covers = (p: string) => samePath(p, from) || p.startsWith(from + sep);
+		// nothing queued means the edit is in flight instead; if that write fails it must not come
+		// back pointed at a path this rename just emptied. Only when the rename is actually the one
+		// that moved it: an unrelated rename would otherwise cost a legitimate retry
 		if (!this._pending) {
-			this.era++;
+			if ([...this.inFlight].some(covers)) this.era++;
 			return;
 		}
-		const sep = from.includes('\\') ? '\\' : '/';
 		if (samePath(this._pending.path, from)) this._pending = { ...this._pending, path: to };
 		else if (this._pending.path.startsWith(from + sep))
 			this._pending = { ...this._pending, path: to + this._pending.path.slice(from.length) };

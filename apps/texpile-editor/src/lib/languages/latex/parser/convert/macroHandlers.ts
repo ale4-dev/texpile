@@ -25,6 +25,14 @@ function markChip(chip: PmNode, ctx: ConversionContext): PmNode {
 }
 
 export const macroHandlers: Record<string, MacroHandler> = {
+	// synthesized by createList for an \item[label], never present in real source: the label reads
+	// as bold text in the editor, and the mark is what still says which text that is
+	texpileItemLabel: (macro, ctx) => {
+		const content = getMacroFirstArg(macro);
+		const newCtx = { ...ctx, marks: [...ctx.marks, { type: 'strong' }, { type: 'item_label' }] };
+		return convertNodesToInline(content, newCtx);
+	},
+
 	textbf: (macro, ctx) => {
 		const content = getMacroFirstArg(macro);
 		const newCtx = { ...ctx, marks: [...ctx.marks, { type: 'strong' }] };

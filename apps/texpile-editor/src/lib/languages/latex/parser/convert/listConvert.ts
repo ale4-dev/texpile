@@ -59,12 +59,15 @@ export function createList(env: Environment, kind: 'bullet' | 'ordered', options
 				const optionalArg = macro.args.find((arg) => arg.openMark === '[');
 				if (optionalArg) itemLabel = printRaw(optionalArg.content);
 				if (optionalArg && optionalArg.content.length > 0) {
-					const syntheticTextbf: Macro = {
+					// texpileItemLabel marks the run as the label AND bolds it (see macroHandlers):
+					// the serializer needs to know which leading text is the label, and a text match
+					// could not tell one apart from prose that happens to repeat it
+					const syntheticLabel: Macro = {
 						type: 'macro',
-						content: 'textbf',
+						content: 'texpileItemLabel',
 						args: [{ type: 'argument', content: optionalArg.content, openMark: '{', closeMark: '}' }]
 					};
-					currentItemContent.push({ type: 'group', content: [syntheticTextbf] });
+					currentItemContent.push({ type: 'group', content: [syntheticLabel] });
 				}
 
 				// the parser puts the item body in an argument with no delimiters

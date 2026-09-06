@@ -88,18 +88,14 @@ const LET_LIKE_PRIMITIVES = new Set(['let', 'futurelet']);
 export function heuristicMarkTexPrimitiveDefs(nodes: Node[] | undefined, source: string, pairsOut?: Map<string, string>): void {
 	// \def\be{\begin{equation}} and \def\ee{\end{equation}}: the span between \be and \ee is math,
 	// and only the pair of definitions says so. collected across the walk, paired at the end
-	const envDefs = { open: new Map<string, string>(), close: new Map<string, string>() };
+	const envDefs: EnvDefs = { open: new Map(), close: new Map() };
 	markTexPrimitiveDefs(nodes, source, pairsOut, envDefs);
-	if (!pairsOut) return;
-	for (const [env, opener] of envDefs.open) {
-		const closer = envDefs.close.get(env);
-		if (closer && !pairsOut.has(opener)) pairsOut.set(opener, closer);
-	}
+	if (pairsOut) pairEnvDefs(envDefs, pairsOut);
 }
 
-/** the body of a zero-parameter \def when it is exactly \begin{X} or \end{X}: [begin|end, X] */
-function envBodyOf(body: LooseNode): ['begin' | 'end', string] | null {
-	const kids = (body.content as LooseNode[] | undefined)?.filter((n) => n.type !== 'whitespace') ?? [];
+/** a definition body that is exactly \begin{X} or \end{X}, and nothing else: [begin|end, X] */
+function envBodyOfContent(content: LooseNode[] | undefined): ['begin' | 'end', string] | null {
+	const kids = content?.filter((n) => n.type !== 'whitespace') ?? [];
 	if (kids.length !== 2 || kids[0].type !== 'macro' || kids[1].type !== 'group') return null;
 	const kw = kids[0].content;
 	if (kw !== 'begin' && kw !== 'end') return null;
@@ -108,11 +104,45 @@ function envBodyOf(body: LooseNode): ['begin' | 'end', string] | null {
 	return /^[a-zA-Z*]+$/.test(name) ? [kw, name] : null;
 }
 
+/** the body of a zero-parameter \def when it is exactly \begin{X} or \end{X} */
+function envBodyOf(body: LooseNode): ['begin' | 'end', string] | null {
+	return envBodyOfContent(body.content as LooseNode[] | undefined);
+}
+
+type EnvDefs = { open: Map<string, string>; close: Map<string, string> };
+
+/** an opener is only a delimiter pair once its matching closer has been seen too */
+function pairEnvDefs(envDefs: EnvDefs, pairsOut: Map<string, string>): void {
+	for (const [env, opener] of envDefs.open) {
+		const closer = envDefs.close.get(env);
+		if (closer && !pairsOut.has(opener)) pairsOut.set(opener, closer);
+	}
+}
+
+/**
+ * The same env-shortcut pair, defined the other common way:
+ * `\newcommand{\bea}{\begin{eqnarray}}` with `\newcommand{\eea}{\end{eqnarray}}`. Only
+ * zero-argument definitions qualify, because a pair with parameters is not a plain delimiter.
+ * Without this the span between \bea and \eea reads as prose and its math is text-escaped.
+ */
+export function envPairsFromNewcommands(
+	list: readonly { name: string; signature: string; body: unknown }[],
+	pairsOut: Map<string, string>
+): void {
+	const envDefs: EnvDefs = { open: new Map(), close: new Map() };
+	for (const cmd of list) {
+		if (cmd.signature.trim()) continue;
+		const env = envBodyOfContent(cmd.body as LooseNode[] | undefined);
+		if (env) envDefs[env[0] === 'begin' ? 'open' : 'close'].set(env[1], cmd.name);
+	}
+	pairEnvDefs(envDefs, pairsOut);
+}
+
 function markTexPrimitiveDefs(
 	nodes: Node[] | undefined,
 	source: string,
 	pairsOut: Map<string, string> | undefined,
-	envDefs: { open: Map<string, string>; close: Map<string, string> }
+	envDefs: EnvDefs
 ): void {
 	if (!Array.isArray(nodes) || !source) return;
 	for (let i = 0; i < nodes.length; i++) {
@@ -221,8 +251,14 @@ export function heuristicMarkDelimitedMacroSpans(nodes: Node[] | undefined, sour
 	if (!Array.isArray(nodes) || !source || pairs.size === 0) return;
 	for (let i = 0; i < nodes.length; i++) {
 		const node = nodes[i] as LooseNode;
-		// content only, not args: same reasoning as heuristicMarkTexPrimitiveDefs above.
-		if (Array.isArray(node.content)) heuristicMarkDelimitedMacroSpans(node.content as Node[], source, pairs);
+		// a group is reprinted by printRaw, which does not read `_raw`: marking a span in there
+		// would splice the siblings out and print the remainder, losing the maths between them
+		if (Array.isArray(node.content) && node.type !== 'group') heuristicMarkDelimitedMacroSpans(node.content as Node[], source, pairs);
+		// args too, minus the wholesale-printRaw macros, exactly as heuristicMarkCommentedMacroCalls
+		// does: a list item's body IS an argument of \item, and the \bea ... \eea spans inside it
+		// were left to the prose path, which text-escapes their maths
+		const skipArgs = node.type === 'macro' && RAW_WHOLESALE_ARG_MACROS.has(node.content as string);
+		if (!skipArgs && node.args) for (const a of node.args) heuristicMarkDelimitedMacroSpans(a.content, source, pairs);
 
 		if (node.type !== 'macro' || (node.args && node.args.length) || node._raw != null || !node.position) continue;
 		const delim = pairs.get(node.content as string);
