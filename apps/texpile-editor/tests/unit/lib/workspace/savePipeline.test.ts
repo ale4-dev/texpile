@@ -148,4 +148,26 @@ describe('SavePipeline keeps an unlanded edit queued', () => {
 		expect(writes).toEqual([{ path: '/ws/main.tex', content: 'mine' }]);
 		expect(pipeline.pending).toBeNull();
 	});
+
+	// the re-queue must not undo a deliberate abandonment: discard is what the file tree calls
+	// when the open file is being deleted, and what the conflict modal calls for "reload from disk"
+	it('does not re-queue an edit discarded while the failed write was in flight', async () => {
+		const { pipeline } = makePipeline({ autosaveActive: () => false, diskChanged: async () => true });
+		pipeline.schedule('/ws/main.tex', 'mine');
+		pipeline.flush();
+		pipeline.discard();
+		await pipeline.whenIdle();
+		await tick();
+		expect(pipeline.pending).toBeNull();
+	});
+
+	it('does not re-queue at a path a rename emptied while the failed write was in flight', async () => {
+		const { pipeline } = makePipeline({ autosaveActive: () => false, diskChanged: async () => true });
+		pipeline.schedule('/ws/main.tex', 'mine');
+		pipeline.flush();
+		pipeline.retarget('/ws/main.tex', '/ws/renamed.tex');
+		await pipeline.whenIdle();
+		await tick();
+		expect(pipeline.pending).toBeNull();
+	});
 });

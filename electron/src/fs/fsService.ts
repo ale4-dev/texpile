@@ -124,7 +124,8 @@ export async function applyFileOp(body: FsOpBody): Promise<FsOpResult> {
 		if (!from || !to) throw new Error('Missing from/to');
 		validateName(basename(to));
 		// a rename never overwrites; only a case change of the same entry may land on an "existing"
-		// path (a case-insensitive file system answers exists for it)
+		// path (a case-insensitive file system answers exists for it). Replacing is a separate
+		// gesture: the file tree asks, then recycles the destination before renaming onto it
 		if (existsSync(to) && !sameEntry(from, to)) throw new Error(`"${basename(to)}" already exists`);
 		await rename(from, to);
 	} else if (action === 'copy') {

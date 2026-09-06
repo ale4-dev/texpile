@@ -14,6 +14,8 @@ import { loadReferences } from '$lib/workspace/citations';
 import { insertIncludeAtCursor, insertTypstIncludeAtCursor } from '$lib/workspace/editorCommands';
 import { retargetDiskStamp } from '$lib/workspace/diskStamp';
 import { openFile } from '$lib/workspace/workspaceStore';
+import { confirmAsk } from '$lib/modals/confirm.svelte';
+import { m } from '$lib/paraglide/messages';
 import { samePath, type TreeEntry } from '$lib/workspace/fileSystem';
 import type { WorkspaceProvider } from '$lib/workspace/workspaceProvider';
 import type { EditSession } from '$lib/collab/editSession';
@@ -108,6 +110,7 @@ export class WorkspaceFiles {
 				retargetDiskStamp(from, to); // the guard's stamp must follow the rename too
 			},
 			discardPendingSave: () => d.saver().discard(),
+			confirmReplace: (name) => confirmAsk(m.filetree_confirm_replace({ name }), { confirmLabel: m.filetree_replace(), danger: true }),
 			// the full set-main flow (store + config.json + macros + visual re-derive), so a renamed
 			// main behaves exactly as if the user had starred the new path themselves
 			retargetMainFile: (next) => void this.applyMainFile(next)

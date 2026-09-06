@@ -34,6 +34,9 @@ export class SavePipeline {
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private _pending: { path: string; content: string } | null = null;
 	private chain: Promise<void> = Promise.resolve();
+	// bumped whenever a queued edit is deliberately abandoned, so a write already in flight cannot
+	// re-queue itself afterwards
+	private era = 0;
 
 	constructor(private deps: SaveDeps) {}
 
@@ -73,10 +76,13 @@ export class SavePipeline {
 		const p = this._pending;
 		if (!p) return;
 		this._pending = null;
+		const era = this.era;
 		void this.enqueue(p.path, p.content, false).then((landed) => {
 			// a write that did not land (the external-write guard, a locked file) keeps the edit
-			// queued, so the next flush retries it instead of dropping it
-			if (!landed && !this._pending) this._pending = p;
+			// queued, so the next flush retries it instead of dropping it. Not across a discard
+			// though: the file was deleted, or the user took the disk version, and re-queueing
+			// would write it back out from under them
+			if (!landed && !this._pending && this.era === era) this._pending = p;
 		});
 	}
 
@@ -90,12 +96,14 @@ export class SavePipeline {
 	discard() {
 		this.cancelTimer();
 		this._pending = null;
+		this.era++;
 	}
 
 	/** detach and return the pending edit without writing (the save-before-switch prompt owns it). */
 	detach(): { path: string; content: string } | null {
 		const p = this._pending;
 		this._pending = null;
+		this.era++;
 		return p;
 	}
 
@@ -107,7 +115,12 @@ export class SavePipeline {
 	/** repoint a queued autosave when its file (or a parent folder) is renamed/moved, so the edit
 	 * lands in the new path instead of re-creating the old one. */
 	retarget(from: string, to: string) {
-		if (!this._pending) return;
+		// nothing queued means a write is in flight instead; if it fails it must not come back
+		// pointed at a path this rename just emptied
+		if (!this._pending) {
+			this.era++;
+			return;
+		}
 		const sep = from.includes('\\') ? '\\' : '/';
 		if (samePath(this._pending.path, from)) this._pending = { ...this._pending, path: to };
 		else if (this._pending.path.startsWith(from + sep))
@@ -125,7 +138,12 @@ export class SavePipeline {
 
 	enqueueWithEol(path: string, content: string, notify: boolean, eol: Eol, force = false): Promise<boolean> {
 		const result = this.chain.then(() => this.write(path, content, notify, eol, force));
-		this.chain = result.then(() => undefined);
+		// the chain must stay resolvable: a rejection parked on it would make whenIdle() throw and
+		// every later save skip. write() catches its own errors, so this is insurance
+		this.chain = result.then(
+			() => undefined,
+			() => undefined
+		);
 		return result;
 	}
 

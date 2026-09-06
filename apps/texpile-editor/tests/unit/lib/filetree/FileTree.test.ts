@@ -261,3 +261,38 @@ describe('FileTree context menu', () => {
 		expect(isSeparator(el.lastElementChild)).toBe(false);
 	});
 });
+
+// A name already in use used to be accepted here and refused by the file system a moment later,
+// which surfaced as an error toast over a tree that had already closed the input. VS Code marks
+// the input instead and will not commit, so the name can just be fixed.
+describe('FileTree refuses a name that is taken', () => {
+	it('marks the create input invalid and does not create', () => {
+		rightClickNewFile();
+		const input = nameInput()!;
+		type(input, 'main.tex');
+		expect(input.getAttribute('aria-invalid')).toBe('true');
+		input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		flushSync();
+		expect(onCreate).not.toHaveBeenCalled();
+		expect(nameInput()).not.toBeNull(); // still open, still editable
+	});
+
+	it('accepts the name once it is changed to a free one', () => {
+		rightClickNewFile();
+		const input = nameInput()!;
+		type(input, 'main.tex');
+		type(input, 'intro.tex');
+		expect(input.getAttribute('aria-invalid')).toBe('false');
+		input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		flushSync();
+		expect(onCreate).toHaveBeenCalledWith(ROOT, 'intro.tex', 'file');
+	});
+
+	// a folder is a name too, and the check is case-insensitive like the file systems we run on
+	it('counts a folder, and ignores case', () => {
+		rightClickNewFile();
+		const input = nameInput()!;
+		type(input, 'CHAPTERS');
+		expect(input.getAttribute('aria-invalid')).toBe('true');
+	});
+});

@@ -94,10 +94,12 @@ export class ExternalChangeWatcher {
 		this.onAdopted?.();
 	}
 
-	resolve(choice: 'reload' | 'keep'): void {
+	/** 'defer' answers neither: disk keeps its bytes, the buffer keeps its edits and stays dirty,
+	 * and the next save attempt asks again. The only answer that destroys nothing. */
+	resolve(choice: 'reload' | 'keep' | 'defer'): void {
 		const c = this.conflict;
 		this.conflict = null;
-		if (!c) return;
+		if (!c || choice === 'defer') return;
 		if (choice === 'reload') this.applyDiskReload(c.disk, c.eol);
 		else if (this.deps.getLoadedPath() === c.path) this.deps.saveNow();
 	}

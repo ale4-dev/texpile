@@ -45,31 +45,43 @@ function papers(): { name: string; src: string }[] {
 		.filter((p) => /\\(?:eq)?ref\{/.test(p.src));
 }
 
+// the largest paper parses in ~40s alone, and the suite runs these alongside everything else;
+// at 60s it timed out on a loaded machine rather than failing
+const PAPER_TIMEOUT_MS = 300_000;
+
 const corpus = papers();
 
 describe.skipIf(corpus.length === 0)('the reference chip against real papers', () => {
 	for (const paper of corpus) {
 		// one case per paper, so a regression names the document it broke on
-		it(`shows labels, not guesses, before ${paper.name} has compiled`, () => {
-			const guessed = chips(paper)
-				.map((c) => ({ label: c.label, text: refState(c.command, c.label, {}, NO_REFS).text }))
-				.filter((r) => r.text !== r.label);
-			expect({ paper: paper.name, guessed }).toEqual({ paper: paper.name, guessed: [] });
-		}, 60_000);
+		it(
+			`shows labels, not guesses, before ${paper.name} has compiled`,
+			() => {
+				const guessed = chips(paper)
+					.map((c) => ({ label: c.label, text: refState(c.command, c.label, {}, NO_REFS).text }))
+					.filter((r) => r.text !== r.label);
+				expect({ paper: paper.name, guessed }).toEqual({ paper: paper.name, guessed: [] });
+			},
+			PAPER_TIMEOUT_MS
+		);
 
-		it(`prints the compiler's own numbers for ${paper.name}`, () => {
-			const found = chips(paper);
-			// the .aux this paper would produce: every label it references, numbered by the engine
-			const aux = Object.fromEntries([...new Set(found.map((c) => c.label))].map((l, i) => [l, `${i + 1}`]));
-			const wrong = found
-				.map((c) => ({
-					label: c.label,
-					want: c.command === 'eqref' ? `(${aux[c.label]})` : aux[c.label],
-					got: refState(c.command, c.label, aux, NO_REFS).text
-				}))
-				.filter((r) => r.got !== r.want);
-			expect({ paper: paper.name, wrong }).toEqual({ paper: paper.name, wrong: [] });
-		}, 60_000);
+		it(
+			`prints the compiler's own numbers for ${paper.name}`,
+			() => {
+				const found = chips(paper);
+				// the .aux this paper would produce: every label it references, numbered by the engine
+				const aux = Object.fromEntries([...new Set(found.map((c) => c.label))].map((l, i) => [l, `${i + 1}`]));
+				const wrong = found
+					.map((c) => ({
+						label: c.label,
+						want: c.command === 'eqref' ? `(${aux[c.label]})` : aux[c.label],
+						got: refState(c.command, c.label, aux, NO_REFS).text
+					}))
+					.filter((r) => r.got !== r.want);
+				expect({ paper: paper.name, wrong }).toEqual({ paper: paper.name, wrong: [] });
+			},
+			PAPER_TIMEOUT_MS
+		);
 	}
 
 	// the labels a real engine wrote, read by the code that reads them in the app. What can break
@@ -80,15 +92,19 @@ describe.skipIf(corpus.length === 0)('the reference chip against real papers', (
 		.filter((c) => fs.existsSync(c.aux));
 
 	for (const { paper, aux } of compiled) {
-		it(`resolves ${paper.name} against the .aux its own compile wrote`, () => {
-			const numbers = parseAuxLabels(fs.readFileSync(aux, 'utf8')).numbers;
-			const found = chips(paper);
-			const unresolved = found.filter((c) => refState(c.command, c.label, numbers, NO_REFS).text === c.label);
-			expect({ paper: paper.name, refs: found.length, unresolved: unresolved.map((c) => c.label) }).toEqual({
-				paper: paper.name,
-				refs: found.length,
-				unresolved: []
-			});
-		}, 60_000);
+		it(
+			`resolves ${paper.name} against the .aux its own compile wrote`,
+			() => {
+				const numbers = parseAuxLabels(fs.readFileSync(aux, 'utf8')).numbers;
+				const found = chips(paper);
+				const unresolved = found.filter((c) => refState(c.command, c.label, numbers, NO_REFS).text === c.label);
+				expect({ paper: paper.name, refs: found.length, unresolved: unresolved.map((c) => c.label) }).toEqual({
+					paper: paper.name,
+					refs: found.length,
+					unresolved: []
+				});
+			},
+			PAPER_TIMEOUT_MS
+		);
 	}
 });

@@ -16,6 +16,7 @@ import type { Node } from 'prosemirror-model';
 import { parseLatexFile, serializeLatexFile } from '$lib/workspace/latexRoundtrip';
 
 const CORPUS = process.env.CORPUS_DIR;
+const HOOK_TIMEOUT_MS = 30 * 60 * 1000;
 
 function listTex(dir: string): string[] {
 	const out: string[] = [];
@@ -387,7 +388,9 @@ describe('stress: real LaTeX round-trip', () => {
 		fs.writeFileSync(path.join(reportDir, 'report.json'), JSON.stringify(results, null, 2));
 		// echo the summary so it shows in test output
 		console.log('\n' + lines.slice(0, 24).join('\n') + '\n');
-	});
+		// a real corpus is minutes of parsing, and vitest's 10s default killed this hook before it
+		// graded a single file: the suite reported a hook timeout instead of a verdict
+	}, HOOK_TIMEOUT_MS);
 
 	it('no parse/serialize crashes', () => {
 		const crashed = results.filter((r) => r.crash).map((r) => r.file);

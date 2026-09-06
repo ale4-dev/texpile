@@ -106,17 +106,35 @@ function runEnvName(node: Node, ctx: Ctx): string | null {
 	return null;
 }
 
-/** the item's first paragraph without the bold label text createList put in front */
-function withoutLeadingLabel(item: Node, label: string): Node {
-	if (item.type.name !== 'paragraph' || item.childCount === 0) return item;
-	const first = item.child(0);
-	const plain = label.replace(/\\[a-zA-Z@]+\s*|[{}]/g, '').trim();
-	if (!first.isText || !first.marks.some((m) => m.type.name === 'strong') || (first.text ?? '').trim() !== plain) return item;
-	let rest = item.content.cut(first.nodeSize);
-	const second = rest.firstChild;
-	if (second?.isText && second.text && /^\s+$/.test(second.text)) rest = rest.cut(second.nodeSize);
-	else if (second?.isText && second.text && /^\s/.test(second.text))
-		rest = rest.replaceChild(0, second.type.schema.text(second.text.replace(/^\s+/, ''), second.marks));
+// letters and digits only: a label's source and the text it renders to differ by ties, dash
+// ligatures and quote curling, none of which survive the trip as themselves
+function labelKey(s: string): string {
+	return s.replace(/[^\p{L}\p{N}]/gu, '');
+}
+
+/**
+ * The item's first paragraph without the label text createList put in front. A label can span
+ * several inline nodes (`\item[A $x$ B]`), so nodes are consumed until they account for it;
+ * null when they never do, and the caller then drops the [label] rather than write it twice.
+ */
+function withoutLeadingLabel(item: Node, label: string): Node | null {
+	if (item.type.name !== 'paragraph') return null;
+	const want = labelKey(label.replace(/\\[a-zA-Z@]+\s*|[{}]/g, ''));
+	if (!want) return null;
+	let seen = '';
+	let taken = 0;
+	let size = 0;
+	while (taken < item.childCount && seen.length < want.length) {
+		seen += labelKey(item.child(taken).textContent);
+		size += item.child(taken).nodeSize;
+		taken++;
+	}
+	if (seen !== want) return null;
+	let rest = item.content.cut(size);
+	const next = rest.firstChild;
+	if (next?.isText && next.text && /^\s+$/.test(next.text)) rest = rest.cut(next.nodeSize);
+	else if (next?.isText && next.text && /^\s/.test(next.text))
+		rest = rest.replaceChild(0, next.type.schema.text(next.text.replace(/^\s+/, ''), next.marks));
 	return item.copy(rest);
 }
 
@@ -246,7 +264,10 @@ const NODES: Record<string, NodeHandler> = {
 				? `\\${node.attrs.command}`
 				: (HEADING_CMD[Number(node.attrs.level ?? 1)] ?? '\\section');
 		const star = node.attrs.numbered === false ? '*' : '';
-		const short = typeof node.attrs.shortTitle === 'string' && node.attrs.shortTitle ? `[${node.attrs.shortTitle}]` : '';
+		// a `]` inside the short title would close the optional argument early; bracing the whole
+		// argument is how LaTeX carries one
+		const shortTitle = typeof node.attrs.shortTitle === 'string' ? node.attrs.shortTitle : '';
+		const short = shortTitle ? `[${shortTitle.includes(']') ? `{${shortTitle}}` : shortTitle}]` : '';
 		return `${cmd}${star}${short}{${text}}\n`;
 	},
 
@@ -380,14 +401,17 @@ const NODES: Record<string, NodeHandler> = {
 		// a description environment is remembered on the run's first node; the rest inherit it
 		const envName = runEnvName(node, ctx);
 		const env = envName ?? (kind === 'ordered' ? 'enumerate' : 'itemize');
-		// \item[label] as written. the editor shows the label as leading bold text (createList);
-		// that text is the label, so it is not emitted twice
+		// \item[label] as written. the editor shows the label as leading bold text (createList), so
+		// the bracket is only rewritten when that text can be found and taken back out; an empty
+		// label put nothing in the body and needs no removal
 		const itemLabel = typeof node.attrs.itemLabel === 'string' ? node.attrs.itemLabel : null;
-		const itemCmd = itemLabel != null ? `\\item[${itemLabel}]` : '\\item';
+		const labelled = itemLabel != null && node.childCount > 0 ? withoutLeadingLabel(node.child(0), itemLabel) : null;
+		const keepsLabel = itemLabel === '' || (itemLabel != null && labelled != null);
+		const itemCmd = keepsLabel ? `\\item[${itemLabel}]` : '\\item';
 
 		const parts: string[] = [];
 		node.forEach((item, _offset, i) => {
-			const shown = i === 0 && itemLabel != null ? withoutLeadingLabel(item, itemLabel) : item;
+			const shown = i === 0 && labelled ? labelled : item;
 			const inner = serializeNode(shown, { parent: node, index: i, isLastChild: i === node.childCount - 1, inTableCell: ctx.inTableCell });
 			if (item.type.name === 'list') {
 				// only the FIRST of a run of same-kind sub-lists opens \item[]; the rest coalesce

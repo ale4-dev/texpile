@@ -53,3 +53,31 @@ describe('ExternalChangeWatcher.check', () => {
 		expect(recordDiskStamp).not.toHaveBeenCalled();
 	});
 });
+
+// The two real answers each destroy one of the two versions, so the dialog's Escape / X had to
+// stop meaning "keep mine": dismissing now defers, and nothing is written or replaced.
+describe('ExternalChangeWatcher.resolve', () => {
+	it('defer leaves disk and the buffer exactly as they are', async () => {
+		const saveNow = vi.fn();
+		const setTexSource = vi.fn();
+		const discardQueuedSave = vi.fn();
+		const w = makeWatcher({ readText: async () => 'theirs', getBuffer: () => 'mine', saveNow, setTexSource, discardQueuedSave });
+		await w.check();
+		expect(w.conflict).not.toBeNull();
+
+		w.resolve('defer');
+		expect(w.conflict).toBeNull();
+		expect(saveNow).not.toHaveBeenCalled(); // disk keeps their version
+		expect(setTexSource).not.toHaveBeenCalled(); // the buffer keeps mine
+		expect(discardQueuedSave).not.toHaveBeenCalled();
+		expect(isDirty.current).toBe(true); // still unsaved, so the next save asks again
+	});
+
+	it('keep still forces the write through the guard', async () => {
+		const saveNow = vi.fn();
+		const w = makeWatcher({ readText: async () => 'theirs', getBuffer: () => 'mine', saveNow });
+		await w.check();
+		w.resolve('keep');
+		expect(saveNow).toHaveBeenCalled();
+	});
+});

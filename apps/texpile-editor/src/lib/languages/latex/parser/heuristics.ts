@@ -255,6 +255,21 @@ export function heuristicMarkDelimitedMacroSpans(nodes: Node[] | undefined, sour
  * swallowed; ignores commands we already understand. returns the inferred signatures for the
  * caller to merge into its macro table.
  */
+// an optional argument is a short bracket group on one line. Without a bound, a stray `[` in
+// prose pairs with a `]` pages away and the inferred signature swallows everything between.
+const MAX_OPT_ARG_NODES = 24;
+
+/** index of the `]` closing the `[` at `from`, or -1 when nothing plausibly does */
+function closingBracket(nodes: LooseNode[], from: number): number {
+	const limit = Math.min(nodes.length, from + 1 + MAX_OPT_ARG_NODES);
+	for (let k = from + 1; k < limit; k++) {
+		const n = nodes[k];
+		if (n.type === 'parbreak') return -1; // no optional argument spans a blank line
+		if (n.type === 'string' && n.content === ']') return k;
+	}
+	return -1;
+}
+
 export function heuristicInferUnknownMacroSignatures(
 	ast: Root,
 	isKnown: (name: string) => boolean,
@@ -298,7 +313,7 @@ export function heuristicInferUnknownMacroSignatures(
 						// (`\todo[inline]{}`, `\SI[per-mode=symbol]{}{}`) is an optional argument.
 						// A space before it is prose that happens to start with a bracket.
 						if (nx.type === 'string' && nx.content === '[' && nodes[j - 1]?.type !== 'whitespace') {
-							const close = nodes.findIndex((c, k) => k > j && c.type === 'string' && (c as LooseNode).content === ']');
+							const close = closingBracket(nodes as LooseNode[], j);
 							if (close < 0) break;
 							sig.push('o');
 							j = close;

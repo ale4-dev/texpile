@@ -50,6 +50,8 @@ export type TreeOpsDeps = {
 	afterPathMoved?(oldPath: string, newPath: string): void;
 	retargetPendingSave(from: string, to: string): void;
 	discardPendingSave(): void;
+	/** a drop landed on a name that is taken: replace what is there? */
+	confirmReplace(name: string): Promise<boolean>;
 	/** the main file moved (new path) or was deleted (null): repoint the choice and persist it.
 	 * Absent on surfaces without a main-file concept (a guest's session tree). */
 	retargetMainFile?(next: string | null): void;
@@ -124,6 +126,14 @@ export class TreeOps {
 		const to = this.#destIn(targetDir, entry);
 		if (!to) return null;
 		try {
+			// dropping onto a name that is taken asks first, and replaces by RECYCLING what stood
+			// there rather than overwriting it: everything else the tree deletes can be taken back,
+			// and a drop is too easy to make by accident to be the one exception
+			if ((await this.deps.stat(to)).exists) {
+				if (!(await this.deps.confirmReplace(basename(to)))) return null;
+				this.#detach(to);
+				await this.#trash(to);
+			}
 			await this.deps.rename(entry.path, to);
 			this.#afterMove(entry.path, to);
 			if (refresh) await this.deps.refreshTree();

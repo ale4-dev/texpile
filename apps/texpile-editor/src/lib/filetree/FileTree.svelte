@@ -12,8 +12,9 @@
 	import { FileTreeDnd, ROOT } from './treeDnd.svelte';
 	import { TreeNameEditor } from './treeNameEditor.svelte';
 	import { namePastedFiles, type ImportItem } from './treeImport';
-	import { isInside } from './treePaths';
+	import { isInside, nameTaken } from './treePaths';
 	import { focusSelect } from './focusSelect';
+	import { tip } from '$lib/components/tooltip.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { confirmAsk } from '$lib/modals/confirm.svelte';
 	import { toaster } from '$lib/modals/toaster-svelte';
@@ -48,6 +49,8 @@
 		history?: FileHistory | null;
 		/** allow adding new files by drop-from-OS / paste. */
 		allowImport?: boolean;
+		/** does this path (or anything inside it) hold edits that exist only in the editor? */
+		hasUnsaved?: (path: string) => boolean;
 	};
 	let {
 		tree,
@@ -66,7 +69,8 @@
 		onSetMain,
 		onReveal,
 		history = null,
-		allowImport = true
+		allowImport = true,
+		hasUnsaved
 	}: Props = $props();
 
 	// samePath, not ===: a restored activePath can arrive mixed-separator on Windows and match no row
@@ -87,7 +91,9 @@
 		rootPath: () => rootPath,
 		expand: (dir) => (sel.expanded[dir] = true),
 		onCreate: (dir, name, type) => onCreate(dir, name, type),
-		onRename: (e, name) => onRename(e, name)
+		onRename: (e, name) => onRename(e, name),
+		nameTaken: (dir, name, selfPath) => nameTaken(tree, dir, rootPath, name, selfPath),
+		takenMessage: (name) => m.filetree_name_exists({ name })
 	});
 	const dnd = new FileTreeDnd({
 		rootPath: () => rootPath,
@@ -209,21 +215,32 @@
 		return editor.creatingIn !== null || editor.renaming !== null;
 	}
 
+	// deleting a row inside a multi-selection deletes the whole selection
+	function deleteTargets(e: TreeEntry): TreeEntry[] {
+		return sel.selected.includes(e.path) && sel.selectedEntries().length > 1 ? sel.selectedEntries() : [e];
+	}
+
+	/**
+	 * What to ask before deleting. Unsaved edits outrank the ordinary question: the recycle bin
+	 * holds the file as it was on disk, so the part that is really being destroyed is the part
+	 * that was never written. Asking about that IS the confirmation; a second "delete?" after it
+	 * says nothing new.
+	 */
+	function deleteQuestion(entries: TreeEntry[]): string {
+		const dirty = entries.filter((x) => hasUnsaved?.(x.path));
+		if (dirty.length === 1) return m.filetree_confirm_delete_dirty_one({ name: dirty[0].name });
+		if (dirty.length > 1) return m.filetree_confirm_delete_dirty_many({ count: dirty.length });
+		if (entries.length > 1) return m.filetree_confirm_delete_many({ count: entries.length });
+		const e = entries[0];
+		return e.type === 'dir' ? m.filetree_confirm_delete_dir({ name: e.name }) : m.filetree_confirm_delete_file({ name: e.name });
+	}
+
 	async function confirmDelete(e: TreeEntry) {
-		// deleting a row inside a multi-selection deletes the whole selection
-		if (sel.selected.includes(e.path) && sel.selectedEntries().length > 1) {
-			const entries = sel.selectedEntries();
-			if (
-				await confirmAsk(m.filetree_confirm_delete_many({ count: entries.length }), { confirmLabel: m.filetree_delete(), danger: true })
-			) {
-				onDelete(entries);
-				sel.selected = [];
-			}
-			refocusTree();
-			return;
+		const entries = deleteTargets(e);
+		if (await confirmAsk(deleteQuestion(entries), { confirmLabel: m.filetree_delete(), danger: true })) {
+			onDelete(entries);
+			if (entries.length > 1) sel.selected = [];
 		}
-		const message = e.type === 'dir' ? m.filetree_confirm_delete_dir({ name: e.name }) : m.filetree_confirm_delete_file({ name: e.name });
-		if (await confirmAsk(message, { confirmLabel: m.filetree_delete(), danger: true })) onDelete([e]);
 		refocusTree();
 	}
 	function deleteCount(e: TreeEntry) {
@@ -260,8 +277,10 @@
 		<!-- size=1: an input is ~20 characters wide by default, and the tree's min-w-max would adopt
 		     that as the row width, pushing the explorer wider than its column -->
 		<input
-			class="input h-6 min-w-0 flex-1 py-0 text-sm"
+			class="input h-6 min-w-0 flex-1 py-0 text-sm {editor.createError ? 'border-error-500 text-error-ink' : ''}"
 			size={1}
+			aria-invalid={!!editor.createError}
+			use:tip={editor.createError ?? undefined}
 			placeholder={editor.createType === 'dir'
 				? m.filetree_placeholder_folder_name()
 				: editor.createType === 'include'

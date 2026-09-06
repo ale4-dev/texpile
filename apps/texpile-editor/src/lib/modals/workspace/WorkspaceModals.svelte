@@ -42,7 +42,7 @@
 		onSaveCompile: (thenRun: boolean) => void;
 		onRunCompile: () => void;
 		onFormat: () => void;
-		onResolveConflict: (choice: 'reload' | 'keep') => void;
+		onResolveConflict: (choice: 'reload' | 'keep' | 'defer') => void;
 		onKeepRefs: () => void;
 		onApplyRefs: () => void;
 	} = $props();
@@ -72,7 +72,9 @@
 		});
 	});
 
-	// the file changed on disk while we held unsaved edits: no dismissing, one of the two
+	// the file changed on disk while we held unsaved edits. Both answers destroy one of the two
+	// versions, so dismissing must not silently pick either: Escape and the X defer instead,
+	// leaving disk alone and the buffer dirty
 	let askedConflict: object | null = null;
 	$effect(() => {
 		const c = external.conflict;
@@ -83,10 +85,14 @@
 			message: `${basename(c.path)} ${m.wsview_conflict_body()}`,
 			buttons: [
 				{ id: 'keep', label: m.wsview_keep_my_version(), primary: true },
-				{ id: 'reload', label: m.wsview_reload_from_disk() }
-			]
+				{ id: 'reload', label: m.wsview_reload_from_disk() },
+				{ id: 'defer', label: m.wsview_conflict_defer() }
+			],
+			cancelId: 'defer'
 		}).then((id) => {
-			if (external.conflict === c) onResolveConflict(id === 'reload' ? 'reload' : 'keep');
+			if (external.conflict !== c) return;
+			if (id === 'reload' || id === 'keep') onResolveConflict(id);
+			else onResolveConflict('defer');
 		});
 	});
 

@@ -173,6 +173,7 @@
 			typstProject={menu.typstProject}
 			onRename={treeOps.rename}
 			onDelete={treeOps.deleteMany}
+			hasUnsaved={actions.hasUnsaved}
 			onMove={treeOps.moveMany}
 			onImport={treeOps.import}
 			onCopyIn={treeOps.copyIn}

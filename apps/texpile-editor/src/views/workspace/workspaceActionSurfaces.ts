@@ -6,10 +6,11 @@ import { collabGuest } from '$lib/collab/guestStore.svelte';
 import { normSyncPath } from '$lib/workspace/syncTexNav';
 import { projectConfigSync as projectConfig } from '$lib/workspace/projectConfigSync.svelte';
 import { uiZoomIn, uiZoomOut, uiZoomReset } from '$lib/workspace/shortcuts';
-import { workspaceRoot } from '$lib/workspace/workspaceStore';
+import { workspaceRoot, isDirty } from '$lib/workspace/workspaceStore';
 import { refreshGitStatus, refreshGitHistory } from '$lib/workspace/gitStore';
 import { preferencesOpen } from '$lib/stores/dialogStore';
 import { isDesktop, revealItem, type TreeEntry } from '$lib/workspace/fileSystem';
+import { hasUnsavedUnder } from '$lib/workspace/unsavedPaths';
 import type { WorkspaceProvider } from '$lib/workspace/workspaceProvider';
 import type { CommentsController } from '$lib/workspace/commentsController.svelte';
 import type { TerminalDockState } from '$lib/workspace/terminalDockState.svelte';
@@ -213,6 +214,13 @@ export function makeChromeActions(d: ActionSurfaceDeps) {
 		// the main file is a property of the project, so it goes in .texpile/config.json with the rest
 		setMain: (entry: TreeEntry) => void d.files().toggleMainFile(entry.path),
 		revealEntry: (entry: TreeEntry) => void revealItem(entry.path),
+		// the file tree asks before deleting something whose edits exist only here
+		hasUnsaved: (path: string) =>
+			hasUnsavedUnder(path, {
+				loaded: d.wsdoc.doc.path,
+				dirty: isDirty.current,
+				pending: d.editFlow().saver.pending?.path ?? null
+			}),
 		refreshGit: () =>
 			void toastAfter(m.wsview_toast_git_refreshed(), async () => {
 				await refreshGitStatus(workspaceRoot.current);

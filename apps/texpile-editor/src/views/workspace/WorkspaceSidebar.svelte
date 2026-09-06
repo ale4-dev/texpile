@@ -52,6 +52,8 @@
 		typstProject?: boolean;
 		onRename: (entry: TreeEntry, newName: string) => void;
 		onDelete: (entries: TreeEntry[]) => void;
+		/** does this path (or anything inside it) hold edits that exist only in the editor? */
+		hasUnsaved: (path: string) => boolean;
 		onMove: (entries: TreeEntry[], targetDir: string) => void;
 		onImport: (items: { relPath: string; file: globalThis.File }[], targetDir: string) => void;
 		onCopyIn: (paths: string[], targetDir: string) => void;
@@ -97,6 +99,7 @@
 		typstProject = false,
 		onRename,
 		onDelete,
+		hasUnsaved,
 		onMove,
 		onImport,
 		onCopyIn,
@@ -338,6 +341,7 @@
 					{typstProject}
 					{onRename}
 					{onDelete}
+					{hasUnsaved}
 					{onMove}
 					{onImport}
 					{onCopyIn}

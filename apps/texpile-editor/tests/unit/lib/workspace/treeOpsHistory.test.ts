@@ -8,6 +8,11 @@ import type { TreeEntry } from '$lib/workspace/fileSystem';
 //
 // It models the real shape of a delete: COPY the entry to a backup outside the workspace, then
 // remove the original. `tooBigFor` stands in for the size limit that makes a delete non-undoable.
+// what the "replace what is there?" prompt answers; mutable so a test can say no
+const replaceAnswer = { ok: true };
+// what the save pipeline was told to do with a queued edit during the last operation
+const saveCalls: string[] = [];
+
 function makeFs(tooBigFor: (p: string) => boolean = () => false, hasRecycleBin = true) {
 	const files = new Set<string>();
 	const backups = new Set<string>();
@@ -54,8 +59,9 @@ function makeFs(tooBigFor: (p: string) => boolean = () => false, hasRecycleBin =
 		isTypstProject: () => false,
 		insertIncludeAtCursor: () => true,
 		afterRename: () => {},
-		retargetPendingSave: () => {},
-		discardPendingSave: () => {}
+		retargetPendingSave: (from, to) => void saveCalls.push(`retarget ${from} -> ${to}`),
+		discardPendingSave: () => void saveCalls.push('discard'),
+		confirmReplace: async () => replaceAnswer.ok
 	};
 	return { files, backups, deps };
 }
@@ -242,5 +248,77 @@ describe('tree undo/redo', () => {
 		await ops.deleteMany([dirEntry('/proj/sec')]);
 		// the buffer has to let go: an autosave firing after this would recreate the deleted file
 		expect(activeFilePath.current).toBeNull();
+	});
+});
+
+// Dropping onto a name that is taken used to fail at the file system with "already exists". It now
+// asks, and replaces by recycling what stood there: every other delete in the tree is recoverable,
+// and a drag is the easiest gesture in the app to make by accident.
+describe('replacing on a drop', () => {
+	let fs: ReturnType<typeof makeFs>;
+	let ops: TreeOps;
+
+	beforeEach(() => {
+		workspaceRoot.current = '/proj';
+		activeFilePath.current = null;
+		replaceAnswer.ok = true;
+		fs = makeFs();
+		ops = new TreeOps(fs.deps);
+		fs.files.add('/proj/a.tex');
+		fs.files.add('/proj/sub/a.tex');
+	});
+
+	it('recycles the destination, so the replaced file can still be recovered', async () => {
+		const r = await ops.move(fileEntry('/proj/a.tex'), '/proj/sub');
+		expect(r).toEqual({ from: '/proj/a.tex', to: '/proj/sub/a.tex' });
+		expect(visible(fs.files)).toEqual(['/proj/sub/a.tex']);
+		expect([...fs.backups]).toEqual(['/appdata/undo/slot0/a.tex']);
+	});
+
+	it('leaves both files alone when the prompt is declined', async () => {
+		replaceAnswer.ok = false;
+		expect(await ops.move(fileEntry('/proj/a.tex'), '/proj/sub')).toBeNull();
+		expect(visible(fs.files)).toEqual(['/proj/a.tex', '/proj/sub/a.tex']);
+		expect([...fs.backups]).toEqual([]);
+	});
+
+	it('does not ask when the destination is free', async () => {
+		fs.files.delete('/proj/sub/a.tex');
+		replaceAnswer.ok = false; // would refuse if it were asked
+		expect(await ops.move(fileEntry('/proj/a.tex'), '/proj/sub')).not.toBeNull();
+		expect(visible(fs.files)).toEqual(['/proj/sub/a.tex']);
+	});
+});
+
+// Renaming a file that has unsaved edits must carry them to the new name. VS Code snapshots the
+// dirty model and restores it at the target; here the queued write is repointed instead, and the
+// opener waits for it to land before re-reading, so the edits arrive as the renamed file's content.
+// The failure this guards against is the queue still aimed at the old path, which recreates it.
+describe('unsaved edits follow a rename', () => {
+	let fs: ReturnType<typeof makeFs>;
+	let ops: TreeOps;
+
+	beforeEach(() => {
+		workspaceRoot.current = '/proj';
+		activeFilePath.current = null;
+		saveCalls.length = 0;
+		fs = makeFs();
+		ops = new TreeOps(fs.deps);
+	});
+
+	it('repoints the queued write instead of discarding it', async () => {
+		fs.files.add('/proj/a.tex');
+		activeFilePath.current = '/proj/a.tex';
+		await ops.rename(fileEntry('/proj/a.tex'), 'b.tex');
+		expect(saveCalls).toEqual(['retarget /proj/a.tex -> /proj/b.tex']);
+		expect(activeFilePath.current).toBe('/proj/b.tex');
+	});
+
+	it('repoints a file inside a folder that was renamed', async () => {
+		fs.files.add('/proj/sec/a.tex');
+		activeFilePath.current = '/proj/sec/a.tex';
+		await ops.rename(dirEntry('/proj/sec'), 'chapters');
+		expect(saveCalls).toEqual(['retarget /proj/sec -> /proj/chapters']);
+		expect(activeFilePath.current).toBe('/proj/chapters/a.tex');
 	});
 });

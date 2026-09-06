@@ -74,8 +74,10 @@
 			{#if editor.renaming === entry.path}
 				<!-- size=1 for the same reason as the create input in FileTree: the default width would widen the tree -->
 				<input
-					class="input h-6 min-w-0 flex-1 py-0 text-sm"
+					class="input h-6 min-w-0 flex-1 py-0 text-sm {editor.renameError ? 'border-error-500 text-error-ink' : ''}"
 					size={1}
+					aria-invalid={!!editor.renameError}
+					use:tip={editor.renameError ?? undefined}
 					value={editor.renameValue}
 					oninput={(e) => {
 						editor.renameValue = e.currentTarget.value;
