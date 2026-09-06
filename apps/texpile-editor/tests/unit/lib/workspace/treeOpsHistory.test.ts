@@ -270,7 +270,7 @@ describe('replacing on a drop', () => {
 
 	it('recycles the destination, so the replaced file can still be recovered', async () => {
 		const r = await ops.move(fileEntry('/proj/a.tex'), '/proj/sub');
-		expect(r).toEqual({ from: '/proj/a.tex', to: '/proj/sub/a.tex' });
+		expect(r).toMatchObject({ from: '/proj/a.tex', to: '/proj/sub/a.tex' });
 		expect(visible(fs.files)).toEqual(['/proj/sub/a.tex']);
 		expect([...fs.backups]).toEqual(['/appdata/undo/slot0/a.tex']);
 	});
@@ -320,5 +320,37 @@ describe('unsaved edits follow a rename', () => {
 		await ops.rename(dirEntry('/proj/sec'), 'chapters');
 		expect(saveCalls).toEqual(['retarget /proj/sec -> /proj/chapters']);
 		expect(activeFilePath.current).toBe('/proj/chapters/a.tex');
+	});
+});
+
+// A replace destroys a file, so it has to be undoable like every other delete in the tree, and in
+// the same gesture: one Ctrl+Z puts back both the file that moved and the one it replaced.
+describe('undoing a replace', () => {
+	let fs: ReturnType<typeof makeFs>;
+	let ops: TreeOps;
+
+	beforeEach(() => {
+		workspaceRoot.current = '/proj';
+		activeFilePath.current = null;
+		replaceAnswer.ok = true;
+		fs = makeFs();
+		ops = new TreeOps(fs.deps);
+		fs.files.add('/proj/a.tex');
+		fs.files.add('/proj/sub/a.tex');
+	});
+
+	it('brings back both files, and redo replaces again', async () => {
+		await ops.moveMany([fileEntry('/proj/a.tex')], '/proj/sub');
+		expect(visible(fs.files)).toEqual(['/proj/sub/a.tex']);
+
+		await ops.history.undo();
+		expect(visible(fs.files)).toEqual(['/proj/a.tex', '/proj/sub/a.tex']);
+
+		await ops.history.redo();
+		expect(visible(fs.files)).toEqual(['/proj/sub/a.tex']);
+
+		// and a second round trip still works, which is what re-taking the backup slot is for
+		await ops.history.undo();
+		expect(visible(fs.files)).toEqual(['/proj/a.tex', '/proj/sub/a.tex']);
 	});
 });

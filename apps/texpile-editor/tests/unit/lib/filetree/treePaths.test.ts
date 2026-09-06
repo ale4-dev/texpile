@@ -24,8 +24,9 @@ describe('nameTaken', () => {
 		expect(nameTaken(tree, '/proj', '/proj', 'MAIN.TEX', '/proj/main.tex')).toBe(false);
 	});
 
-	// a folder the tree has not expanded has no children to check; the file system still refuses
-	it('reports nothing for a folder whose contents are unknown', () => {
+	// past the walk's depth cap, or unreadable: nothing to check against, and the file system
+	// still refuses the name
+	it('reports nothing for a folder the scan never reached', () => {
 		expect(nameTaken(tree, '/proj/empty', '/proj', 'anything.tex')).toBe(false);
 	});
 });

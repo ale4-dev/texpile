@@ -19,7 +19,7 @@ export function isInside(path: string, ancestor: string): boolean {
 	return path.startsWith(ancestor + sepOf(ancestor));
 }
 
-/** the entries directly inside `dir`; empty for a folder the tree has not expanded yet */
+/** the entries directly inside `dir`; empty when the walk never reached it (depth cap, read error) */
 export function childrenOf(tree: TreeEntry[], dir: string, root: string): TreeEntry[] {
 	if (samePath(dir, root)) return tree;
 	const find = (list: TreeEntry[]): TreeEntry[] | null => {
@@ -38,11 +38,20 @@ export function childrenOf(tree: TreeEntry[], dir: string, root: string): TreeEn
 
 /**
  * Is `name` already used inside `dir`? Case-insensitively, because the file systems we run on
- * mostly are, except for `selfPath`, so an entry can still be recased. An unexpanded folder
- * reports nothing, and the operation falls back to failing at the file system.
+ * mostly are, except for `selfPath`, so an entry can still be recased. A folder the tree scan
+ * never reached reports nothing, and the operation falls back to failing at the file system.
  */
 export function nameTaken(tree: TreeEntry[], dir: string, root: string, name: string, selfPath?: string | null): boolean {
 	const wanted = name.trim().toLowerCase();
 	if (!wanted) return false;
 	return childrenOf(tree, dir, root).some((e) => e.name.toLowerCase() === wanted && !(selfPath && samePath(e.path, selfPath)));
+}
+
+/**
+ * The name a New Include actually lands under: its extension follows the compile target, and
+ * TreeOps.create appends it. The name inputs validate the same string the file system will see.
+ */
+export function includeFileName(name: string, typst: boolean): string {
+	const ext = typst ? '.typ' : '.tex';
+	return name.toLowerCase().endsWith(ext) ? name : name + ext;
 }

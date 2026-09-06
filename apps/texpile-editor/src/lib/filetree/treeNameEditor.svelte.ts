@@ -13,6 +13,8 @@ type EditorHooks = {
 	nameTaken: (dir: string, name: string, selfPath?: string | null) => boolean;
 	/** the message shown for a name that is taken */
 	takenMessage: (name: string) => string;
+	/** what a New Include will actually be called once its extension is appended */
+	includeName: (name: string) => string;
 };
 
 export class TreeNameEditor {
@@ -30,8 +32,10 @@ export class TreeNameEditor {
 	// would reject it too, but only once the operation had already been asked for. Getters, not
 	// $derived: a field initializer runs before the constructor assigns `hooks`.
 	get createError(): string | null {
-		if (!this.creatingIn || !this.hooks.nameTaken(this.creatingIn, this.createValue)) return null;
-		return this.hooks.takenMessage(this.createValue.trim());
+		// an include gets its extension appended, so "intro" is checked as intro.tex
+		const name = this.createType === 'include' ? this.hooks.includeName(this.createValue.trim()) : this.createValue;
+		if (!this.creatingIn || !this.hooks.nameTaken(this.creatingIn, name)) return null;
+		return this.hooks.takenMessage(name.trim());
 	}
 
 	get renameError(): string | null {

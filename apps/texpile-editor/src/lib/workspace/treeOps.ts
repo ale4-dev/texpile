@@ -15,6 +15,7 @@ import { tabs } from './tabs.svelte';
 import { docPositions } from './docPositions';
 import { visualDocCache } from './visualDocCache';
 import { joinPath, dirname, basename, samePath, type TreeEntry } from './fileSystem';
+import { includeFileName } from '$lib/filetree/treePaths';
 import { createStarterLatex } from './latexRoundtrip';
 import { FileHistory } from './fileHistory.svelte';
 import { toaster } from '$lib/modals/toaster-svelte';
@@ -78,8 +79,7 @@ export class TreeOps {
 			// an "include" is a fragment that gets referenced from a host doc, so no document skeleton.
 			// Its extension follows the compile target: .typ for a Typst project (#include), else .tex (\input).
 			const isInclude = type === 'include';
-			const includeExt = this.deps.isTypstProject() ? '.typ' : '.tex';
-			const finalName = isInclude && !name.toLowerCase().endsWith(includeExt) ? name + includeExt : name;
+			const finalName = isInclude ? includeFileName(name, this.deps.isTypstProject()) : name;
 			const fsType: 'file' | 'dir' = type === 'dir' ? 'dir' : 'file';
 			const path = joinPath(parentDir, finalName);
 			const isTex = fsType === 'file' && finalName.toLowerCase().endsWith('.tex');
@@ -129,16 +129,18 @@ export class TreeOps {
 			// dropping onto a name that is taken asks first, and replaces by RECYCLING what stood
 			// there rather than overwriting it: everything else the tree deletes can be taken back,
 			// and a drop is too easy to make by accident to be the one exception
+			let replaced: { original: string; trashed: string } | null = null;
 			if ((await this.deps.stat(to)).exists) {
 				if (!(await this.deps.confirmReplace(basename(to)))) return null;
 				this.#detach(to);
-				await this.#trash(to);
+				const { backup } = await this.#trash(to);
+				if (backup) replaced = { original: to, trashed: backup };
 			}
 			await this.deps.rename(entry.path, to);
 			this.#afterMove(entry.path, to);
 			if (refresh) await this.deps.refreshTree();
 			this.deps.afterRename(entry.path, to);
-			return { from: entry.path, to };
+			return { from: entry.path, to, replaced };
 		} catch (e) {
 			toaster.error({ title: m.wsview_toast_move_failed_title(), description: e instanceof Error ? e.message : String(e) });
 			return null;
@@ -202,14 +204,20 @@ export class TreeOps {
 
 	moveMany = async (entries: TreeEntry[], targetDir: string) => {
 		const done: { from: string; to: string }[] = [];
+		// anything a replace recycled rides the SAME history entry as the move that replaced it:
+		// one gesture, one undo, and the file that was standing there comes back with it
+		const replaced: { original: string; trashed: string }[] = [];
 		for (const entry of entries) {
 			const r = await this.move(entry, targetDir, false);
-			if (r) done.push(r);
+			if (!r) continue;
+			done.push({ from: r.from, to: r.to });
+			if (r.replaced) replaced.push(r.replaced);
 		}
 		if (done.length)
 			this.#recordMoves(
 				done,
-				entries.length === 1 ? m.filehistory_op_move_one({ name: entries[0].name }) : m.filehistory_op_move_many({ count: done.length })
+				entries.length === 1 ? m.filehistory_op_move_one({ name: entries[0].name }) : m.filehistory_op_move_many({ count: done.length }),
+				replaced
 			);
 		await this.deps.refreshTree();
 	};
@@ -370,20 +378,40 @@ export class TreeOps {
 		});
 	}
 
-	/** record a rename/move: both directions are the same rename, read the other way round. */
-	#recordMoves(pairs: { from: string; to: string }[], label: string): void {
+	/**
+	 * Record a rename/move: both directions are the same rename, read the other way round.
+	 *
+	 * `replaced` is what a drop onto a taken name recycled. Undo has to put the move back FIRST and
+	 * only then restore it, or restore would land on a path the moved file still occupies; redo
+	 * recycles it again, taking the fresh backup slot the way the delete history does.
+	 */
+	#recordMoves(pairs: { from: string; to: string }[], label: string, replaced: { original: string; trashed: string }[] = []): void {
 		if (!this.undoable || !pairs.length) return;
 		const apply = async (list: { from: string; to: string }[]) => {
 			for (const p of list) {
 				await this.deps.rename(p.from, p.to);
 				this.#afterMove(p.from, p.to);
 			}
-			await this.deps.refreshTree();
 		};
+		let live = [...replaced];
 		this.history.record({
 			label,
-			undo: () => apply([...pairs].reverse().map((p) => ({ from: p.to, to: p.from }))),
-			redo: () => apply(pairs)
+			undo: async () => {
+				await apply([...pairs].reverse().map((p) => ({ from: p.to, to: p.from })));
+				for (const r of live) await this.deps.restore!(r.trashed, r.original);
+				await this.deps.refreshTree();
+			},
+			redo: async () => {
+				const next: { original: string; trashed: string }[] = [];
+				for (const r of live) {
+					this.#detach(r.original);
+					const { backup } = await this.#trash(r.original);
+					next.push(backup ? { original: r.original, trashed: backup } : r);
+				}
+				live = next;
+				await apply(pairs);
+				await this.deps.refreshTree();
+			}
 		});
 	}
 

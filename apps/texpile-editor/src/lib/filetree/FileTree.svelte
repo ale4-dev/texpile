@@ -12,7 +12,7 @@
 	import { FileTreeDnd, ROOT } from './treeDnd.svelte';
 	import { TreeNameEditor } from './treeNameEditor.svelte';
 	import { namePastedFiles, type ImportItem } from './treeImport';
-	import { isInside, nameTaken } from './treePaths';
+	import { isInside, nameTaken, includeFileName } from './treePaths';
 	import { focusSelect } from './focusSelect';
 	import { tip } from '$lib/components/tooltip.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -93,7 +93,8 @@
 		onCreate: (dir, name, type) => onCreate(dir, name, type),
 		onRename: (e, name) => onRename(e, name),
 		nameTaken: (dir, name, selfPath) => nameTaken(tree, dir, rootPath, name, selfPath),
-		takenMessage: (name) => m.filetree_name_exists({ name })
+		takenMessage: (name) => m.filetree_name_exists({ name }),
+		includeName: (name) => includeFileName(name, typstProject)
 	});
 	const dnd = new FileTreeDnd({
 		rootPath: () => rootPath,
@@ -227,11 +228,15 @@
 	 * says nothing new.
 	 */
 	function deleteQuestion(entries: TreeEntry[]): string {
-		const dirty = entries.filter((x) => hasUnsaved?.(x.path));
-		if (dirty.length === 1) return m.filetree_confirm_delete_dirty_one({ name: dirty[0].name });
-		if (dirty.length > 1) return m.filetree_confirm_delete_dirty_many({ count: dirty.length });
-		if (entries.length > 1) return m.filetree_confirm_delete_many({ count: entries.length });
+		// the count always describes what is being deleted, never how many of them are dirty: a
+		// selection of five with one unsaved is still five files going
+		const dirty = entries.some((x) => hasUnsaved?.(x.path));
+		if (entries.length > 1)
+			return dirty
+				? m.filetree_confirm_delete_dirty_many({ count: entries.length })
+				: m.filetree_confirm_delete_many({ count: entries.length });
 		const e = entries[0];
+		if (dirty) return m.filetree_confirm_delete_dirty_one({ name: e.name });
 		return e.type === 'dir' ? m.filetree_confirm_delete_dir({ name: e.name }) : m.filetree_confirm_delete_file({ name: e.name });
 	}
 
