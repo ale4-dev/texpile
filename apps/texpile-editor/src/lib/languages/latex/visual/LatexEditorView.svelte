@@ -6,6 +6,7 @@
 	import type { Node as PMNode } from 'prosemirror-model';
 	import { schema } from '$lib/languages/latex/schema/latexPMSchema';
 	import { latexEditorPlugins, latexNodeViews } from './latexEditorSetup';
+	import { isLargeDocument } from './largeDocument';
 	import { swapParsedDoc, swapDocForNewFile } from '$lib/editor/visual/docSwap';
 	import { editorViewStore, referenceStore } from '$lib/stores/editorStore';
 	import { revealBuiltEditor, BUILDING_CLASS } from '$lib/editor/visual/revealBuiltEditor';
@@ -121,7 +122,11 @@
 
 		editorView = new EditorView(editor, {
 			// data-show-section-numbers drives the heading CSS counters; data-unnumbered headings are skipped
-			attributes: { class: 'TexpileEditor', spellcheck: 'false', 'data-show-section-numbers': 'true' },
+			attributes: (state) => ({
+				class: isLargeDocument(state.doc) ? 'TexpileEditor TexpileEditor-large' : 'TexpileEditor',
+				spellcheck: 'false',
+				'data-show-section-numbers': 'true'
+			}),
 			state: editorState,
 			nodeViews: latexNodeViews(() => imageDir ?? '', onJumpToLabel),
 			editable: () => true,
@@ -277,6 +282,13 @@
 
 	:global(.TexpileEditor) {
 		@apply m-1 max-w-full leading-relaxed outline-none;
+	}
+
+	/* off-screen blocks of a large document skip style, layout and hit-testing (see largeDocument.ts);
+	   the intrinsic size is a stand-in until a block has been rendered once, then its real height sticks */
+	:global(.TexpileEditor-large > *) {
+		content-visibility: auto;
+		contain-intrinsic-size: auto 60px;
 	}
 
 	:global(.TexpileEditor.page-view) {

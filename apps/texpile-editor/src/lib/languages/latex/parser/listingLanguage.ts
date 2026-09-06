@@ -134,7 +134,8 @@ export const LISTINGS_LANGUAGES = [
 
 /** the environment's args with `lang` recorded in them, preserving every other option */
 export function argsWithLanguage(env: string, args: string, lang: string): string {
-	if (/^fence$/i.test(env)) return lang.toLowerCase(); // markdown/typst info string
+	// markdown/typst info string: the language is its first word, anything after it stays
+	if (/^fence$/i.test(env)) return args.trim() ? args.trim().replace(/^\S+/, lang.toLowerCase()) : lang.toLowerCase();
 	if (/^minted$/i.test(env)) {
 		const opts = args.match(/^\s*(\[[^\]]*\])/)?.[1] ?? '';
 		return `${opts}{${lang.toLowerCase()}}`;

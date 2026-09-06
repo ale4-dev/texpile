@@ -36,9 +36,11 @@ export type SuggestionBoxOptions = {
 
 let currentCleanup: (() => void) | null = null;
 
-// the lib allows { value } objects in replacements; harper hands us plain strings, normalize anyway
+// the lib allows { value } objects in replacements; harper hands us plain strings, normalize anyway.
+// a word too far from anything known comes with no list at all, and the box still has to open
+// for it: ignore and add-to-dictionary are what it is there for
 function normalizeProblem(p: ProofreadProblem): Problem {
-	return { ...p, replacements: p.replacements.map((r) => (typeof r === 'string' ? r : r.value)) };
+	return { ...p, replacements: (p.replacements ?? []).map((r) => (typeof r === 'string' ? r : r.value)) };
 }
 
 export function createHarperSuggestionBox(options: Parameters<CreateSuggestionBox>[0]): { destroy: () => void } {

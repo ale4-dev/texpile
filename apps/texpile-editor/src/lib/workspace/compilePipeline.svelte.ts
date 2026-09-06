@@ -3,6 +3,7 @@
 // WorkspaceView wires the deps.
 import { compileLog, rebaseLogFile } from '$lib/stores/compileLogStore';
 import { parseCompileDiagnosticsInWorker } from '$lib/compileLog/parseInWorker';
+import { remapDraftBodyFile } from '$lib/compileLog/draftBodyRemap';
 import { pdfStore } from '$lib/stores/pdfStore';
 import { projectIntelStore } from '$lib/stores/projectIntel';
 import { settings } from '$lib/settings';
@@ -262,6 +263,7 @@ export class CompilePipeline {
 		if (root && base && !samePath(base, root)) {
 			for (const e of parsed.entries) if (e.file) e.file = rebaseLogFile(e.file, base, root);
 		}
+		if (root && mainFile.current) remapDraftBodyFile(parsed.entries, relFromRoot(mainFile.current, root));
 		// bib warnings name a key ("empty journal in Smith2020"); projectIntel knows every
 		// entry's exact line, so point the row at it (LW resolves these via its citation cache)
 		const bibEntries = projectIntelStore.current.bibEntries;

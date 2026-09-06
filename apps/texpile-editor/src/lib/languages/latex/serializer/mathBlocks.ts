@@ -22,11 +22,12 @@ export function hasDisplayEnvironment(content: string): boolean {
 	return DISPLAY_ENVIRONMENTS.some((env) => t.startsWith(`\\begin{${env}}`));
 }
 
-export function blockMath(content: string, opts: { numbered: boolean; label?: string }): string {
+export function blockMath(content: string, opts: { numbered: boolean; label?: string; starredEnv?: boolean }): string {
 	const processed = content.trim();
 	if (hasDisplayEnvironment(processed)) return processed + '\n';
 	if (opts.numbered && opts.label) return `\\begin{equation}\\label{${opts.label}}\n${processed}\n\\end{equation}\n`;
 	if (opts.numbered) return `\\begin{equation}\n${processed}\n\\end{equation}\n`;
+	if (opts.starredEnv) return `\\begin{equation*}\n${processed}\n\\end{equation*}\n`;
 	return `\\[\n${processed}\n\\]\n`;
 }
 

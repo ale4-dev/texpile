@@ -37,6 +37,7 @@ export type ShortcutDeps = {
 	isCompiling(): boolean;
 	runCompile(): void;
 	stopCompile(): void;
+	openPreferences(): void;
 };
 
 export function createKeydownHandler(deps: ShortcutDeps): (e: KeyboardEvent) => void {
@@ -49,6 +50,10 @@ export function createKeydownHandler(deps: ShortcutDeps): (e: KeyboardEvent) => 
 			// (deleted on disk) still has its tab focused while the document buffer holds no path
 			const path = activeFilePath.current;
 			if (path) deps.closeTab({ path, compare: activeCompare.current ?? undefined });
+		} else if (mod && !e.shiftKey && !e.altKey && e.key === ',') {
+			// the desktop convention; macOS also has it as a native accelerator (windowChrome.ts)
+			e.preventDefault();
+			deps.openPreferences();
 		} else if (e.ctrlKey && e.key === 'Tab') {
 			e.preventDefault();
 			// cycle by tab KEY, so a file and a comparison of it are two stops rather than one

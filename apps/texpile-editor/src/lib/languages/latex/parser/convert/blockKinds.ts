@@ -2,7 +2,8 @@
 import type { Node, Macro } from '@unified-latex/unified-latex-types';
 import { type RawStamped } from '../ast-utils';
 
-export function isBlockNode(node: Node): boolean {
+/** inParagraph: prose is already buffered, so the arity guess below must not split it */
+export function isBlockNode(node: Node, inParagraph = false): boolean {
 	if (node.type === 'environment') return true;
 	if (node.type === 'verbatim') return true;
 	if (node.type === 'mathenv') return true;
@@ -50,8 +51,10 @@ export function isBlockNode(node: Node): boolean {
 		]);
 		if (blockMacros.has(macro.content)) return true;
 
-		// heuristic: 3+ mandatory args is likely a preamble/config command, treat as a raw block
-		if (macro.args) {
+		// heuristic: 3+ mandatory args is likely a preamble/config command, treat as a raw block.
+		// only at a block boundary: mid-sentence (\iftoggle{a}{b}{c}, \resizebox, \SIrange) it is
+		// an inline chip, or the paragraph splits in three with a \par between
+		if (macro.args && !inParagraph) {
 			const mandatoryArgs = macro.args.filter((arg) => arg.openMark === '{' && arg.closeMark === '}');
 			if (mandatoryArgs.length >= 3) return true;
 		}

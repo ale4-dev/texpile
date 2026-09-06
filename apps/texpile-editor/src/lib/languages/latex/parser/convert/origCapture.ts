@@ -1,6 +1,6 @@
 // verbatim `orig` capture: source extents, raw-slice recovery, and the capture state the
 // top-level block pass consumes (armed by latexToProseMirror)
-import type { Node, Macro } from '@unified-latex/unified-latex-types';
+import type { Node, Macro, Environment } from '@unified-latex/unified-latex-types';
 import { type PmNode } from '../builders';
 
 export type CaptureHolder = {
@@ -129,21 +129,76 @@ export function repairArgTail(node: Node, src: string, endIn: number): number | 
 	return end;
 }
 
+/**
+ * repairArgTail knows the OUTER macro's closers only: an argument that ends in a nested call
+ * (`\section{Proof of Theorem~\ref{thm:main}}`) has that call's closer sitting where the outer
+ * one is expected, and the span ends one brace short. Consume closers until the slice balances;
+ * a `}` right after an unbalanced slice can only close something the slice opened.
+ */
+function closeUnbalanced(src: string, start: number, end: number): number {
+	let debt = braceDebt(src.slice(start, end));
+	let closed = end;
+	while (debt > 0) {
+		let k = closed;
+		while (k < src.length && /[ \t\r\n]/.test(src[k])) k++;
+		if (src[k] !== '}') break;
+		closed = k + 1;
+		debt--;
+	}
+	return closed;
+}
+
+/** Offset just past `\begin{name}` for an environment with a trustworthy position, else null. */
+export function envBeginEnd(env: Environment): number | null {
+	const src = capture.rawSource;
+	const start = (env as { position?: { start?: { offset?: number } } }).position?.start?.offset;
+	if (!src || typeof start !== 'number' || !src.startsWith('\\begin', start)) return null;
+	const close = src.indexOf('}', start);
+	return close < 0 ? null : close + 1;
+}
+
+/**
+ * The environment's attached arguments as the source wrote them. printRaw normalizes what it
+ * prints (`\alph*` comes back as `\alph{*}`, which enumitem rejects), so the bytes are sliced
+ * instead: as many bracket or brace groups after `\begin{name}` as the parser attached.
+ */
+export function envArgsRawSource(env: Environment): string | null {
+	const src = capture.rawSource;
+	const begin = envBeginEnd(env);
+	if (!src || begin == null) return null;
+	let end = begin;
+	for (let k = 0; k < (env.args?.length ?? 0); k++) {
+		let p = end;
+		while (p < src.length && /[ \t\r\n]/.test(src[p])) p++;
+		const open = src[p];
+		if (open !== '[' && open !== '{') break;
+		const close = open === '[' ? ']' : '}';
+		let depth = 0;
+		let q = p;
+		for (; q < src.length; q++) {
+			if (src[q] === '\\') {
+				q++;
+				continue;
+			}
+			if (src[q] === open) depth++;
+			else if (src[q] === close && --depth === 0) break;
+		}
+		if (q >= src.length) return null;
+		end = q + 1;
+	}
+	return src.slice(begin, end).trim();
+}
+
 /** The node's exact original source slice, or null when no trustworthy span exists. */
 export function nodeRawSource(node: Node): string | null {
 	if (!capture.rawSource) return null;
 	const ext = nodeExtent(node);
 	if (!ext || !Number.isFinite(ext.min) || ext.min < 0 || ext.max > capture.rawSource.length || ext.min >= ext.max) return null;
 
-	let end: number | null = ext.max;
+	let end: number = ext.max;
 	const hasArgs = !!(node as Macro).args?.length;
-	if (hasArgs) {
-		end = repairArgTail(node, capture.rawSource, ext.max);
-		// the repair can be unnecessary (positions already covered the closers); accept the raw
-		// extent instead iff it is brace-balanced on its own.
-		if (end == null && braceDebt(capture.rawSource.slice(ext.min, ext.max)) === 0) end = ext.max;
-		if (end == null) return null;
-	}
+	if (hasArgs) end = repairArgTail(node, capture.rawSource, ext.max) ?? ext.max;
+	end = closeUnbalanced(capture.rawSource, ext.min, end);
 	if (end > capture.rawSource.length) return null;
 
 	const slice = capture.rawSource.slice(ext.min, end);
@@ -183,8 +238,9 @@ export function mathBodyRawSource(node: Node, opens: string[], closes: string[])
  * whenever the next block has no verbatim slice to re-join `pre` across.
  */
 export function repairExtentTail(node: Node, ext: { min: number; max: number } | null): { min: number; max: number } | null {
-	if (!ext || !capture.rawSource || !Number.isFinite(ext.max)) return ext;
+	if (!ext || !capture.rawSource || !Number.isFinite(ext.max) || !Number.isFinite(ext.min)) return ext;
 	if (!(node as Macro).args?.length) return ext;
-	const end = repairArgTail(node, capture.rawSource, ext.max);
-	return end != null && end > ext.max ? { min: ext.min, max: end } : ext;
+	let end = repairArgTail(node, capture.rawSource, ext.max) ?? ext.max;
+	end = closeUnbalanced(capture.rawSource, ext.min, end);
+	return end > ext.max ? { min: ext.min, max: end } : ext;
 }

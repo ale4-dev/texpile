@@ -6,7 +6,7 @@ import { getTextContent, getMacroFirstArg } from '../ast-utils';
 import { buildNode, textNode, nodeToLatexString, type PmNode, type ConversionContext, type ConversionOptions } from '../builders';
 import { convertNodesToInline } from './inlineConvert';
 import { nodeRawSource } from './origCapture';
-import { macroHandlers } from './macroHandlers';
+import { macroHandlers, macroHasStar } from './macroHandlers';
 
 export const FIG_IMG_SLOT = '\\TexpileFigImageSlot';
 export const FIG_CAP_SLOT = '\\TexpileFigCaptionSlot';
@@ -60,10 +60,12 @@ export function createFigureWrapper(env: Environment, ctx: ConversionContext, _o
 			const label = mand[0] ? getTextContent(mand[0].content) : null;
 			const figureTemplate = nodeToLatexString(slotifyFigure(env));
 			// bareOriginal is about a STANDALONE call: false here, this one came from a real figure
+			// \caption* is an unnumbered caption, the same thing the editor's numbered toggle means
+			const numbered = captionMacro ? !macroHasStar(captionMacro) : true;
 			return [
 				buildNode(
 					'image',
-					{ ...imageAttrs, label, figureTemplate, captionOpt, bareOriginal: false },
+					{ ...imageAttrs, label, figureTemplate, captionOpt, numbered, bareOriginal: false },
 					captionNodes.length > 0 ? captionNodes : null
 				)
 			];

@@ -10,7 +10,6 @@ import { serializeMarkdownFile } from '$lib/languages/markdown/visual/roundtrip'
 import { serializeTypstFile } from '$lib/languages/typst/visual/roundtrip';
 import { replacePreambleFrontmatter } from '$lib/editor/visual/extensions/raw-latex/frontmatterView';
 import { basename, relativeTo, type Eol } from '$lib/workspace/fileSystem';
-import { sourceEncodingError } from '$lib/workspace/sourceEncoding';
 import { citationVariantsFor } from '$lib/languages/latex/visual/extensions/citation/citationVariantsFor';
 import { templateFeaturesStore } from '$lib/stores/editorStore';
 import type { Node as PMNode } from 'prosemirror-model';
@@ -86,6 +85,9 @@ export class DocumentBuffer {
 	lastDoc = $state<PMNode | null>(null);
 	/** the texSource `lastDoc` serializes to */
 	lastDocSource: string | null = null;
+	/** a re-parse of texSource is in flight: the doc on screen predates it, so its transactions
+	 * (node views settling on mount, a keystroke) must not serialize over the newer text */
+	visualStale = false;
 
 	eol = $state<Eol>('\n');
 	/** the bytes we believe are on disk, for conflict detection and dirty tracking */
@@ -121,6 +123,7 @@ export class DocumentBuffer {
 		this.visualDoc = null;
 		this.lastDoc = null;
 		this.lastDocSource = null;
+		this.visualStale = false;
 		this.rawContent = '';
 		this.path = null;
 		this.encodingIssue = null;
@@ -128,21 +131,22 @@ export class DocumentBuffer {
 	}
 
 	/** install a .tex file's text; the visual doc is cleared and re-parsed separately */
-	openTex(path: string, text: string, eol: Eol, issue?: string): void {
+	openTex(path: string, text: string, eol: Eol, issue: string | null = null): void {
 		this.eol = eol;
 		this.texSource = text;
 		this.docMeta = null;
 		this.visualDoc = null;
 		this.lastDoc = null;
 		this.lastDocSource = null;
+		this.visualStale = false;
 		this.path = path;
 		this.diskBaseline = text;
-		this.encodingIssue = issue ?? sourceEncodingError(text);
+		this.encodingIssue = issue;
 		this.binaryWarning = null;
 	}
 
 	/** install a non-.tex text file (.bib and friends), which has no visual representation */
-	openRaw(path: string, text: string, eol: Eol, issue?: string): void {
+	openRaw(path: string, text: string, eol: Eol, issue: string | null = null): void {
 		this.eol = eol;
 		this.rawContent = text;
 		this.texSource = '';
@@ -150,9 +154,10 @@ export class DocumentBuffer {
 		this.visualDoc = null;
 		this.lastDoc = null;
 		this.lastDocSource = null;
+		this.visualStale = false;
 		this.path = path;
 		this.diskBaseline = text;
-		this.encodingIssue = issue ?? sourceEncodingError(text);
+		this.encodingIssue = issue;
 		this.binaryWarning = null;
 	}
 
@@ -179,6 +184,7 @@ export class DocumentBuffer {
 		this.visualDoc = parsed.doc;
 		this.lastDoc = parsed.doc;
 		this.lastDocSource = source;
+		this.visualStale = false;
 		// the citation menu offers what this document's packages define, so it cannot put an
 		// undefined command in the source. Merged, not replaced: the other features have owners.
 		templateFeaturesStore.current = {
@@ -189,7 +195,7 @@ export class DocumentBuffer {
 
 	/** a visual edit serializes straight into texSource, then saves */
 	onVisualChange(doc: PMNode): void {
-		if (!this.docMeta) return;
+		if (!this.docMeta || this.visualStale) return;
 		this.lastDoc = doc;
 		this.texSource = this.serializeFile(doc);
 		this.lastDocSource = this.texSource;

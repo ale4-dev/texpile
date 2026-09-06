@@ -8,14 +8,21 @@ import {
 	textNode,
 	textNodes,
 	createDefaultContext,
+	realMarks,
 	type PmNode,
 	type ConversionContext,
 	type ConversionOptions
 } from '../builders';
 import { convertNodesToInline } from './inlineConvert';
 import { plainArgText } from './plainArgText';
+import { nodeRawSource } from './origCapture';
 
 export type MacroHandler = (macro: Macro, ctx: ConversionContext) => PmNode[] | null;
+
+/** a chip under \textbf{...} has no text child to carry the mark, so it wears it itself */
+function markChip(chip: PmNode, ctx: ConversionContext): PmNode {
+	return ctx.marks.length > 0 ? chip.mark(realMarks(ctx.marks)) : chip;
+}
 
 export const macroHandlers: Record<string, MacroHandler> = {
 	textbf: (macro, ctx) => {
@@ -71,7 +78,9 @@ export const macroHandlers: Record<string, MacroHandler> = {
 		if (mandatoryArgs.length < 2) return null;
 		const color = getTextContent(mandatoryArgs[0].content);
 		const content = mandatoryArgs[1].content;
-		const newCtx = { ...ctx, marks: [...ctx.marks, { type: 'textcolor', attrs: { color } }] };
+		const modelArg = macro.args.find((arg) => arg.openMark === '[');
+		const model = modelArg ? printRaw(modelArg.content) : null;
+		const newCtx = { ...ctx, marks: [...ctx.marks, { type: 'textcolor', attrs: { color, model } }] };
 		return convertNodesToInline(content, newCtx);
 	},
 	colorbox: (macro, ctx) => {
@@ -92,8 +101,11 @@ export const macroHandlers: Record<string, MacroHandler> = {
 	href: (macro, ctx) => {
 		const mandatoryArgs = macro.args?.filter((arg) => arg.openMark === '{') || [];
 		const href = mandatoryArgs[0] ? getTextContent(mandatoryArgs[0].content) : '';
-		const text = mandatoryArgs[1] ? getTextContent(mandatoryArgs[1].content) : href;
-		return textNodes(text, [...ctx.marks, { type: 'link', attrs: { href, title: null } }]);
+		const marks = [...ctx.marks, { type: 'link', attrs: { href, title: null } }];
+		// the text is ordinary inline LaTeX: converted like any other, so \_ comes back as \_
+		// rather than growing an escape on every save
+		if (mandatoryArgs[1]) return convertNodesToInline(mandatoryArgs[1].content, { ...ctx, marks });
+		return textNodes(href, marks);
 	},
 
 	section: (macro) => createHeading(macro, 1),
@@ -101,16 +113,19 @@ export const macroHandlers: Record<string, MacroHandler> = {
 	subsubsection: (macro) => createHeading(macro, 3),
 	paragraph: (macro) => createHeading(macro, 4),
 	subparagraph: (macro) => createHeading(macro, 5),
-	chapter: (macro) => createHeading(macro, 1),
-	part: (macro) => createHeading(macro, 1),
+	chapter: (macro) => createHeading(macro, 1, 'chapter'),
+	part: (macro) => createHeading(macro, 1, 'part'),
 
 	// special characters all pass ctx.marks through: they're ordinary inline content, often
 	// inside \textbf{...} (\textbf{90.1\%}); without this the enclosing mark silently dropped
 	// for exactly that token.
-	LaTeX: (_m, ctx) => textNodes('LaTeX', ctx.marks.length > 0 ? ctx.marks : null),
-	TeX: (_m, ctx) => textNodes('TeX', ctx.marks.length > 0 ? ctx.marks : null),
-	'\\': () => [buildNode('hard_break', { lineBreak: true })], // serializes back to \\
-	newline: () => [buildNode('hard_break', { lineBreak: true })],
+	// the logos stay chips: as plain text they came back as the words, not the logos
+	LaTeX: (macro, ctx) => [markChip(buildNode('inline_latex', null, [textNode(nodeRawSource(macro) ?? printRaw(macro))]), ctx)],
+	TeX: (macro, ctx) => [markChip(buildNode('inline_latex', null, [textNode(nodeRawSource(macro) ?? printRaw(macro))]), ctx)],
+	// suffix keeps \\* and \\[2ex] as written; command tells \newline from \\ (in a p{} cell
+	// \\ ends the row, \newline does not)
+	'\\': (macro) => [buildNode('hard_break', { lineBreak: true, suffix: macro.args?.length ? printRaw(macro.args) : '' })],
+	newline: () => [buildNode('hard_break', { lineBreak: true, command: 'newline' })],
 	'%': (_m, ctx) => textNodes('%', ctx.marks.length > 0 ? ctx.marks : null),
 	'&': (_m, ctx) => textNodes('&', ctx.marks.length > 0 ? ctx.marks : null),
 	$: (_m, ctx) => textNodes('$', ctx.marks.length > 0 ? ctx.marks : null),
@@ -241,12 +256,15 @@ export function macroHasStar(macro: Macro): boolean {
 	);
 }
 
-export function createHeading(macro: Macro, level: number): PmNode[] {
+export function createHeading(macro: Macro, level: number, command: string | null = null): PmNode[] {
 	const content = getMacroFirstArg(macro);
 	const textNodes = convertNodesToInline(content, createDefaultContext());
 	// starred sectioning commands (\section*) are unnumbered
 	const numbered = !macroHasStar(macro);
-	return [buildNode('heading', { level, numbered }, textNodes)];
+	// \section[short]{long}: the short title (for the contents and running head) rides along raw
+	const shortArg = macro.args?.find((arg) => arg.openMark === '[');
+	const shortTitle = shortArg ? printRaw(shortArg.content) : null;
+	return [buildNode('heading', { level, numbered, command, shortTitle }, textNodes)];
 }
 
 export function createIncludeDoc(macro: Macro): PmNode[] | null {

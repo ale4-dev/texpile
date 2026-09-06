@@ -2,6 +2,7 @@
 import type { Node, Root, Macro, Environment } from '@unified-latex/unified-latex-types';
 // don't use toString from unified-latex-util-to-string: it uses Prettier, which is async in v3
 import { parseLatex } from './parser';
+import { maskUrlSpecials, unmaskUrlSpecials } from './urlMask';
 import type { ParseOptions } from './types';
 import { listNewcommands } from '@unified-latex/unified-latex-util-macros';
 import { attachMacroArgs } from '@unified-latex/unified-latex-util-arguments';
@@ -145,10 +146,29 @@ export function convertNodesToBlocks(nodes: Node[], options: ConversionOptions):
 	// the literally-previous AST node, for groupAfterRawChip: a whitespace node in between lands
 	// here too and correctly disqualifies adjacency.
 	let prevNode: Node | null = null;
-	for (const node of nodes) {
-		if (isBlockNode(node)) {
+	for (let ni = 0; ni < nodes.length; ni++) {
+		const node = nodes[ni];
+		if (isBlockNode(node, currentParagraphContent.length > 0)) {
+			// a display with prose buffered before it and no blank line sits inside that paragraph;
+			// whether the paragraph goes on after it is decided by what follows before a blank line
+			const display = node.type === 'displaymath' || node.type === 'mathenv';
+			const inParagraph = display && currentParagraphContent.length > 0;
+			let continuesAfter = false;
+			if (display) {
+				for (let k = ni + 1; k < nodes.length; k++) {
+					const nx = nodes[k];
+					if (nx.type === 'whitespace' || nx.type === 'comment') continue;
+					continuesAfter = nx.type !== 'parbreak' && !isBlockNode(nx, true);
+					break;
+				}
+			}
 			flushParagraph();
-			const blockNodes = convertNodeToBlock(node, ctx, options);
+			let blockNodes = convertNodeToBlock(node, ctx, options);
+			if (blockNodes && display && (inParagraph || continuesAfter)) {
+				blockNodes = blockNodes.map((b) =>
+					b.type.name === 'block_math' ? b.type.create({ ...b.attrs, inParagraph, continuesAfter }, b.content, b.marks) : b
+				);
+			}
 			if (blockNodes) {
 				const rawText = (node as { _raw?: unknown })._raw;
 				if (typeof rawText === 'string') {
@@ -244,7 +264,8 @@ function extractContent(ast: Root): Node[] {
 export function latexToProseMirror(latex: string, options: ConversionOptions = {}): { doc: PmNode; ast: Root } {
 	const parseOptions: ParseOptions = { macros: MACRO_SIGNATURES, environments: ENV_SIGNATURES };
 
-	const ast = parseLatex(latex, parseOptions);
+	const ast = parseLatex(maskUrlSpecials(latex), parseOptions);
+	unmaskUrlSpecials(ast);
 	// the sync unified-latex parse above is the single longest step and reports nothing while it
 	// runs; everything after it is ours, so this is the one honest boundary to announce
 	options.onPhase?.('building');

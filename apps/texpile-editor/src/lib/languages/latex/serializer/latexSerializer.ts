@@ -83,6 +83,43 @@ export function renderChildren(node: Node, inTableCell: boolean): string {
 	return out;
 }
 
+/**
+ * Two lists the source wrote as separate environments stay separate: the verbatim layer emits a
+ * pristine neighbour with its own \begin and \end, so coalescing a regenerated one into it left
+ * an unbalanced environment. Editor-made list nodes carry no source group and still coalesce.
+ */
+function sameSourceList(a: Node, b: Node): boolean {
+	const ga = (a.attrs.orig as { group?: number | null } | null)?.group;
+	const gb = (b.attrs.orig as { group?: number | null } | null)?.group;
+	return ga == null || gb == null || ga === gb;
+}
+
+/** the environment name the first node of this run of list nodes carries, if any */
+function runEnvName(node: Node, ctx: Ctx): string | null {
+	if (!ctx.parent) return typeof node.attrs.envName === 'string' ? node.attrs.envName : null;
+	const kind = node.attrs.kind;
+	for (let i = ctx.index; i >= 0; i--) {
+		const n = ctx.parent.child(i);
+		if (n.type.name !== 'list' || n.attrs.kind !== kind || (i < ctx.index && !sameSourceList(n, ctx.parent.child(i + 1)))) break;
+		if (typeof n.attrs.envName === 'string' && n.attrs.envName) return n.attrs.envName;
+	}
+	return null;
+}
+
+/** the item's first paragraph without the bold label text createList put in front */
+function withoutLeadingLabel(item: Node, label: string): Node {
+	if (item.type.name !== 'paragraph' || item.childCount === 0) return item;
+	const first = item.child(0);
+	const plain = label.replace(/\\[a-zA-Z@]+\s*|[{}]/g, '').trim();
+	if (!first.isText || !first.marks.some((m) => m.type.name === 'strong') || (first.text ?? '').trim() !== plain) return item;
+	let rest = item.content.cut(first.nodeSize);
+	const second = rest.firstChild;
+	if (second?.isText && second.text && /^\s+$/.test(second.text)) rest = rest.cut(second.nodeSize);
+	else if (second?.isText && second.text && /^\s/.test(second.text))
+		rest = rest.replaceChild(0, second.type.schema.text(second.text.replace(/^\s+/, ''), second.marks));
+	return item.copy(rest);
+}
+
 const HEADING_CMD: Record<number, string> = {
 	1: '\\section',
 	2: '\\subsection',
@@ -188,17 +225,29 @@ const NODES: Record<string, NodeHandler> = {
 		const content = rawContent.replace(/^\s+|\s+$/g, '');
 		// first-line indent override (Tab cycles it): 'auto' emits nothing
 		const indent = node.attrs.indent === 'indent' ? '\\indent ' : node.attrs.indent === 'noindent' ? '\\noindent ' : '';
-		const before = prevSibling(ctx)?.type.name === 'heading' ? '' : '\n';
-		const after = nextSibling(ctx)?.type.name === 'heading' ? '\n' : '';
+		const prev = prevSibling(ctx);
+		const next = nextSibling(ctx);
+		// a display the source kept inside this paragraph: no \par before it and no blank line
+		// after it, or the continuation becomes a new, indented paragraph with space above
+		const runsIntoDisplay = next?.type.name === 'block_math' && next.attrs.inParagraph === true;
+		const continuesDisplay = prev?.type.name === 'block_math' && prev.attrs.continuesAfter === true;
+		const before = prev?.type.name === 'heading' || continuesDisplay ? '' : '\n';
+		const after = next?.type.name === 'heading' ? '\n' : '';
+		if (runsIntoDisplay) return before + indent + content + '\n';
 		return before + indent + content + ' \\par\n' + after;
 	},
 
 	heading(node) {
 		if (node.childCount === 0) return '';
 		const text = renderChildren(node, false);
-		const cmd = HEADING_CMD[Number(node.attrs.level ?? 1)] ?? '\\section';
+		// \chapter and \part have no level of their own in the editor; the source command is kept
+		const cmd =
+			typeof node.attrs.command === 'string' && node.attrs.command
+				? `\\${node.attrs.command}`
+				: (HEADING_CMD[Number(node.attrs.level ?? 1)] ?? '\\section');
 		const star = node.attrs.numbered === false ? '*' : '';
-		return `${cmd}${star}{${text}}\n`;
+		const short = typeof node.attrs.shortTitle === 'string' && node.attrs.shortTitle ? `[${node.attrs.shortTitle}]` : '';
+		return `${cmd}${star}${short}{${text}}\n`;
 	},
 
 	text(node) {
@@ -207,7 +256,9 @@ const NODES: Record<string, NodeHandler> = {
 
 	hard_break(node) {
 		// legacy lineBreak:false (a blank-line gap) is a semantic no-op: emit nothing
-		return node.attrs?.lineBreak === false ? '' : '\\\\\n';
+		if (node.attrs?.lineBreak === false) return '';
+		if (node.attrs?.command === 'newline') return '\\newline\n';
+		return `\\\\${typeof node.attrs?.suffix === 'string' ? node.attrs.suffix : ''}\n`;
 	},
 
 	block_math(node) {
@@ -219,7 +270,7 @@ const NODES: Record<string, NodeHandler> = {
 		if (environment) {
 			return alignEnvironment(content, { environment, lineLabels, label: label || undefined, numbered });
 		}
-		return blockMath(content, { numbered, label: label || undefined });
+		return blockMath(content, { numbered, label: label || undefined, starredEnv: node.attrs.starredEnv === true });
 	},
 
 	// verbatim, no escaping. env/args remember the source environment and options so
@@ -231,7 +282,10 @@ const NODES: Record<string, NodeHandler> = {
 		return `\\begin{${env}}${args}\n${node.textContent}\n\\end{${env}}\n\n`;
 	},
 
-	blockquote: (node) => `\\begin{quote}\n${renderChildren(node, false)}\n\\end{quote}\n`,
+	blockquote: (node) => {
+		const env = node.attrs.env === 'quotation' ? 'quotation' : 'quote';
+		return `\\begin{${env}}\n${renderChildren(node, false)}\n\\end{${env}}\n`;
+	},
 
 	raw_latex: (node) => node.textContent + '\n',
 
@@ -265,8 +319,11 @@ const NODES: Record<string, NodeHandler> = {
 		const pre = node.attrs.prenote ? String(node.attrs.prenote) : '';
 		const post = node.attrs.postnote ? String(node.attrs.postnote) : '';
 		const NO_NOTES = new Set(['supercite', 'citeauthor', 'citeyear']); // don't take [pre][post]
-		if ((pre || post) && !NO_NOTES.has(variant)) return `\\${variant}[${pre}][${post}]{${key}}`;
-		return `\\${variant}{${key}}`;
+		if (NO_NOTES.has(variant) || (!pre && !post)) return `\\${variant}{${key}}`;
+		// one bracket is the postnote for natbib, biblatex and plain \cite alike; only a prenote
+		// needs the two-bracket form, which plain LaTeX's \cite does not understand
+		if (!pre) return `\\${variant}[${post}]{${key}}`;
+		return `\\${variant}[${pre}][${post}]{${key}}`;
 	},
 
 	// preserve the original reference command so the output matches the user's preamble
@@ -302,8 +359,9 @@ const NODES: Record<string, NodeHandler> = {
 
 		// a \includegraphics that was standalone in the source round-trips bare: synthesizing a
 		// \begin{figure} is often a compile error (nested floats), and this image never had a
-		// \caption/\label to begin with. see the bareOriginal attr in schema.ts.
-		if (node.attrs.bareOriginal) return graphics + '\n';
+		// \caption/\label to begin with. see the bareOriginal attr in schema.ts. A caption typed
+		// in the editor since needs a float to live in, so that one does get the figure below
+		if (node.attrs.bareOriginal && !(showCaption && capContent.trim())) return graphics + '\n';
 
 		// editor-created image: a standard centered figure
 		const env = node.attrs.spanning === true ? 'figure*' : 'figure';
@@ -315,11 +373,22 @@ const NODES: Record<string, NodeHandler> = {
 	// prosemirror-flat-list: each `list` node is ONE item; same-kind siblings coalesce.
 	list(node, ctx) {
 		const kind = String(node.attrs.kind ?? 'bullet');
-		const env = kind === 'ordered' ? 'enumerate' : 'itemize';
+		const prev = prevSibling(ctx);
+		const next = nextSibling(ctx);
+		const prevSame = prev?.type.name === 'list' && prev.attrs.kind === kind && sameSourceList(prev, node);
+		const nextSame = next?.type.name === 'list' && next.attrs.kind === kind && sameSourceList(node, next);
+		// a description environment is remembered on the run's first node; the rest inherit it
+		const envName = runEnvName(node, ctx);
+		const env = envName ?? (kind === 'ordered' ? 'enumerate' : 'itemize');
+		// \item[label] as written. the editor shows the label as leading bold text (createList);
+		// that text is the label, so it is not emitted twice
+		const itemLabel = typeof node.attrs.itemLabel === 'string' ? node.attrs.itemLabel : null;
+		const itemCmd = itemLabel != null ? `\\item[${itemLabel}]` : '\\item';
 
 		const parts: string[] = [];
 		node.forEach((item, _offset, i) => {
-			const inner = serializeNode(item, { parent: node, index: i, isLastChild: i === node.childCount - 1, inTableCell: ctx.inTableCell });
+			const shown = i === 0 && itemLabel != null ? withoutLeadingLabel(item, itemLabel) : item;
+			const inner = serializeNode(shown, { parent: node, index: i, isLastChild: i === node.childCount - 1, inTableCell: ctx.inTableCell });
 			if (item.type.name === 'list') {
 				// only the FIRST of a run of same-kind sub-lists opens \item[]; the rest coalesce
 				// into the same nested env (prevSame means no \begin), and another \item[] would
@@ -327,18 +396,15 @@ const NODES: Record<string, NodeHandler> = {
 				const prevChild = i > 0 ? node.child(i - 1) : null;
 				const continues = prevChild?.type.name === 'list' && prevChild.attrs.kind === item.attrs.kind;
 				parts.push(continues ? `\n${inner}` : `\\item[] ${inner}`);
-			} else if (i === 0) parts.push(`\\item ${inner}`);
+			} else if (i === 0) parts.push(`${itemCmd} ${inner}`);
 			else parts.push('\n' + inner); // continuation block within the same item
 		});
 
-		const prev = prevSibling(ctx);
-		const next = nextSibling(ctx);
-		const prevSame = prev?.type.name === 'list' && prev.attrs.kind === kind;
-		const nextSame = next?.type.name === 'list' && next.attrs.kind === kind;
-
 		let out = '';
 		if (!prevSame) {
-			out += `\n\\begin{${env}}\n`;
+			// enumitem-style options the source gave the environment; see createList
+			const envArgs = typeof node.attrs.envArgs === 'string' ? node.attrs.envArgs : '';
+			out += `\n\\begin{${env}}${envArgs}\n`;
 			// raw setup content that preceded the first \item in the source; see createList
 			const preBody = typeof node.attrs.preBody === 'string' ? node.attrs.preBody : '';
 			if (preBody) out += preBody + '\n';

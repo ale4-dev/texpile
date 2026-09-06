@@ -27,8 +27,11 @@ export function parseTypstFile(source: string, _projectMacros = '', onPhase?: (p
 }
 
 /** Serializes back to .typ (a protected tail reproduces the exact original trailing bytes,
- *  including a missing final newline). */
+ *  including a missing final newline). A file that opened with a BOM keeps it. */
 export function serializeTypstFile(_parsed: Pick<ParsedLatexFile, 'preamble' | 'postamble' | 'hadDocumentEnv'>, doc: Node): string {
 	const { text: body, tailProtected } = serializeToTypstDetailed(doc);
-	return body + (tailProtected ? '' : '\n');
+	const file = doc.attrs.typFile as { bom?: boolean; eol?: string } | null;
+	const eol = file?.eol === '\r\n' ? '\r\n' : '\n';
+	const withTail = body + (tailProtected ? '' : eol);
+	return file?.bom && !withTail.startsWith('\uFEFF') ? '\uFEFF' + withTail : withTail;
 }

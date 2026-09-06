@@ -110,11 +110,11 @@ export type TableParts = {
 	align: string | null;
 	/** every other named argument (stroke:, fill:, gutter:), verbatim and in source order */
 	extraArgs: string[];
-	header: PmNode[] | null;
 	/** the table.hline() calls sitting above row i, verbatim */
 	rowRules: string[][];
 	/** the table.hline() calls after the last row */
 	bottomRules: string[];
+	/** header rows hold table_header cells, wherever table.header(...) sat in the stream */
 	rows: PmNode[][];
 };
 
@@ -165,48 +165,15 @@ export function tableParts(call: SyntaxNode, src: string): TableParts | null {
 		}
 	}
 
-	// Occupancy carried into the BODY grid. Seeded during header parsing because a header cell may
-	// have a rowspan reaching down into the body (merging a header cell with the one below it makes
-	// exactly that), and the body walk has to know those columns are already taken. Body row 0 is
-	// grid row 1, so a header rowspan of R covers body rows 0..R-2.
+	// Walk the flat cell stream into a grid. `covered` marks the positions a rowspan from an
+	// EARLIER row owns - within-row colspans are handled by advancing the cursor instead, so a
+	// row's width stays sum(colspan) + covered, with nothing counted twice. `table.header(...)`
+	// is walked through the same grid: it may sit at any row boundary and span several rows
+	// (a merged header cell may also reach down into the body), and its cells are header cells.
 	const covered = new Set<string>();
 	function at(rr: number, cc: number) {
 		return `${rr},${cc}`;
 	}
-
-	let header: PmNode[] | null = null;
-	const h = real[idx];
-	if (h && tableMethod(h, src) === 'table.header') {
-		const hArgs = h.firstChild!.nextSibling;
-		if (!hArgs || hArgs.name !== 'Args') return null;
-		header = [];
-		// width, not cell count: a merged header cell covers several columns, so counting cells
-		// would pad the row out past the grid and push real cells off the end
-		let width = 0;
-		for (const cell of children(hArgs).filter((c) => !ARG_PUNCT.includes(c.name))) {
-			const method = tableMethod(cell, src);
-			if (method && method !== 'table.cell') return null;
-			const span = method === 'table.cell' ? spannedCell(cell, src, true) : null;
-			if (method === 'table.cell' && !span) return null;
-			const n = span ? span.cell : contentBlockCell(cell, src, true);
-			if (!n) return null;
-			header.push(n);
-			const colspan = span?.colspan ?? 1;
-			for (let dr = 1; dr < (span?.rowspan ?? 1); dr++) for (let dc = 0; dc < colspan; dc++) covered.add(at(dr - 1, width + dc));
-			width += colspan;
-		}
-		if (width > cols) return null;
-		while (width < cols) {
-			header.push(buildNode('table_header', null, [buildNode('paragraph')]));
-			width++;
-		}
-		idx++;
-	}
-
-	// Walk the flat cell stream into a grid. `covered` (declared above, already seeded with any
-	// header rowspans) marks the positions a rowspan from an EARLIER row owns - within-row colspans
-	// are handled by advancing the cursor instead, so a row's width stays sum(colspan) + covered,
-	// with nothing counted twice.
 	const rows: PmNode[][] = [];
 	const rowRules: string[][] = [];
 	let pending: string[] = [];
@@ -220,29 +187,26 @@ export function tableParts(call: SyntaxNode, src: string): TableParts | null {
 			c = 0;
 		}
 	}
-
-	for (; idx < real.length; idx++) {
-		const item = real[idx];
-		const method = tableMethod(item, src);
-		if (method === 'table.hline') {
-			// a rule only has a place in a row model at a row boundary
-			if (c !== 0 && c < cols) return null;
-			if (c >= cols) {
-				r++;
-				c = 0;
-			}
-			pending.push(src.slice(item.from, item.to));
-			continue;
+	/** hlines and headers only have a place in a row model at a row boundary */
+	function atRowBoundary(): boolean {
+		if (c !== 0 && c < cols) return false;
+		if (c >= cols) {
+			r++;
+			c = 0;
 		}
-		if (method && method !== 'table.cell') return null;
-		const span = method === 'table.cell' ? spannedCell(item, src, false) : null;
-		if (method === 'table.cell' && !span) return null;
-		const cell = span ? span.cell : contentBlockCell(item, src, false);
-		if (!cell) return null;
+		return true;
+	}
+	function place(item: SyntaxNode, headerCell: boolean): boolean {
+		const method = tableMethod(item, src);
+		if (method && method !== 'table.cell') return false;
+		const span = method === 'table.cell' ? spannedCell(item, src, headerCell) : null;
+		if (method === 'table.cell' && !span) return false;
+		const cell = span ? span.cell : contentBlockCell(item, src, headerCell);
+		if (!cell) return false;
 		const colspan = span?.colspan ?? 1;
 		const rowspan = span?.rowspan ?? 1;
 		advance();
-		if (c + colspan > cols) return null; // the cell overruns the declared grid
+		if (c + colspan > cols) return false; // the cell overruns the declared grid
 		while (rows.length <= r) {
 			rows.push([]);
 			rowRules.push([]);
@@ -254,8 +218,32 @@ export function tableParts(call: SyntaxNode, src: string): TableParts | null {
 		rows[r].push(cell);
 		for (let dr = 1; dr < rowspan; dr++) for (let dc = 0; dc < colspan; dc++) covered.add(at(r + dr, c + dc));
 		c += colspan;
+		return true;
 	}
-	if (rows.length === 0 && !header) return null;
+
+	for (; idx < real.length; idx++) {
+		const item = real[idx];
+		const method = tableMethod(item, src);
+		if (method === 'table.hline') {
+			if (!atRowBoundary()) return null;
+			pending.push(src.slice(item.from, item.to));
+			continue;
+		}
+		if (method === 'table.header') {
+			if (!atRowBoundary()) return null;
+			const hArgs = item.firstChild!.nextSibling;
+			if (!hArgs || hArgs.name !== 'Args') return null;
+			for (const cell of children(hArgs).filter((h) => !ARG_PUNCT.includes(h.name))) if (!place(cell, true)) return null;
+			// a short header is padded out to the grid (the editor's rows are rectangular)
+			while (c > 0 && c < cols) {
+				if (!covered.has(at(r, c))) rows[r].push(buildNode('table_header', null, [buildNode('paragraph')]));
+				c++;
+			}
+			continue;
+		}
+		if (!place(item, false)) return null;
+	}
+	if (rows.length === 0) return null;
 
 	// pad the last row so the grid stays rectangular (PM tables need it; typst tolerates it)
 	const lastRow = rows.length - 1;
@@ -267,12 +255,11 @@ export function tableParts(call: SyntaxNode, src: string): TableParts | null {
 			width++;
 		}
 	}
-	return { colspec: src.slice(value.from, value.to), align, extraArgs, header, rowRules, bottomRules: pending, rows };
+	return { colspec: src.slice(value.from, value.to), align, extraArgs, rowRules, bottomRules: pending, rows };
 }
 
 export function buildTableNode(t: TableParts): PmNode | null {
 	const rowNodes: PmNode[] = [];
-	if (t.header) rowNodes.push(buildNode('table_row', { topRules: '' }, t.header));
 	t.rows.forEach((cells, i) => rowNodes.push(buildNode('table_row', { topRules: '', typRules: t.rowRules[i] ?? [] }, cells)));
 	if (rowNodes.length === 0) return null;
 	return buildNode(

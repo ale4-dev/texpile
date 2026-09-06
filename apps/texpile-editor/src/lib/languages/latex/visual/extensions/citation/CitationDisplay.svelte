@@ -4,6 +4,7 @@
 	import { referenceStore } from '$lib/stores/editorStore';
 	import { splitCitationKeys } from './citationKeys';
 	import { citationText } from './citationText';
+	import { bibAuthorShort } from '$lib/languages/bib/biblatex';
 	import CitationEditForm from './CitationEditForm.svelte';
 
 	let {
@@ -31,7 +32,7 @@
 		const works = keys.map((key) => {
 			const reference = references.find((ref) => ref.key === key);
 			if (!reference) return { unresolved: keys.length === 1 ? `${key} not found` : key };
-			return { author: String(reference.author), year: reference.year || reference.date?.slice(0, 4) || 'n.d.' };
+			return { author: bibAuthorShort(String(reference.author)), year: reference.year || reference.date?.slice(0, 4) || 'n.d.' };
 		});
 
 		const { prenote, postnote, variant } = node.attrs;
@@ -85,8 +86,14 @@
 
 	<Portal>
 		<Popover.Positioner class="z-floating-ui">
-			<Popover.Content class="card bg-surface-50-950 border-surface-300-700 z-[200] min-w-[300px] border p-4 shadow-lg">
-				<CitationEditForm {node} {onUpdate} {onChangeKey} bind:dropdownOpen />
+			<Popover.Content
+				class="card bg-surface-50-950 border-surface-300-700 z-[200] min-w-[300px] max-w-[min(90vw,28rem)] border p-4 shadow-lg"
+			>
+				<!-- mounted on open only: the form lists the whole bibliography, and a survey with
+				     hundreds of citations kept hundreds of copies of it in the DOM -->
+				{#if dropdownOpen}
+					<CitationEditForm {node} {onUpdate} {onChangeKey} bind:dropdownOpen />
+				{/if}
 			</Popover.Content>
 		</Popover.Positioner>
 	</Portal>

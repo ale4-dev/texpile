@@ -18,7 +18,8 @@
 				{ keys: combo('F'), label: m.menubar_shortcut_find_in_document() },
 				{ keys: combo('F', { shift: true }), label: m.menubar_shortcut_find_in_files() },
 				{ keys: combo('Z'), label: m.menubar_undo() },
-				{ keys: combo('Z', { shift: true }), label: m.menubar_redo() }
+				{ keys: combo('Z', { shift: true }), label: m.menubar_redo() },
+				{ keys: combo(','), label: m.menubar_preferences() }
 			]
 		},
 		{
@@ -49,7 +50,7 @@
 				{ keys: combo('U'), label: m.menubar_format_underline() },
 				{ keys: combo('`'), label: m.menubar_format_inline_code() },
 				{ keys: combo('.'), label: m.menubar_shortcut_superscript() },
-				{ keys: combo(','), label: m.menubar_shortcut_subscript() },
+				{ keys: combo(',', { shift: true }), label: m.menubar_shortcut_subscript() },
 				{ keys: combo('B', { shift: true }), label: m.menubar_format_blockquote() },
 				{ keys: combo('`', { shift: true }), label: m.menubar_insert_code_block() },
 				{

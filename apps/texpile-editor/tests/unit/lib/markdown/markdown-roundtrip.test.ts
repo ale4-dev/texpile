@@ -79,8 +79,9 @@ describe('markdown serializer output', () => {
 
 	it('regenerates canonical constructs', () => {
 		expect(gen('Alt Heading\n===========\n')).toBe('# Alt Heading');
-		expect(gen('* star bullet\n')).toBe('- star bullet');
-		expect(gen('3) paren ordered\n')).toBe('3. paren ordered');
+		// bullet markers and ordered delimiters are kept: they are what keeps adjacent lists apart
+		expect(gen('* star bullet\n')).toBe('* star bullet');
+		expect(gen('3) paren ordered\n')).toBe('3) paren ordered');
 	});
 
 	it('escapes structure characters in prose', () => {

@@ -20,7 +20,9 @@ export function toBibtex(entries: ParsedBibtexEntry[], compact = false): string 
 				if (tags.trim().length !== 0) {
 					tags += entrySep + indent;
 				}
-				tags += key + (compact ? '={' : ' = {') + value + '}';
+				// a value the source wrote with a macro name or # concatenation goes back as written
+				const raw = entry.rawValues?.[key];
+				tags += raw != null ? key + (compact ? '=' : ' = ') + raw : key + (compact ? '={' : ' = {') + value + '}';
 			}
 			output += tags;
 		}

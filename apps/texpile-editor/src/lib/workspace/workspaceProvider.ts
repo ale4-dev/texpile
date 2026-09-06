@@ -2,6 +2,7 @@
 // CRDT for a guest. One implementation per data source; capability flags gate the host-only
 // features (compile, git, format, find-in-files) so the same view can run in either mode.
 
+import type { SourceRead } from './sourceEncoding';
 import type { TexFile, TreeEntry, SearchFileResult } from './fileSystem';
 
 export type WorkspaceCapabilities = {
@@ -24,6 +25,8 @@ export type WorkspaceProvider = {
 
 	// reads (both host and guest)
 	readText(path: string): Promise<string>;
+	/** the file being opened: its text plus the encoding the bytes were found in (a guest's text is UTF-8 by construction). */
+	readSource(path: string): Promise<SourceRead>;
 	/** the first bytes: whether the file looks binary, and its size (host only; a guest's files are text). */
 	probe?(path: string): Promise<{ size: number; binary: boolean } | null>;
 	scanTree(root: string): Promise<TreeEntry[]>;

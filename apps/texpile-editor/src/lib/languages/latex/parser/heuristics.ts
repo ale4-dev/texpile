@@ -86,13 +86,41 @@ const LET_LIKE_PRIMITIVES = new Set(['let', 'futurelet']);
  * construct's exact source span verbatim and splice out the consumed siblings.
  */
 export function heuristicMarkTexPrimitiveDefs(nodes: Node[] | undefined, source: string, pairsOut?: Map<string, string>): void {
+	// \def\be{\begin{equation}} and \def\ee{\end{equation}}: the span between \be and \ee is math,
+	// and only the pair of definitions says so. collected across the walk, paired at the end
+	const envDefs = { open: new Map<string, string>(), close: new Map<string, string>() };
+	markTexPrimitiveDefs(nodes, source, pairsOut, envDefs);
+	if (!pairsOut) return;
+	for (const [env, opener] of envDefs.open) {
+		const closer = envDefs.close.get(env);
+		if (closer && !pairsOut.has(opener)) pairsOut.set(opener, closer);
+	}
+}
+
+/** the body of a zero-parameter \def when it is exactly \begin{X} or \end{X}: [begin|end, X] */
+function envBodyOf(body: LooseNode): ['begin' | 'end', string] | null {
+	const kids = (body.content as LooseNode[] | undefined)?.filter((n) => n.type !== 'whitespace') ?? [];
+	if (kids.length !== 2 || kids[0].type !== 'macro' || kids[1].type !== 'group') return null;
+	const kw = kids[0].content;
+	if (kw !== 'begin' && kw !== 'end') return null;
+	const name =
+		(kids[1].content as LooseNode[] | undefined)?.map((n) => (n.type === 'string' ? String(n.content ?? '') : ' ')).join('') ?? '';
+	return /^[a-zA-Z*]+$/.test(name) ? [kw, name] : null;
+}
+
+function markTexPrimitiveDefs(
+	nodes: Node[] | undefined,
+	source: string,
+	pairsOut: Map<string, string> | undefined,
+	envDefs: { open: Map<string, string>; close: Map<string, string> }
+): void {
 	if (!Array.isArray(nodes) || !source) return;
 	for (let i = 0; i < nodes.length; i++) {
 		const node = nodes[i] as LooseNode;
 		// recurse into CONTENT only, never macro args: an unknown macro's args are rebuilt by the
 		// generic printRaw printer, which never reads `_raw`; splicing "consumed" siblings there
 		// deletes content that was already round-tripping fine (a nested \edef collapsed to bare).
-		if (Array.isArray(node.content)) heuristicMarkTexPrimitiveDefs(node.content as Node[], source, pairsOut);
+		if (Array.isArray(node.content)) markTexPrimitiveDefs(node.content as Node[], source, pairsOut, envDefs);
 
 		if (node.type !== 'macro' || (node.args && node.args.length) || !node.position) continue;
 		const name = node.content as string;
@@ -121,6 +149,10 @@ export function heuristicMarkTexPrimitiveDefs(nodes: Node[] | undefined, source:
 				// so a definition merely quoted inside verbatim/comment can never register.
 				if (pairsOut) {
 					const consumed = nodes.slice(i + 1, j) as LooseNode[]; // [..., DELIM?, body group]
+					if (consumed.length === 2 && consumed[0].type === 'macro' && /^[a-zA-Z@]+$/.test(String(consumed[0].content ?? ''))) {
+						const env = envBodyOf(consumed[1]);
+						if (env) envDefs[env[0] === 'begin' ? 'open' : 'close'].set(env[1], String(consumed[0].content));
+					}
 					if (consumed.length >= 3) {
 						const nameNode = consumed[0];
 						const delimNode = consumed[consumed.length - 2];
@@ -229,7 +261,8 @@ export function heuristicInferUnknownMacroSignatures(
 	macroInfo: Readonly<Record<string, { signature: string }>>
 ): Record<string, { signature: string }> {
 	const MAX_ARGS = 9;
-	const counts: Record<string, number> = {};
+	// the fullest call site wins: `\todo[inline]{x}` after a bare `\todo{x}` gives `o m`
+	const counts: Record<string, { n: number; signature: string }> = {};
 
 	// never infer inside math: math serializes verbatim, and many math macros (\over, \hat) are
 	// followed by a {...} that is NOT their argument; attaching it restructures math and compounds.
@@ -253,17 +286,27 @@ export function heuristicInferUnknownMacroSignatures(
 				const known = isKnown(name) || ignoredMacros.has(name) || SCOPED_SWITCHES.has(name) || !!macroInfo[name];
 				// letter/@ names only; skip control symbols like \\ and \,
 				if (!hasArgs && !known && /^[a-zA-Z@]+$/.test(name)) {
-					let n = 0;
-					for (let j = i + 1; j < nodes.length && n < MAX_ARGS; j++) {
+					const sig: string[] = [];
+					for (let j = i + 1; j < nodes.length && sig.length < MAX_ARGS; j++) {
 						const nx = nodes[j] as LooseNode;
 						if (nx.type === 'whitespace' || nx.type === 'comment') continue;
 						if (nx.type === 'group') {
-							n++;
+							sig.push('m');
+							continue;
+						}
+						// `[...]` tokenizes as loose strings; an opening bracket glued to the call
+						// (`\todo[inline]{}`, `\SI[per-mode=symbol]{}{}`) is an optional argument.
+						// A space before it is prose that happens to start with a bracket.
+						if (nx.type === 'string' && nx.content === '[' && nodes[j - 1]?.type !== 'whitespace') {
+							const close = nodes.findIndex((c, k) => k > j && c.type === 'string' && (c as LooseNode).content === ']');
+							if (close < 0) break;
+							sig.push('o');
+							j = close;
 							continue;
 						}
 						break; // text / parbreak / macro / environment ends the argument run
 					}
-					if (n > 0) counts[name] = Math.max(counts[name] ?? 0, n);
+					if (sig.length > 0 && sig.length > (counts[name]?.n ?? 0)) counts[name] = { n: sig.length, signature: sig.join(' ') };
 				}
 			}
 			if (Array.isArray(node.content)) walk(node.content as Node[]);
@@ -278,8 +321,8 @@ export function heuristicInferUnknownMacroSignatures(
 	walk(ast.content as Node[]);
 
 	const inferred: Record<string, { signature: string }> = {};
-	for (const [name, n] of Object.entries(counts)) {
-		if (!macroInfo[name]) inferred[name] = { signature: Array(n).fill('m').join(' ') };
+	for (const [name, { signature }] of Object.entries(counts)) {
+		if (!macroInfo[name]) inferred[name] = { signature };
 	}
 	return inferred;
 }

@@ -79,6 +79,6 @@ export const AT_SUGGESTIONS: AtSuggestion[] = [
 	{ prefix: 'U', body: '\\Upsilon', detail: 'Upsilon' },
 	{ prefix: 'W', body: '\\Omega', detail: 'Omega' },
 	{ prefix: '(', body: '\\left( ${1} \\right)', detail: 'left( ... right)' },
-	{ prefix: '{', body: '\\left\\{ ${1} \\right\\\\}', detail: 'left{ ... right}' },
+	{ prefix: '{', body: '\\left\\\\{ ${1} \\right\\\\}', detail: 'left{ ... right}' },
 	{ prefix: '[', body: '\\left[ ${1} \\right]', detail: 'left[ ... right]' }
 ];

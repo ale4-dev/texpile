@@ -10,14 +10,15 @@ import { recordDiskStamp } from '$lib/workspace/diskStamp';
 import { fileKind, formatOf, hasVisualMode, isRawTextKind, type DocumentBuffer } from '$lib/workspace/documentBuffer.svelte';
 import type { VisualParser, ParseOutcome, ParseFailure } from '$lib/workspace/visualParse.svelte';
 import { visualDocCache } from '$lib/workspace/visualDocCache';
-import { sourceEncodingError } from '$lib/workspace/sourceEncoding';
+import { visualMountDied } from '$lib/workspace/visualMountGuard';
+import { sourceEncodingError, type SourceRead } from '$lib/workspace/sourceEncoding';
 import { toaster } from '$lib/modals/toaster-svelte';
 import { m } from '$lib/paraglide/messages';
 
 export type FileOpenerDeps = {
 	doc: DocumentBuffer;
 	parser: VisualParser;
-	readText(path: string): Promise<string>;
+	readSource(path: string): Promise<SourceRead>;
 	/** the first bytes: does the file look binary, and how big is it. Absent for a guest, whose
 	 * files are text by construction; a failed probe reads as not binary and the read decides */
 	probe?(path: string): Promise<{ size: number; binary: boolean } | null>;
@@ -51,12 +52,6 @@ export class FileOpener {
 	openAsText(path: string): Promise<void> {
 		this.textAnyway.add(path);
 		return this.open(path);
-	}
-
-	/** a binary shown as text is read-only: saving it as text would corrupt it. Left to the
-	 * encoding check otherwise, which would call the same bytes UTF-16 */
-	private readOnlyReason(path: string): string | undefined {
-		return this.textAnyway.has(path) ? m.wsview_read_only_binary() : undefined;
 	}
 
 	/** still the file the user asked for? every await is a chance for a newer switch to win */
@@ -93,17 +88,17 @@ export class FileOpener {
 	 * throw turned that into "ENOENT: no such file or directory" in the middle of the editor, which
 	 * is a true sentence and a useless one - the panel had just offered the row that led there.
 	 */
-	private async readWorkingCopy(path: string): Promise<string> {
+	private async readWorkingCopy(path: string): Promise<SourceRead> {
 		const d = this.deps;
 		try {
-			const raw = await d.readText(path);
+			const read = await d.readSource(path);
 			d.doc.deletedOnDisk = false;
-			return raw;
+			return read;
 		} catch (e) {
 			const missing = /ENOENT|no such file|cannot find|not found/i.test(e instanceof Error ? e.message : String(e));
 			if (!missing || !d.isDiffMode()) throw e;
 			d.doc.deletedOnDisk = true;
-			return '';
+			return { text: '', encoding: 'utf8' };
 		}
 	}
 
@@ -130,16 +125,18 @@ export class FileOpener {
 				}
 			}
 			if (hasVisualMode(k)) {
-				const raw = await this.readWorkingCopy(path);
+				const { text: raw, encoding } = await this.readWorkingCopy(path);
 				if (!this.current(path)) return;
 				const text = toLf(raw); // the editor works in LF
 				// adopted in the same synchronous batch as openTex below, which clears the doc
 				const cached = visualDocCache.get(path, text);
 				const seq = d.parser.nextSequence();
-				const decodable = !sourceEncodingError(text);
-				if (decodable && !cached && d.isVisualMode()) this.adoptBackgroundParse(d.parse(text, formatOf(k)), path, text, seq);
+				const issue = sourceEncodingError(encoding);
+				// last time this file's visual build took the renderer down with it
+				if (d.isVisualMode() && visualMountDied(path)) d.fallbackToSource({ timeout: true, message: '' });
+				if (!issue && !cached && d.isVisualMode()) this.adoptBackgroundParse(d.parse(text, formatOf(k)), path, text, seq);
 
-				d.doc.openTex(path, text, detectEol(raw), this.readOnlyReason(path)); // detectEol so a CRLF file isn't rewritten to LF
+				d.doc.openTex(path, text, detectEol(raw), issue); // detectEol so a CRLF file isn't rewritten to LF
 				if (cached) d.doc.adoptParsed(cached, text);
 				void recordDiskStamp(path); // arm the external-write guard: disk is known as of this read
 				d.parser.lastParsedSource = cached ? text : null;
@@ -148,9 +145,9 @@ export class FileOpener {
 				d.clearPerFileViewState();
 				if (d.isDiffMode()) d.captureDiffSnapshot(); // re-diff the newly-opened file
 			} else if (isRawTextKind(k)) {
-				const raw = await this.readWorkingCopy(path);
+				const { text: raw, encoding } = await this.readWorkingCopy(path);
 				if (!this.current(path)) return;
-				d.doc.openRaw(path, toLf(raw), detectEol(raw), this.readOnlyReason(path));
+				d.doc.openRaw(path, toLf(raw), detectEol(raw), sourceEncodingError(encoding));
 				void recordDiskStamp(path);
 				isDirty.current = false;
 				d.disableHistory(); // no cross-mode history for these kinds

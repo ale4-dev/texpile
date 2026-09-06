@@ -62,7 +62,14 @@ function wrapper(node: Node, serializeNode: SerializeNodeFn): string {
 	const tableNode = childByType(node, 'table');
 	const notesNode = childByType(node, 'table_notes');
 
-	const caption = captionNode ? `\\caption{${renderInline(captionNode, serializeNode)}}\\vspace{2mm}\n` : '';
+	// an empty caption node is a table that never had one: no \caption{} line, which would
+	// print "Table N:" alone and step the counter
+	const capOpt =
+		typeof captionNode?.attrs.captionOpt === 'string' && captionNode.attrs.captionOpt ? `[${captionNode.attrs.captionOpt}]` : '';
+	const caption =
+		captionNode && captionNode.childCount > 0
+			? `\\caption${captionNode.attrs.starred ? '*' : ''}${capOpt}{${renderInline(captionNode, serializeNode)}}\\vspace{2mm}\n`
+			: '';
 	// extra labels re-emit BEFORE the primary, matching source order (`label` holds the LAST
 	// \label found, so anything in extraLabels came before it).
 	const extraLabels =
@@ -75,7 +82,8 @@ function wrapper(node: Node, serializeNode: SerializeNodeFn): string {
 	const label = node.attrs.label ? `\\label{${String(node.attrs.label)}}\n` : '';
 	const preBody = node.attrs.preBody ? `${String(node.attrs.preBody)}\n` : '';
 	const body = tableNode ? assembleTable(tableNode, serializeNode) : '';
-	const notes = node.attrs.showNotes && notesNode ? `\\par\\smallskip\n{\\small ${renderInline(notesNode, serializeNode)}}` : '';
+	const notesSize = typeof node.attrs.notesSize === 'string' && node.attrs.notesSize ? node.attrs.notesSize : 'small';
+	const notes = node.attrs.showNotes && notesNode ? `\\par\\smallskip\n{\\${notesSize} ${renderInline(notesNode, serializeNode)}}` : '';
 	// a trailing \vskip/\hskip spacer, not prose: raw, NOT run through the notes' \small wrapper
 	const postBody = node.attrs.postBody ? `\n${String(node.attrs.postBody)}` : '';
 
@@ -84,7 +92,12 @@ function wrapper(node: Node, serializeNode: SerializeNodeFn): string {
 	// hardcoded: [H] forces exact placement while [h] is advisory, so collapsing one to the
 	// other can visibly move the table to a different page.
 	const placement = node.attrs.placement != null ? String(node.attrs.placement) : '[h]';
-	return `\\begin{${env}}${placement}\n\\centering\n${caption}${extraLabels}${label}${preBody}${body}\n${notes}${postBody}\n\\end{${env}}\n`;
+	const centering = node.attrs.centering === false ? '' : '\\centering\n';
+	// a caption the source put after the tabular stays there (the number is the same; the
+	// vertical space is not)
+	const above = node.attrs.captionBelow ? '' : caption;
+	const below = node.attrs.captionBelow ? `\n${caption.replace(/\n$/, '')}` : '';
+	return `\\begin{${env}}${placement}\n${centering}${above}${extraLabels}${label}${preBody}${body}${below}\n${notes}${postBody}\n\\end{${env}}\n`;
 }
 
 function buildRowspanCoverage(table: Node): RowspanCoverage {
@@ -201,7 +214,7 @@ function assembleFaithful(
 			colIndex += Number(cell.attrs.colspan ?? 1);
 		});
 		emitCovered();
-		lines.push(cells.join(' & ') + ' \\\\');
+		lines.push(cells.join(' & ') + ' \\\\' + String(row.attrs.rowBreakSuffix ?? ''));
 	});
 	if (bottomRules) lines.push(bottomRules);
 	const widthArg = width != null ? `{${width}}` : '';
@@ -258,7 +271,8 @@ function renderCell(cell: Node, isFirstColumn: boolean, serializeNode: Serialize
 
 	if (rowspan > 1) content = `\\multirow{${rowspan}}{*}{${content}}`;
 	if (colspan > 1) {
-		const align = (isFirstColumn ? '|' : '') + 'c|';
+		// the source's own spec when there was one; the bordered default is for spans made in the editor
+		const align = typeof cell.attrs.mcAlign === 'string' && cell.attrs.mcAlign ? cell.attrs.mcAlign : (isFirstColumn ? '|' : '') + 'c|';
 		content = `\\multicolumn{${colspan}}{${align}}{${content}}`;
 	}
 	return content;

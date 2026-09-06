@@ -45,10 +45,15 @@ export function guestRelPath(p: string) {
 }
 const toRel = guestRelPath;
 
+function guestText(path: string): string {
+	return collabGuest.ytextFor(toRel(path))?.toString() ?? '';
+}
+
 export const sessionProvider: WorkspaceProvider = {
 	caps: { manageTree: true, compile: false, git: false, format: false, search: false, terminal: false },
 
-	readText: async (path) => collabGuest.ytextFor(toRel(path))?.toString() ?? '',
+	readText: async (path) => guestText(path),
+	readSource: async (path) => ({ text: guestText(path), encoding: 'utf8' }),
 	scanTree: async () => buildTree(collabGuest.files, collabGuest.ghostDirs),
 	scanTexFiles: async () =>
 		collabGuest.files

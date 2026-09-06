@@ -56,7 +56,13 @@ export class ExternalChangeWatcher {
 			return;
 		}
 		const disk = toLf(raw); // compare in LF against our LF baseline/buffers
-		if (activeFilePath.current !== path || disk === d.getDiskBaseline()) return; // unchanged on disk
+		if (activeFilePath.current !== path) return;
+		if (disk === d.getDiskBaseline()) {
+			// same bytes, new mtime (touch, a formatter, a checkout and back): nothing to adopt, but
+			// the save guard compares stamps, and without a fresh one every later autosave re-trips it
+			void recordDiskStamp(path);
+			return;
+		}
 		const eol = detectEol(raw); // the external writer may have changed the ending
 		if (!isDirty.current || d.getBuffer() === disk) this.applyDiskReload(disk, eol);
 		else this.conflict = { path, disk, eol };

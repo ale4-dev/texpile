@@ -102,7 +102,7 @@ export function latexEditorPlugins(setup: LatexEditorSetup): Plugin[] {
 			'Mod-`': toggleMark(schema.marks.code),
 			'Mod-u': toggleMark(schema.marks.u),
 			'Mod-.': toggleMark(schema.marks.sup),
-			'Mod-,': toggleMark(schema.marks.sub),
+			'Mod-Shift-,': toggleMark(schema.marks.sub), // Mod-, is Preferences, as in every desktop app
 			'Mod-Shift-b': toggleBlockQuote(),
 			'Mod-Shift-`': createCodeBlock(),
 			// Word/Docs convention (and source mode's own \section shortcuts): Mod-Alt-N on every

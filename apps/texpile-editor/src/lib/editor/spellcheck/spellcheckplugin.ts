@@ -64,7 +64,7 @@ function elementBefore(view: EditorView, pos: number): HTMLElement | null {
  */
 export const spellClickBoundaryPlugin = new Plugin({
 	props: {
-		handleClick(view, pos) {
+		handleClick(view, pos, event) {
 			const $pos = view.state.doc.resolve(pos);
 			// a link's text is an address, not prose, and its own tooltip owns this click
 			const linkType = view.state.schema.marks.link;
@@ -77,7 +77,14 @@ export const spellClickBoundaryPlugin = new Plugin({
 			// leading edge, which matches how source mode behaves
 			if (!prev || !WORD_CHAR.test(prev)) return false;
 			if (next && WORD_CHAR.test(next)) return false;
-			return !!elementBefore(view, pos)?.closest('[class*="proofread-"]');
+			const flagged = elementBefore(view, pos)?.closest('[class*="proofread-"]');
+			if (!flagged) return false;
+			// the caret resolves after the last letter from anywhere on its right half, which on a
+			// short word is most of it: only a click past the word's own box is caret placement
+			const rects = flagged.getClientRects();
+			const box = rects[rects.length - 1];
+			if (!box || box.width === 0) return true;
+			return event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom;
 		}
 	}
 });

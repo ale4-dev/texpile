@@ -34,6 +34,7 @@
 	import { TerminalDockState } from '$lib/workspace/terminalDockState.svelte';
 	import { mark } from '$lib/debug/startupDoctor';
 	import { createKeydownHandler } from '$lib/workspace/shortcuts';
+	import { preferencesOpen } from '$lib/stores/dialogStore';
 	import { workspaceRoot, texFiles, activeCompare, activeFilePath } from '$lib/workspace/workspaceStore';
 	import ZoteroCitationDialog from '$lib/zotero/ZoteroCitationDialog.svelte';
 	import { settings } from '$lib/settings';
@@ -271,7 +272,8 @@
 		terminalAvailable: () => termDock.available,
 		isCompiling: () => compiler.compiling,
 		runCompile: () => compiler.runCompile(),
-		stopCompile: () => compiler.stopCompile()
+		stopCompile: () => compiler.stopCompile(),
+		openPreferences: () => (preferencesOpen.current = true)
 	});
 </script>
 

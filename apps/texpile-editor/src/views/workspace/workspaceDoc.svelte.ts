@@ -8,7 +8,7 @@ import { DocumentBuffer, fileKind, formatOf, hasVisualMode } from '$lib/workspac
 import { ViewModeSwitch } from '$lib/workspace/viewModeSwitch.svelte';
 import { DiffMode } from '$lib/workspace/diffMode.svelte';
 import { FileOpener } from '$lib/workspace/fileOpener';
-import { VisualParser, type ParseFailure } from '$lib/workspace/visualParse.svelte';
+import { VisualParser, MAX_VISUAL_BYTES, type ParseFailure } from '$lib/workspace/visualParse.svelte';
 import { detectMainFile, gatherProjectMacros } from '$lib/workspace/project';
 import { workspaceRoot, activeCompare, activeFilePath } from '$lib/workspace/workspaceStore';
 import { editorViewStore } from '$lib/stores/editorStore';
@@ -80,7 +80,7 @@ export class WorkspaceDoc {
 		this.opener = new FileOpener({
 			doc: this.doc,
 			parser: this.parser,
-			readText: (p) => d.provider.readText(p),
+			readSource: (p) => d.provider.readSource(p),
 			probe: async (p) => (await d.provider.probe?.(p)) ?? null,
 			whenIdle: () => d.saver().whenIdle(),
 			isVisualMode: () => this.modes.mode === 'visual',
@@ -214,11 +214,20 @@ export class WorkspaceDoc {
 	fallbackToSource(failure: ParseFailure): void {
 		this.modes.mode = 'source';
 		this.doc.visualDoc = null;
+		this.doc.visualStale = false;
 		this.modes.pendingVisualAnchor = null; // never re-anchor a later visual entry off this failed switch
 		if (failure.tooComplex) {
 			toaster.warning({
 				title: m.wsview_toast_too_complex_title(),
 				description: m.wsview_toast_too_complex_desc({ count: failure.tooComplex.toLocaleString() })
+			});
+		} else if (failure.tooLarge) {
+			toaster.warning({
+				title: m.wsview_toast_too_complex_title(),
+				description: m.wsview_toast_too_large_desc({
+					size: Math.round(failure.tooLarge / 1024).toLocaleString(),
+					limit: Math.round(MAX_VISUAL_BYTES / 1024).toLocaleString()
+				})
 			});
 		} else if (failure.timeout) {
 			toaster.warning({ title: m.wsview_toast_file_too_large_title() });
@@ -236,8 +245,10 @@ export class WorkspaceDoc {
 		const source = this.doc.texSource;
 		const path = this.doc.path;
 		const mySeq = this.parser.nextSequence();
+		this.doc.visualStale = true; // whatever is mounted until this lands predates `source`
 		void this.tryParseVisual(source).then((o) => {
 			if (!this.parser.isCurrent(mySeq)) return; // superseded
+			this.doc.visualStale = false;
 			if (o.failure) return this.fallbackToSource(o.failure);
 			if (!o.parsed) return;
 			this.doc.adoptParsed(o.parsed, source);

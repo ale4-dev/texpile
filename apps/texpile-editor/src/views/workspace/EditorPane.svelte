@@ -19,6 +19,8 @@
 	import { activeFilePath, isDirty } from '$lib/workspace/workspaceStore';
 	import { editorViewStore } from '$lib/stores/editorStore';
 	import { restoreVisualPosition } from '$lib/workspace/visualPositions';
+	import { noteVisualMount, visualMounted } from '$lib/workspace/visualMountGuard';
+	import type { Node as PMNode } from 'prosemirror-model';
 	import { openWorkspaceLink } from '$lib/workspace/openWorkspaceLink';
 	import { stripFor } from '$lib/editor/visual/stripFor';
 	import { bodyOffsetOf } from '$lib/workspace/latexRoundtrip';
@@ -168,11 +170,23 @@
 		return () => view.dom.removeEventListener('compositionend', apply);
 	});
 
+	// noted before a file's first build, forgotten in onVisualReady: a build that takes the renderer
+	// down leaves the note behind, and the next open of that file goes to Source (visualMountGuard).
+	// Keyed on the doc, not the path: the path switches a beat before the new doc arrives, and the
+	// old doc under the new path is not a build
+	let notedDoc: PMNode | null = null;
+	$effect.pre(() => {
+		if (!visualDoc || !loadedPath || !structured || viewMode !== 'visual' || readyFor === loadedPath || visualDoc === notedDoc) return;
+		notedDoc = visualDoc;
+		noteVisualMount(loadedPath);
+	});
+
 	/** a callback, not an effect: it dispatches a selection an effect would re-enter on */
 	function onVisualReady(): void {
 		mark('editor-ready');
 		warmEditor();
 		readyFor = loadedPath;
+		if (loadedPath) visualMounted(loadedPath);
 		const v = editorViewStore.current;
 		if (!v || !loadedPath || session.collabFor(loadedPath)) return;
 		restoreVisualPosition(v, loadedPath, texSource, docMeta ? bodyOffsetOf(docMeta) : 0, stripFor(kind));
@@ -330,6 +344,7 @@
 						{onCaretMove}
 						collab={session.collabFor(loadedPath)}
 						{commentRanges}
+						{commentThreads}
 						{selectedComment}
 						{onAddComment}
 						{onInsertCitation}

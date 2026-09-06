@@ -1,27 +1,58 @@
 import { unified, type Plugin } from 'unified';
-import { unifiedLatexFromString, unifiedLatexAstComplier, getParser } from '@unified-latex/unified-latex-util-parse';
+import { environmentInfo, macroInfo } from '@unified-latex/unified-latex-ctan';
+import {
+	unifiedLatexFromString,
+	unifiedLatexAstComplier,
+	unifiedLatexProcessAtLetterAndExplMacros,
+	unifiedLatexProcessMacrosAndEnvironmentsWithMathReparse
+} from '@unified-latex/unified-latex-util-parse';
+import { unifiedLatexTrimEnvironmentContents, unifiedLatexTrimRoot } from '@unified-latex/unified-latex-util-trim';
 import type { Root, Node, Argument } from '@unified-latex/unified-latex-types';
 import type { ParseOptions, LatexAst } from './types';
+import { parseMinimalChunked } from './chunkedMinimalParse';
 
 // @unified-latex plugins are built against unified@10, this app uses @11: the Plugin<> generics
 // don't structurally match though the runtime contract is the same. cast via `unknown` first so
 // it stays a type erasure of a known shape, not an open hole.
 type UnifiedLatexPluginOptions = Pick<ParseOptions, 'mode' | 'macros' | 'environments' | 'flags'>;
 type UnifiedLatexFromStringPlugin = Plugin<[UnifiedLatexPluginOptions], string, Root>;
+type UnifiedLatexParserPlugin = Plugin<[], string, Root>;
+type UnifiedLatexTransformPlugin<O = void> = Plugin<[O], Root, Root>;
 type UnifiedLatexAstComplierPlugin = Plugin<[], Root, Root>;
 
-export function parseLatex(source: string, options: ParseOptions = {}): LatexAst {
-	const processor = unified()
-		.use(unifiedLatexFromString as unknown as UnifiedLatexFromStringPlugin, {
-			mode: options.mode,
-			macros: options.macros,
-			environments: options.environments,
-			flags: options.flags
-		})
-		.use(unifiedLatexAstComplier as unknown as UnifiedLatexAstComplierPlugin);
+function chunkedMinimalParser(this: { Parser?: (str: string) => Root }) {
+	// unified passes the file as a second argument; it must not land in the chunk size
+	Object.assign(this, { Parser: (str: string) => parseMinimalChunked(str) });
+}
 
-	const result = processor.processSync(source);
-	return result.result as Root;
+// unifiedLatexFromString with its tokenizer stage swapped for the chunked one. math mode keeps
+// upstream's: its inputs are small and its root is shaped differently
+function processorFor(options: ParseOptions) {
+	if (options.mode === 'math') {
+		return unified()
+			.use(unifiedLatexFromString as unknown as UnifiedLatexFromStringPlugin, {
+				mode: options.mode,
+				macros: options.macros,
+				environments: options.environments,
+				flags: options.flags
+			})
+			.use(unifiedLatexAstComplier as unknown as UnifiedLatexAstComplierPlugin);
+	}
+	const { macros = {}, environments = {}, flags = {} } = options;
+	return unified()
+		.use(chunkedMinimalParser as unknown as UnifiedLatexParserPlugin)
+		.use(unifiedLatexProcessAtLetterAndExplMacros as unknown as UnifiedLatexTransformPlugin<ParseOptions['flags']>, flags)
+		.use(unifiedLatexProcessMacrosAndEnvironmentsWithMathReparse as unknown as UnifiedLatexTransformPlugin<UnifiedLatexPluginOptions>, {
+			macros: Object.assign({}, ...Object.values(macroInfo), macros),
+			environments: Object.assign({}, ...Object.values(environmentInfo), environments)
+		})
+		.use(unifiedLatexTrimEnvironmentContents as unknown as UnifiedLatexTransformPlugin)
+		.use(unifiedLatexTrimRoot as unknown as UnifiedLatexTransformPlugin)
+		.use(unifiedLatexAstComplier as unknown as UnifiedLatexAstComplierPlugin);
+}
+
+export function parseLatex(source: string, options: ParseOptions = {}): LatexAst {
+	return processorFor(options).processSync({ value: source }).result as Root;
 }
 
 /** parse math-mode content (no $ delimiters). */
@@ -31,16 +62,8 @@ export function parseLatexMath(source: string, options: Omit<ParseOptions, 'mode
 
 /** reusable parser with fixed options; cheaper than parseLatex per call. */
 export function createLatexParser(options: ParseOptions = {}): (source: string) => LatexAst {
-	const parser = getParser({
-		mode: options.mode,
-		macros: options.macros,
-		environments: options.environments,
-		flags: options.flags
-	});
-
-	return (source: string): LatexAst => {
-		return parser.parse(source);
-	};
+	const processor = processorFor(options).freeze();
+	return (source: string): LatexAst => processor.processSync({ value: source }).result as Root;
 }
 
 export function debugPrintAst(ast: Root | Node | Argument | (Node | Argument)[], indent: number = 0): string {

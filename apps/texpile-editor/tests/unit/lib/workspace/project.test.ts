@@ -36,6 +36,14 @@ beforeEach(() => {
 });
 
 describe('detectMainFile', () => {
+	it('does not take a chapter that mentions the wrapper in \\verb for a root', async () => {
+		h.fs = {
+			'/proj/chapter.tex': 'Split at \\verb|\\begin{document}| and \\verb|\\end{document}|.',
+			'/proj/thesis-root.tex': '\\documentclass{book}\n\\begin{document}\n\\input{chapter}\n\\end{document}\n'
+		};
+		expect(await detectMainFile([file('chapter.tex'), file('thesis-root.tex')])).toBe('/proj/thesis-root.tex');
+	});
+
 	it('returns the only file when there is one', async () => {
 		h.fs = { '/proj/whatever.tex': 'no doc here' };
 		expect(await detectMainFile([file('whatever.tex')])).toBe('/proj/whatever.tex');
@@ -121,24 +129,27 @@ describe('gatherProjectMacros', () => {
 });
 
 describe('cross-file macros make a fragment round-trip its custom command', () => {
-	// a 2-arg command with an optional arg: usage-based inference can't recover this (it only
-	// infers mandatory args), so without the gathered signature the optional bracket detaches.
-	// observed through the deterministic serializer (latexToProseMirror has no verbatim `orig`
-	// norms), since byte-level verbatim preservation would mask whether the args stayed attached.
+	// a 2-arg command with an optional arg written with a space before the bracket: usage-based
+	// inference refuses a bracket that is not glued to the call (it would swallow prose), so only
+	// the gathered signature attaches it. observed on the parsed doc: with the signature the whole
+	// call is one raw chip, without it the bracket text is ordinary prose.
 	const MACROS = '\\newcommand{\\hlnote}[2][TODO]{\\textbf{#1}: #2}\n';
-	const FRAGMENT = 'Intro \\hlnote[Important]{check this} outro.';
-	const rt = (src: string, macros: string) => {
+	const FRAGMENT = 'Intro \\hlnote [Important]{check this} outro.';
+	const chipsWith = (src: string, macros: string, text: string) => {
 		const { doc } = LatexParser.latexToProseMirror(src, { preamble: macros });
-		return serializeToLatex(doc);
+		let n = 0;
+		doc.descendants((node) => {
+			if (node.type.name === 'inline_latex' && node.textContent.includes(text)) n++;
+		});
+		return n;
 	};
 
-	it('keeps \\hlnote[Important]{check this} whole when the signature is supplied', () => {
-		const out = rt(FRAGMENT, MACROS);
-		expect(out).toContain('\\hlnote[Important]{check this}');
+	it('keeps the optional argument attached when the signature is supplied', () => {
+		expect(chipsWith(FRAGMENT, MACROS, '[Important]{check this}')).toBe(1);
+		expect(serializeToLatex(LatexParser.latexToProseMirror(FRAGMENT, { preamble: MACROS }).doc)).toContain('[Important]{check this}');
 	});
 
-	it('without the signature the optional argument does not stay attached', () => {
-		const out = rt(FRAGMENT, '');
-		expect(out).not.toContain('\\hlnote[Important]{check this}');
+	it('without the signature the bracket stays prose', () => {
+		expect(chipsWith(FRAGMENT, '', '[Important]')).toBe(0);
 	});
 });

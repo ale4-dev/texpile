@@ -24,7 +24,7 @@ import { typSourceShortcuts } from '$lib/languages/typst/source/sourceExtensions
 import { mdPathCompletion } from '$lib/languages/markdown/pathCompletion';
 import { cmSpellcheck } from '$lib/editor/spellcheck/cmSpellcheck';
 import { lintGutter } from '@codemirror/lint';
-import { comments, commentGutterHandlers } from '$lib/editor/visual/extensions/comments';
+import { comments, commentGutterHandlers, type CommentPreview } from '$lib/editor/visual/extensions/comments';
 import { mathPreview } from '$lib/editor/source/extensions/math-preview/mathPreview';
 import { starterGhost } from '$lib/editor/source/extensions/starter-ghost/starterGhost';
 import { synctexFlash } from '$lib/languages/latex/source/synctexFlash';
@@ -51,6 +51,8 @@ export type SourceSetupDeps = {
 	readOnly?: boolean;
 	onAddComment?: (from: number, to: number) => void;
 	onSelectComment?: (id: string, from: 'text' | 'gutter') => void;
+	/** the thread behind a comment id, for the hover card over its text and line number */
+	commentPreview?: (id: string) => CommentPreview | null;
 	onJumpToFile?: (name: string) => void;
 	onOpenFileAt?: (file: string, line: number) => void;
 	onHistoryBoundary?: (dir: 'undo' | 'redo') => boolean;
@@ -59,7 +61,7 @@ export type SourceSetupDeps = {
 };
 
 export function buildSourceExtensions(deps: SourceSetupDeps): Extension[] {
-	const { fileFor, collab, onAddComment, onSelectComment, onHistoryBoundary } = deps;
+	const { fileFor, collab, onAddComment, onSelectComment, commentPreview, onHistoryBoundary } = deps;
 	return [
 		// gutters render in extension order: lint goes before lineNumbers so it lands on their left
 		...(!fileFor || /\.(tex|typ)$/i.test(fileFor) ? [lintGutter({ hoverTime: 0 })] : []),
@@ -70,13 +72,14 @@ export function buildSourceExtensions(deps: SourceSetupDeps): Extension[] {
 					comments({
 						onAdd: (from, to) => onAddComment?.(from, to),
 						onSelect: (id, from) => onSelectComment?.(id, from),
-						addLabel: m.comments_add()
+						addLabel: m.comments_add(),
+						preview: commentPreview
 					})
 				]
 			: []),
 		// the comment mark rides these cells (gutterLineClass), so the click on it has to be
 		// handled by the gutter that owns them - EditorView.domEventHandlers only sees the text
-		lineNumbers(onSelectComment ? { domEventHandlers: commentGutterHandlers((id) => onSelectComment(id, 'gutter')) } : {}),
+		lineNumbers(onSelectComment ? { domEventHandlers: commentGutterHandlers((id) => onSelectComment(id, 'gutter'), commentPreview) } : {}),
 		gutterTheme,
 		highlightActiveLine(),
 		...(collab ? [yCollab(collab.ytext, collab.awareness, { undoManager: deps.undoManager! }), yRemoteLayoutFix] : [history()]),

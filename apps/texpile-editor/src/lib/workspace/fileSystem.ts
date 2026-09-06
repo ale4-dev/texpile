@@ -1,5 +1,6 @@
 // client-side file access, all through the Electron bridge (window.texpileNative):
 // data ops over fs:* IPC, raw file bytes over the texfile:// protocol. no browser transport.
+import type { SourceEncoding, SourceRead } from './sourceEncoding';
 import { browser } from '$lib/runtime';
 import type { GitStatusResult, GitShowResult, GitOpResult, GitLogResult, GitChangesResult, GitPushResult } from './git';
 
@@ -133,7 +134,7 @@ type TexpileNative = {
 		y: number;
 	}) => Promise<string | null>;
 	fsScan: (root: string, exts?: string) => Promise<{ root: string; files: TexFile[] }>;
-	fsRead: (path: string) => Promise<{ content: string }>;
+	fsRead: (path: string) => Promise<{ content: string; encoding: SourceEncoding }>;
 	// optional: an older preload predates the binary probe
 	fsProbe?: (path: string) => Promise<{ size: number; binary: boolean }>;
 	fsWrite: (path: string, content: string) => Promise<{ ok: boolean }>;
@@ -333,6 +334,12 @@ export async function savePdfBytes(bytes: Uint8Array, defaultName: string): Prom
 
 export async function readTextFile(path: string): Promise<string> {
 	return (await ipc(requireNative().fsRead(path))).content;
+}
+
+/** the text plus the encoding its bytes were found in, decided in the main process */
+export async function readSourceFile(path: string): Promise<SourceRead> {
+	const r = await ipc(requireNative().fsRead(path));
+	return { text: r.content, encoding: r.encoding };
 }
 
 /** the first bytes only: whether the file looks binary, and its size. null when the bridge predates it. */

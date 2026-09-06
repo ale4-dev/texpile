@@ -40,7 +40,9 @@
 		<Portal>
 			<Popover.Positioner class="z-floating-ui">
 				<Popover.Content class="card bg-surface-50-950 border-surface-300-700 w-[280px] border shadow-lg">
-					<MathSettingsPanel {node} {view} {getPos} />
+					{#if settingsOpen}
+						<MathSettingsPanel {node} {view} {getPos} />
+					{/if}
 				</Popover.Content>
 			</Popover.Positioner>
 		</Portal>

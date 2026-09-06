@@ -115,4 +115,29 @@ describe('arrowing into an inline chip', () => {
 		expect(cm!.state.selection.main.head).toBe('\\vspace{10pt}'.length);
 		view.destroy();
 	});
+
+	it('is an inert island until the caret arrives, and again once it leaves', () => {
+		const place = document.createElement('div');
+		document.body.appendChild(place);
+		let chipView: InlineLatexView | null = null;
+		const view = new EditorView(place, {
+			state: stateAt(1),
+			nodeViews: {
+				inline_latex: (node, v, getPos) => (chipView = new InlineLatexView(node, v, getPos as () => number))
+			}
+		});
+		const chip = chipView as unknown as InlineLatexView;
+		// the placeholder is still up; a click routes here and builds the editor for the caret
+		chip.selectNode();
+		const cm = chip.cm!;
+		expect(cm.contentDOM.getAttribute('contenteditable')).toBe('true');
+		cm.dom.dispatchEvent(new FocusEvent('blur'));
+		expect(cm.contentDOM.getAttribute('contenteditable')).toBe('false');
+		const { to } = chipRange(view.state);
+		view.focus();
+		view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, to)));
+		enterInlineCm(-1)(view.state, view.dispatch);
+		expect(cm.contentDOM.getAttribute('contenteditable')).toBe('true');
+		view.destroy();
+	});
 });

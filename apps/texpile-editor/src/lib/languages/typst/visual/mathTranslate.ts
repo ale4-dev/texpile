@@ -14,7 +14,7 @@ const IDENTS: Record<string, string> = {
 	epsilon: '\\varepsilon',
 	zeta: '\\zeta',
 	eta: '\\eta',
-	theta: '\\vartheta',
+	theta: '\\theta',
 	iota: '\\iota',
 	kappa: '\\kappa',
 	lambda: '\\lambda',
@@ -79,6 +79,16 @@ const IDENTS: Record<string, string> = {
 	min: '\\min',
 	// typst's differential; \mathrm{d} is what MathLive's typst serializer maps back to `dif`
 	dif: '\\mathrm{d}'
+};
+
+/** the `.alt` glyph variants; the plain names above hold the other member of each pair. */
+const ALT_IDENTS: Record<string, string> = {
+	'theta.alt': '\\vartheta',
+	'epsilon.alt': '\\epsilon',
+	'phi.alt': '\\phi',
+	'pi.alt': '\\varpi',
+	'rho.alt': '\\varrho',
+	'sigma.alt': '\\varsigma'
 };
 
 /** typst math shorthands (own CST kind) with an exact LaTeX counterpart. */
@@ -176,9 +186,11 @@ function translate(node: SyntaxNode, src: string): string | null {
 		}
 		case 'MathPrimes':
 			return /^'+$/.test(slice) ? slice : null;
+		case 'MathFieldAccess':
+			return ALT_IDENTS[slice] ?? null;
 		default:
-			// FieldAccess (theta.alt), FuncCall (mat, cases, sqrt via juxtaposition), roots,
-			// alignment points, strings, code: no faithful mapping - the equation stays raw
+			// FuncCall (mat, cases, sqrt via juxtaposition), roots, alignment points, strings,
+			// code: no faithful mapping - the equation stays raw
 			return null;
 	}
 }

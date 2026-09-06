@@ -173,14 +173,24 @@ async function spawnDaemon(root: string, engineDir: string, preamble: string): P
 		let ready = false;
 		state.onReady = () => {
 			ready = true;
+			clearTimeout(warm);
 			resolve(state);
 		};
 		child.on('exit', (code) => {
 			if (daemon === state) daemon = null;
 			if (!ready) reject(new Error(`daemon exited before ready (code ${code})`));
 		});
-		setTimeout(() => {
-			if (!ready) reject(new Error('daemon warm timeout'));
+		// an engine still warming after this (a cold font cache runs close to a minute) is
+		// killed, not abandoned: nothing else could ever reach it, and every later request
+		// would spawn another beside it
+		const warm = setTimeout(() => {
+			if (ready) return;
+			try {
+				child.kill('SIGKILL');
+			} catch {
+				/* already gone */
+			}
+			reject(new Error('daemon warm timeout'));
 		}, 30000);
 	});
 }

@@ -15,6 +15,7 @@ import {
 import { SCOPED_SWITCHES, FONT_SIZE_SWITCHES } from '../macros';
 import { convertNodesToBlocks } from '../converter';
 import { convertNodesToInline } from './inlineConvert';
+import { macroHasStar } from './macroHandlers';
 import { nodeRawSource } from './origCapture';
 
 function extractTableComponents(content: Node[], ctx: ConversionContext) {
@@ -31,6 +32,13 @@ function extractTableComponents(content: Node[], ctx: ConversionContext) {
 	const preNodes: Node[] = [];
 	let noteNodes: Node[] = [];
 	let sawTabular = false;
+	// the wrapper serializer emits \centering, the caption and the notes size itself; what the
+	// source actually had is remembered so it does not gain a \centering, move its caption above
+	// the tabular, or swap \footnotesize for \small
+	// a \begin{center} wrapper (unwrapped below) is centering too
+	let centering = content.some((n) => n.type === 'environment' && (n as Environment).env === 'center' && containsTabular([n]));
+	let captionBelow = false;
+	let notesSize: string | null = null;
 
 	// see through the wrappers papers put around the tabular - \begin{center} instead of
 	// \centering, and {\small ...} groups scoping a size switch (BERT-era arXiv especially).
@@ -43,7 +51,13 @@ function extractTableComponents(content: Node[], ctx: ConversionContext) {
 		if (node.type === 'macro' && node.content === 'caption') {
 			const arg = getMacroFirstArg(node as Macro);
 			const captionText = convertNodesToInline(arg, ctx);
-			caption = buildNode('table_caption', null, captionText);
+			const optArg = (node as Macro).args?.find((a) => a.openMark === '[');
+			caption = buildNode(
+				'table_caption',
+				{ starred: macroHasStar(node as Macro), captionOpt: optArg ? printRaw(optArg.content) : null },
+				captionText
+			);
+			captionBelow = sawTabular;
 		} else if (node.type === 'macro' && node.content === 'label') {
 			const text = getTextContent(getMacroFirstArg(node as Macro));
 			if (text) labels.push(text);
@@ -59,17 +73,34 @@ function extractTableComponents(content: Node[], ctx: ConversionContext) {
 			// whitespace BEFORE the tabular is just separation (preBody re-joins with spaces);
 			// whitespace AFTER is preserved (word spacing in notes prose matters).
 			if (node.type === 'parbreak' || (node.type === 'whitespace' && !sawTabular)) continue;
-			if (node.type === 'macro' && (node.content === 'centering' || node.content === 'vspace' || node.content === 'raggedright')) continue;
-			// the notes serializer emits its own {\small ...}, so a size switch in the NOTES
+			if (node.type === 'macro' && node.content === 'centering') {
+				centering = true;
+				continue;
+			}
+			if (node.type === 'macro' && (node.content === 'vspace' || node.content === 'raggedright')) continue;
+			// the notes wrapper emits its own \par\smallskip; a skip leading the notes would compound
+			if (sawTabular && noteNodes.every(isBlankCellNode) && node.type === 'macro' && /^(small|med|big)skip$/.test(String(node.content)))
+				continue;
+			// the notes serializer emits its own {\<size> ...}, so a size switch in the NOTES
 			// position is redundant and compounds each save: strip a bare one, unwrap a group led
-			// by one. must stay scoped to sawTabular: a switch BEFORE the tabular (\scriptsize to
-			// shrink an oversized table) has nothing to do with the notes wrapper and must survive.
-			if (sawTabular && node.type === 'macro' && FONT_SIZE_SWITCHES.has((node as Macro).content)) continue;
+			// by one, remembering which size it was. must stay scoped to sawTabular: a switch
+			// BEFORE the tabular (\scriptsize to shrink an oversized table) has nothing to do with
+			// the notes wrapper and must survive.
+			if (sawTabular && node.type === 'macro' && FONT_SIZE_SWITCHES.has((node as Macro).content)) {
+				notesSize = (node as Macro).content;
+				continue;
+			}
 			if (sawTabular && node.type === 'group') {
 				const gcontent: Node[] = node.content || [];
 				const firstMeaningful = gcontent.find((n) => !(n.type === 'whitespace' || n.type === 'parbreak' || n.type === 'comment'));
 				if (firstMeaningful && firstMeaningful.type === 'macro' && FONT_SIZE_SWITCHES.has((firstMeaningful as Macro).content)) {
+					notesSize = (firstMeaningful as Macro).content;
 					noteNodes.push(...gcontent.filter((n) => n !== firstMeaningful));
+					continue;
+				}
+				// a group led by a skip is a spacer, not notes: raw, braces and all (postBody below)
+				if (firstMeaningful && firstMeaningful.type === 'macro' && /^[vh]skip$/.test(String((firstMeaningful as Macro).content))) {
+					noteNodes.push(node);
 					continue;
 				}
 			}
@@ -100,13 +131,7 @@ function extractTableComponents(content: Node[], ctx: ConversionContext) {
 	// STARTS the post-tabular content; real notes after a leading switch keep the \small treatment.
 	let postBody: string | null = null;
 	const firstNote = noteNodes.find((n) => n.type !== 'whitespace' && n.type !== 'parbreak');
-	if (
-		firstNote &&
-		firstNote.type === 'macro' &&
-		((firstNote as Macro).content === 'vskip' ||
-			(firstNote as Macro).content === 'hskip' ||
-			SCOPED_SWITCHES.has((firstNote as Macro).content))
-	) {
+	if (leadsWithSkip(firstNote)) {
 		postBody =
 			noteNodes
 				.map((n) => nodeRawSource(n) ?? printRaw(n))
@@ -125,7 +150,21 @@ function extractTableComponents(content: Node[], ctx: ConversionContext) {
 	const label = labels.length > 0 ? labels[labels.length - 1] : null;
 	const extraLabels = labels.length > 1 ? labels.slice(0, -1) : null;
 
-	return { caption, label, extraLabels, tables, notes, preBody, postBody };
+	return { caption, label, extraLabels, tables, notes, preBody, postBody, centering, captionBelow, notesSize };
+}
+
+/** a bare \vskip, a scoped switch, or a group led by a skip: setup after the tabular, not notes */
+function leadsWithSkip(n: Node | undefined): boolean {
+	if (!n) return false;
+	if (n.type === 'macro') {
+		const c = (n as Macro).content;
+		return c === 'vskip' || c === 'hskip' || SCOPED_SWITCHES.has(c);
+	}
+	if (n.type === 'group') {
+		const first = (n.content ?? []).find((x) => !(x.type === 'whitespace' || x.type === 'parbreak' || x.type === 'comment'));
+		return first?.type === 'macro' && /^[vh]skip$/.test(String((first as Macro).content));
+	}
+	return false;
 }
 
 function flattenTabularWrappers(content: Node[]): Node[] {
@@ -151,10 +190,16 @@ export function containsTabular(nodes: Node[]): boolean {
 }
 
 export function createTableWrapper(env: Environment, ctx: ConversionContext, options: ConversionOptions): PmNode[] {
-	const { caption, label, extraLabels, tables, notes, preBody, postBody } = extractTableComponents(env.content, ctx);
+	const { caption, label, extraLabels, tables, notes, preBody, postBody, centering, captionBelow, notesSize } = extractTableComponents(
+		env.content,
+		ctx
+	);
 
 	const tableNode = tables[0];
-	if (!tableNode) {
+	// the wrapper models exactly one tabular; a float holding several (side by side, or stacked
+	// under one caption) keeps them all on the environment path below, where each converts as
+	// its own table and the caption stays a chip
+	if (!tableNode || tables.length > 1) {
 		// no tabular as a DIRECT child. one merely nested (e.g. in \begin{center}) still becomes
 		// editable: keep the float as an environment node, the nested tabular converts inside it.
 		if (containsTabular(env.content)) {
@@ -182,6 +227,9 @@ export function createTableWrapper(env: Environment, ctx: ConversionContext, opt
 				preBody,
 				postBody,
 				placement,
+				centering,
+				captionBelow,
+				notesSize,
 				hasHeaderRow: true, // simplified assumption
 				hasHeaderColumn: true,
 				// table_wrapper has no verbatim template; \begin{table}/table* is ALWAYS
@@ -245,8 +293,8 @@ export function createTable(env: Environment): PmNode[] {
 			pendingRules = '';
 		}
 	}
-	function flushRow(cells: PmNode[]) {
-		rows.push(buildNode('table_row', { topRules: rowTop }, cells.length > 0 ? cells : [createTableCell([])]));
+	function flushRow(cells: PmNode[], rowBreakSuffix = '') {
+		rows.push(buildNode('table_row', { topRules: rowTop, rowBreakSuffix }, cells.length > 0 ? cells : [createTableCell([])]));
 		rowTop = '';
 		rowStarted = false;
 	}
@@ -259,7 +307,8 @@ export function createTable(env: Environment): PmNode[] {
 		} else if (node.type === 'macro' && isRowBreak(node as Macro)) {
 			startRow();
 			currentRowCells.push(createTableCell(currentCellContent));
-			flushRow(currentRowCells);
+			const args = (node as Macro).args;
+			flushRow(currentRowCells, args && args.length ? printRaw(args) : '');
 			currentRowCells = [];
 			currentCellContent = [];
 		} else if (node.type === 'macro' && TABLE_RULE_MACROS.has((node as Macro).content)) {
@@ -317,10 +366,15 @@ export function isMacroNamed(n: Node, name: string): boolean {
 
 // detect a leading \multicolumn / \multirow (possibly \multicolumn wrapping \multirow, the shape
 // the serializer emits for both-ways spans) and pull out the span counts + actual content.
-export function unwrapSpans(content: Node[]): { colspan: number; rowspan: number; inner: Node[] } {
+export function unwrapSpans(content: Node[]): { colspan: number; rowspan: number; inner: Node[]; mcAlign: string | null } {
 	let colspan = 1;
 	let rowspan = 1;
 	let inner = content;
+	let mcAlign: string | null = null;
+	function alignOf(m: Macro): string | null {
+		const a = (m.args ?? []).filter((x) => x.openMark === '{')[1];
+		return a ? printRaw(a.content) : null;
+	}
 	function spanOf(m: Macro): number {
 		const a = (m.args ?? []).filter((x) => x.openMark === '{')[0];
 		const v = a ? parseInt(printRaw(a.content).trim(), 10) : NaN;
@@ -334,6 +388,7 @@ export function unwrapSpans(content: Node[]): { colspan: number; rowspan: number
 	if (meaningful.length === 1 && isMacroNamed(meaningful[0], 'multicolumn')) {
 		const mc = meaningful[0] as Macro;
 		colspan = spanOf(mc);
+		mcAlign = alignOf(mc);
 		inner = textOf(mc);
 		const innerMeaningful = inner.filter((n) => !isBlankCellNode(n));
 		if (innerMeaningful.length === 1 && isMacroNamed(innerMeaningful[0], 'multirow')) {
@@ -346,11 +401,11 @@ export function unwrapSpans(content: Node[]): { colspan: number; rowspan: number
 		rowspan = spanOf(mr);
 		inner = textOf(mr);
 	}
-	return { colspan, rowspan, inner };
+	return { colspan, rowspan, inner, mcAlign };
 }
 
 export function createTableCell(content: Node[]): PmNode {
-	const { colspan, rowspan, inner } = unwrapSpans(content);
+	const { colspan, rowspan, inner, mcAlign } = unwrapSpans(content);
 	// trim blank AST nodes BEFORE conversion, not the merged text string after: a macro that
 	// produces literal spaces as real content (\quad row-label indents) is indistinguishable from
 	// incidental whitespace once flattened, and a string-level trim silently eats it.
@@ -361,7 +416,7 @@ export function createTableCell(content: Node[]): PmNode {
 	const ctx = createDefaultContext();
 	const inlineContent = convertNodesToInline(inner.slice(start, end), ctx);
 
-	return buildNode('table_cell', { colspan, rowspan, colwidth: null }, [buildNode('paragraph', null, inlineContent)]);
+	return buildNode('table_cell', { colspan, rowspan, colwidth: null, mcAlign }, [buildNode('paragraph', null, inlineContent)]);
 }
 
 // drop the placeholder cells LaTeX writes UNDER a \multirow so the prosemirror-tables covered-
@@ -387,7 +442,11 @@ export function resolveSpans(rows: PmNode[]): PmNode[] {
 			if (rs > 1) for (let rr = r + 1; rr < r + rs; rr++) for (let cc = col; cc < col + cs; cc++) mark(rr, cc);
 			col += cs;
 		});
-		return buildNode('table_row', { topRules: row.attrs.topRules ?? '' }, kept.length ? kept : [createTableCell([])]);
+		return buildNode(
+			'table_row',
+			{ topRules: row.attrs.topRules ?? '', rowBreakSuffix: row.attrs.rowBreakSuffix ?? '' },
+			kept.length ? kept : [createTableCell([])]
+		);
 	});
 }
 

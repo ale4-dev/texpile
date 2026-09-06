@@ -2,7 +2,8 @@
 // kept dependency-free (node builtins only). Traversal lives in fsWalk, search in fsSearch.
 import { readFile, writeFile, mkdir, rm, rename, stat, cp } from 'node:fs/promises';
 import { dirname, basename, extname, sep, resolve } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
+import { decodeText, type SourceEncoding } from './textDecode';
 
 export const MIME: Record<string, string> = {
 	'.png': 'image/png',
@@ -15,10 +16,9 @@ export const MIME: Record<string, string> = {
 	'.pdf': 'application/pdf'
 };
 
-export async function read(path: string): Promise<{ content: string }> {
+export async function read(path: string): Promise<{ content: string; encoding: SourceEncoding }> {
 	if (!path) throw new Error('Missing path');
-	const content = await readFile(path, 'utf-8');
-	return { content };
+	return decodeText(await readFile(path));
 }
 
 /** writes text, creating parent directories. */
@@ -81,6 +81,17 @@ function validateName(name: string): void {
 	if (RESERVED_WIN.test(name)) throw new Error(`"${name}" is a reserved file name`);
 }
 
+function sameEntry(a: string, b: string): boolean {
+	try {
+		if (realpathSync.native(a) === realpathSync.native(b)) return true;
+		const sa = statSync(a);
+		const sb = statSync(b);
+		return sa.ino !== 0 && sa.ino === sb.ino && sa.dev === sb.dev;
+	} catch {
+		return false;
+	}
+}
+
 export async function applyFileOp(body: FsOpBody): Promise<FsOpResult> {
 	const action = body?.action;
 	if (action === 'create') {
@@ -112,6 +123,9 @@ export async function applyFileOp(body: FsOpBody): Promise<FsOpResult> {
 		const { from, to } = body;
 		if (!from || !to) throw new Error('Missing from/to');
 		validateName(basename(to));
+		// a rename never overwrites; only a case change of the same entry may land on an "existing"
+		// path (a case-insensitive file system answers exists for it)
+		if (existsSync(to) && !sameEntry(from, to)) throw new Error(`"${basename(to)}" already exists`);
 		await rename(from, to);
 	} else if (action === 'copy') {
 		// cross-window drag: files copied from another workspace (recursive for folders).

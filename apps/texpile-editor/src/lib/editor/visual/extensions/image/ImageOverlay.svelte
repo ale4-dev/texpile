@@ -61,7 +61,9 @@
 			<Portal>
 				<Popover.Positioner class="z-floating-ui">
 					<Popover.Content class="card bg-surface-50-950 border-surface-300-700 min-w-[250px] border shadow-lg">
-						<ImageSettingsPanel {node} {view} {getPos} {dialect} {overlayElement} />
+						{#if settingsOpen}
+							<ImageSettingsPanel {node} {view} {getPos} {dialect} {overlayElement} />
+						{/if}
 					</Popover.Content>
 				</Popover.Positioner>
 			</Portal>

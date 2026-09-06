@@ -5,7 +5,17 @@ Release notes for Texpile Desktop. Add notes under `## [Unreleased]` as you work
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-06
+
 - fix: live mode is no longer marked experimental in the compile dialog, and the docs list its limits
+- fix: opening a large document no longer takes gigabytes of memory; the LaTeX tokenizer works in chunks, and the citation, label, math and image popovers are built only when opened
+- fix: editing a large single file in the visual editor is responsive again, and files over 800 KB open in Source mode
+- fix: a chapter that spells out \begin{document} inside \verb or a listing opens in full in the visual editor
+- fix: figures rendered from PDF keep a bitmap sized for the page, not for the drawing
+- fix: the arrow keys leave a block equation and an inline raw chip instead of getting stuck in them
+- feat: in Source mode, hovering commented text or its line-number mark shows the comment thread
+- fix: the citation card lists authors in short form and stays within the window
+- fix: the starter templates load only the packages the editor needs
 
 ## [1.0.0-rc.4] - 2026-09-04
 

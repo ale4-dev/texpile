@@ -6,6 +6,7 @@
 	import { fitsVisualEditor, type BiblatexReference } from '$lib/languages/bib/biblatex';
 	import { validateEntry } from '$lib/languages/bib/bibValidate';
 	import { bibProblemText } from '$lib/languages/bib/bibProblemText';
+	import { bibDisplayText } from '$lib/languages/bib/biblatex';
 	import { m } from '$lib/paraglide/messages';
 
 	// one walk per row per render; a bibliography is short and the check is a few set lookups
@@ -46,8 +47,8 @@
 			onclick={() => onEdit(ref)}
 		>
 			<div class="min-w-0 flex-1">
-				<div class="truncate text-sm font-semibold">{ref.author || m.bib_unknown_author_placeholder()}</div>
-				<div class="text-muted truncate text-xs">{ref.title || m.bib_untitled_placeholder()}</div>
+				<div class="truncate text-sm font-semibold">{bibDisplayText(ref.author) || m.bib_unknown_author_placeholder()}</div>
+				<div class="text-muted truncate text-xs">{bibDisplayText(ref.title) || m.bib_untitled_placeholder()}</div>
 				<!-- wraps, and the key truncates, so a narrow pane never scrolls sideways -->
 				<div class="text-muted mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
 					<!-- date is biblatex's spelling and year the older one; a row showing "No year"

@@ -1,6 +1,7 @@
 // token attribute readers and the image-token builders
 import type { Token } from 'markdown-it';
 import { buildNode, textNodes, type PmNode } from './builders';
+import { formatImage } from './inlineSyntax';
 
 export function attrStr(tok: Token, name: string): string {
 	const v = tok.attrGet(name);
@@ -30,10 +31,21 @@ export function dest(tok: Token, name: string): string {
 	}
 }
 
+/** the alt text as the reader sees it: `content` is the raw label, escapes and all */
+export function altText(tok: Token): string {
+	let out = '';
+	for (const c of tok.children ?? []) {
+		if (c.type === 'image') out += altText(c);
+		else if (c.type === 'math_inline') out += `$${c.content}$`;
+		else if (c.type === 'softbreak' || c.type === 'hardbreak') out += ' ';
+		else if (c.content) out += c.content;
+	}
+	return out;
+}
+
 /** reconstruct the literal markdown of an image token, for the mixed-content inline chip. */
 export function imageMarkdown(tok: Token): string {
-	const title = attrStr(tok, 'title');
-	return `![${tok.content}](${dest(tok, 'src')}${title ? ` "${title}"` : ''})`;
+	return formatImage(altText(tok), dest(tok, 'src'), attrStr(tok, 'title'));
 }
 
 /** `![alt](src "title")` alone in a paragraph: a block figure. title becomes the caption. */
@@ -43,7 +55,7 @@ export function imageBlock(tok: Token): PmNode {
 		'image',
 		{
 			src: dest(tok, 'src'),
-			alt: tok.content || null,
+			alt: altText(tok) || null,
 			numbered: false,
 			showCaption: !!title
 		},

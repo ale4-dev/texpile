@@ -28,13 +28,31 @@ function mountEditor() {
 	return { view, place };
 }
 
-const clickAt = (view: EditorView, pos: number) =>
-	spellClickBoundaryPlugin.props.handleClick!.call(spellClickBoundaryPlugin, view, pos, new MouseEvent('click'));
+const clickAt = (view: EditorView, pos: number, clientX = 0, clientY = 0) =>
+	spellClickBoundaryPlugin.props.handleClick!.call(spellClickBoundaryPlugin, view, pos, new MouseEvent('click', { clientX, clientY }));
+
+/** jsdom lays nothing out, so the flagged span is given a box by hand: x 100 to 140, y 10 to 30 */
+function layOutFlaggedWord(place: HTMLElement) {
+	const span = place.querySelector('.proofread-spell') as HTMLElement;
+	const rect = { left: 100, right: 140, top: 10, bottom: 30, width: 40, height: 20, x: 100, y: 10, toJSON: () => ({}) } as DOMRect;
+	span.getClientRects = () => [rect] as unknown as DOMRectList;
+}
 
 describe('spellClickBoundaryPlugin', () => {
 	it('swallows the click at the end of a flagged word, so the caret can go there', () => {
 		const { view, place } = mountEditor();
 		expect(clickAt(view, FLAG_TO)).toBe(true);
+		view.destroy();
+		place.remove();
+	});
+
+	// the caret resolves after the last letter from anywhere on its right half; the box decides
+	it('lets a click on the last letter through, and swallows one past the word', () => {
+		const { view, place } = mountEditor();
+		layOutFlaggedWord(place);
+		expect(clickAt(view, FLAG_TO, 138, 20)).toBe(false); // on the d of World
+		expect(clickAt(view, FLAG_TO, 143, 20)).toBe(true); // in the gap after it
+		expect(clickAt(view, FLAG_TO, 138, 40)).toBe(true); // the line below, past the word's box
 		view.destroy();
 		place.remove();
 	});

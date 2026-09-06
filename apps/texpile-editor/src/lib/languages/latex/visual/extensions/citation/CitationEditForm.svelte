@@ -2,6 +2,7 @@
 	import type { Node as PMNode } from 'prosemirror-model';
 	import { referenceStore, templateFeaturesStore } from '$lib/stores/editorStore';
 	import { splitCitationKeys } from './citationKeys';
+	import { bibDisplayText, bibAuthorShort } from '$lib/languages/bib/biblatex';
 	import { ChevronDown } from '@lucide/svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -22,12 +23,13 @@
 	const keys = $derived(splitCitationKeys(node.textContent));
 	const reference = $derived(referenceStore.current?.find((ref) => ref.key === key));
 
-	// dropdown label, capped so long titles don't blow out the select
+	// one line per entry, authors the way the chip prints them and the title capped: a 20-author
+	// entry spelled out in full stretched the card across the window
 	function refLabel(ref: { author?: string | string[]; year?: string; title?: string; key?: string }): string {
-		const author = Array.isArray(ref.author) ? ref.author.join(', ') : ref.author;
+		const author = bibAuthorShort(Array.isArray(ref.author) ? ref.author.join(' and ') : ref.author);
 		let s = author || ref.key || '';
 		if (ref.year) s += ` (${ref.year})`;
-		if (ref.title) s += `: ${ref.title}`;
+		if (ref.title) s += `: ${bibDisplayText(ref.title)}`;
 		return s.length > 70 ? s.slice(0, 69).trimEnd() + '…' : s;
 	}
 
@@ -108,9 +110,13 @@
 			<span class="text-surface-900-100 text-sm font-medium">{m.citation_reference_label()}</span>
 			{#each keys as k (k)}
 				{@const ref = referenceStore.current?.find((r) => r.key === k)}
-				<div class="mt-1.5">
-					<span class="text-surface-900-100 text-sm font-semibold">{ref?.author || k}</span>
-					<span class="text-muted text-sm">{ref ? ref.year || ref.date?.slice(0, 4) || '' : m.citation_key_missing()}</span>
+				<div class="mt-1.5 text-sm">
+					{#if ref}
+						<span class="text-surface-900-100">{refLabel(ref)}</span>
+					{:else}
+						<span class="text-surface-900-100 font-mono">{k}</span>
+						<span class="text-muted">{m.citation_key_missing()}</span>
+					{/if}
 				</div>
 			{/each}
 		{:else if onChangeKey && referenceStore.current?.length}
@@ -126,10 +132,10 @@
 				{/each}
 			</select>
 		{:else}
-			<div class="text-surface-900-100 text-base font-semibold">{reference?.author || m.citation_unknown_author()}</div>
+			<div class="text-surface-900-100 text-base font-semibold">{bibAuthorShort(reference?.author) || m.citation_unknown_author()}</div>
 			<div class="text-muted text-sm">
 				{reference?.year || m.citation_year_na()}
-				{#if reference?.title}<span class="mt-1 block text-xs italic">{reference.title}</span>{/if}
+				{#if reference?.title}<span class="mt-1 block text-xs italic">{bibDisplayText(reference.title)}</span>{/if}
 			</div>
 		{/if}
 	</div>

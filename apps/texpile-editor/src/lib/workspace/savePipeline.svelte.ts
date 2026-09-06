@@ -70,10 +70,14 @@ export class SavePipeline {
 
 	flush() {
 		this.cancelTimer();
-		if (!this._pending) return;
-		const { path, content } = this._pending;
+		const p = this._pending;
+		if (!p) return;
 		this._pending = null;
-		void this.enqueue(path, content, false);
+		void this.enqueue(p.path, p.content, false).then((landed) => {
+			// a write that did not land (the external-write guard, a locked file) keeps the edit
+			// queued, so the next flush retries it instead of dropping it
+			if (!landed && !this._pending) this._pending = p;
+		});
 	}
 
 	/** flush and wait for the write to land (compiles need the on-disk copy current for SyncTeX). */
@@ -114,16 +118,18 @@ export class SavePipeline {
 	 * applies the right one if the user switches files first. `force` skips the external-write
 	 * guard: only the conflict modal's "keep mine" may use it, because by then the user has SEEN
 	 * that disk differs and chosen to overwrite. */
-	enqueue(path: string, content: string, notify: boolean, force = false): Promise<void> {
+	/** resolves true once the bytes are on disk, false when the write was aborted or failed */
+	enqueue(path: string, content: string, notify: boolean, force = false): Promise<boolean> {
 		return this.enqueueWithEol(path, content, notify, this.deps.getEol(), force);
 	}
 
-	enqueueWithEol(path: string, content: string, notify: boolean, eol: Eol, force = false): Promise<void> {
-		this.chain = this.chain.then(() => this.write(path, content, notify, eol, force));
-		return this.chain;
+	enqueueWithEol(path: string, content: string, notify: boolean, eol: Eol, force = false): Promise<boolean> {
+		const result = this.chain.then(() => this.write(path, content, notify, eol, force));
+		this.chain = result.then(() => undefined);
+		return result;
 	}
 
-	private async write(path: string, content: string, notify: boolean, eol: Eol, force: boolean) {
+	private async write(path: string, content: string, notify: boolean, eol: Eol, force: boolean): Promise<boolean> {
 		this.saving = true;
 		try {
 			// The point of no return for someone else's edit: writeText below replaces the whole file,
@@ -133,7 +139,7 @@ export class SavePipeline {
 			// nothing of THEIRS is lost either.
 			if (!force && (await this.deps.diskChanged(path))) {
 				this.deps.raiseConflict(path);
-				return;
+				return false;
 			}
 			await this.deps.writeText(path, fromLf(content, eol)); // re-apply the file's CRLF/LF on disk
 			await this.deps.recordDiskStamp(path); // our own write must not read as an external one
@@ -145,8 +151,10 @@ export class SavePipeline {
 				if (content === this.deps.getLiveContent()) this.deps.setDirty(false);
 			}
 			if (notify) toaster.success({ title: m.wsview_toast_saved_title(), description: basename(path), duration: 1200 });
+			return true;
 		} catch (e) {
 			toaster.error({ title: m.wsview_toast_save_failed_title(), description: e instanceof Error ? e.message : m.wsview_error_unknown() });
+			return false;
 		} finally {
 			this.saving = false;
 		}

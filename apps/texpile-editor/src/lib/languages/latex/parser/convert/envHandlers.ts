@@ -39,7 +39,7 @@ export const envHandlers: Record<string, EnvHandler> = {
 	enumerate: (env, _ctx, options) => createList(env, 'ordered', options),
 	description: (env, _ctx, options) => createList(env, 'bullet', options),
 	quote: (env, _ctx, options) => [buildNode('blockquote', null, convertNodesToBlocks(env.content, options))],
-	quotation: (env, _ctx, options) => [buildNode('blockquote', null, convertNodesToBlocks(env.content, options))],
+	quotation: (env, _ctx, options) => [buildNode('blockquote', { env: 'quotation' }, convertNodesToBlocks(env.content, options))],
 	// sourceForm:'env' so it round-trips to the env form (the command form stamps 'macro')
 	abstract: (env, _ctx, options) => [buildNode('abstract', { sourceForm: 'env' }, convertNodesToBlocks(env.content, options))],
 	// losing lstlisting's [language=...] silently drops \lstset styling keyed off it

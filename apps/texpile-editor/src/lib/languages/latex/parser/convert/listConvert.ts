@@ -5,6 +5,7 @@ import { printRaw } from '@unified-latex/unified-latex-util-print-raw';
 import { buildNode, type PmNode, type ConversionOptions } from '../builders';
 import { convertNodesToBlocks } from '../converter';
 import { isBlankCellNode } from './tableConvert';
+import { envArgsRawSource } from './origCapture';
 
 export function createList(env: Environment, kind: 'bullet' | 'ordered', options: ConversionOptions): PmNode[] {
 	const result: PmNode[] = [];
@@ -17,6 +18,12 @@ export function createList(env: Environment, kind: 'bullet' | 'ordered', options
 	const firstItemIndex = env.content.findIndex((n) => n.type === 'macro' && (n as Macro).content === 'item');
 	const preItemContent = firstItemIndex > 0 ? env.content.slice(0, firstItemIndex) : [];
 	const preBody = preItemContent.some((n) => !isBlankCellNode(n)) ? printRaw(preItemContent).trim() : null;
+	// enumitem options ([resume], [label=(\alph*)], [noitemsep]) ride on the first node too
+	const envArgs = env.args && env.args.length ? (envArgsRawSource(env) ?? printRaw(env.args)) : null;
+	const envName = env.env === 'description' ? 'description' : null;
+	// the raw [label] of the item being built, re-emitted as written (the bold text below is
+	// only how the editor shows it)
+	let itemLabel: string | null = null;
 	function listAttrs(extra: Record<string, unknown> = {}) {
 		return {
 			kind,
@@ -24,6 +31,9 @@ export function createList(env: Environment, kind: 'bullet' | 'ordered', options
 			checked: null,
 			collapsed: false,
 			preBody: result.length === 0 ? preBody : null,
+			envArgs: result.length === 0 ? envArgs : null,
+			envName: result.length === 0 ? envName : null,
+			itemLabel,
 			...extra
 		};
 	}
@@ -38,6 +48,7 @@ export function createList(env: Environment, kind: 'bullet' | 'ordered', options
 			}
 			currentItemContent = [];
 			foundFirstItem = true;
+			itemLabel = null;
 
 			const macro = node as Macro;
 			if (macro.args && macro.args.length > 0) {
@@ -46,6 +57,7 @@ export function createList(env: Environment, kind: 'bullet' | 'ordered', options
 				// reusing \item's optional [..] arg object as-is made the label invisible to
 				// textbf's handler and silently dropped it.
 				const optionalArg = macro.args.find((arg) => arg.openMark === '[');
+				if (optionalArg) itemLabel = printRaw(optionalArg.content);
 				if (optionalArg && optionalArg.content.length > 0) {
 					const syntheticTextbf: Macro = {
 						type: 'macro',

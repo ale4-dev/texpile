@@ -46,8 +46,10 @@ describe('canSetListingLanguage', () => {
 });
 
 describe('argsWithLanguage', () => {
-	it('writes a fence info string', () => {
+	it('writes a fence info string, keeping what follows the language', () => {
 		expect(argsWithLanguage('fence', 'python', 'Rust')).toBe('rust');
+		expect(argsWithLanguage('fence', '', 'Rust')).toBe('rust');
+		expect(argsWithLanguage('fence', 'python title="x" {1,3}', 'Rust')).toBe('rust title="x" {1,3}');
 	});
 
 	it("replaces minted's argument, keeping its options", () => {

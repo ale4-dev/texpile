@@ -90,3 +90,62 @@ describe('SavePipeline external-write guard', () => {
 		expect(setDirty).not.toHaveBeenCalled(); // still dirty: the user's edit has not landed anywhere
 	});
 });
+
+// A flush used to clear the queued edit BEFORE the write ran, so a write the guard aborted (an
+// mtime-only rewrite: touch, a checkout and back) or that failed (a locked file) left the edit
+// tracked nowhere: not on disk, not in `pending`, gone on the next switch without a prompt.
+describe('SavePipeline keeps an unlanded edit queued', () => {
+	const tick = () => new Promise((r) => setTimeout(r, 0));
+
+	it('re-queues the edit when the guard aborts the write, and the next flush lands it', async () => {
+		let changed = true;
+		const { pipeline, writes } = makePipeline({ autosaveActive: () => false, diskChanged: async () => changed });
+		pipeline.schedule('/ws/main.tex', 'mine');
+		pipeline.flush();
+		await pipeline.whenIdle();
+		await tick();
+		expect(writes).toEqual([]);
+		expect(pipeline.pending).toEqual({ path: '/ws/main.tex', content: 'mine' });
+
+		changed = false; // the conflict check re-stamped: same bytes, new mtime
+		pipeline.flush();
+		await pipeline.whenIdle();
+		await tick();
+		expect(writes).toEqual([{ path: '/ws/main.tex', content: 'mine' }]);
+		expect(pipeline.pending).toBeNull();
+	});
+
+	it('re-queues the edit when the write throws', async () => {
+		const { pipeline } = makePipeline({
+			autosaveActive: () => false,
+			writeText: async () => {
+				throw new Error('EPERM');
+			}
+		});
+		pipeline.schedule('/ws/main.tex', 'mine');
+		pipeline.flush();
+		await pipeline.whenIdle();
+		await tick();
+		expect(pipeline.pending).toEqual({ path: '/ws/main.tex', content: 'mine' });
+	});
+
+	it('does not clobber a newer edit queued while the failed write was in flight', async () => {
+		const { pipeline } = makePipeline({ autosaveActive: () => false, diskChanged: async () => true });
+		pipeline.schedule('/ws/main.tex', 'first');
+		pipeline.flush();
+		pipeline.schedule('/ws/main.tex', 'second');
+		await pipeline.whenIdle();
+		await tick();
+		expect(pipeline.pending).toEqual({ path: '/ws/main.tex', content: 'second' });
+	});
+
+	it('clears the queue after a write that landed', async () => {
+		const { pipeline, writes } = makePipeline({ autosaveActive: () => false });
+		pipeline.schedule('/ws/main.tex', 'mine');
+		pipeline.flush();
+		await pipeline.whenIdle();
+		await tick();
+		expect(writes).toEqual([{ path: '/ws/main.tex', content: 'mine' }]);
+		expect(pipeline.pending).toBeNull();
+	});
+});

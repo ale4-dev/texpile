@@ -48,14 +48,16 @@
 	<Portal>
 		<Popover.Positioner class="z-floating-ui">
 			<Popover.Content class="card bg-surface-50-950 border-surface-300-700 z-[200] min-w-[260px] border p-3 shadow-lg">
-				<label class="block">
-					<span class="text-surface-900-100 text-sm font-medium">{m.label_rename_heading()}</span>
-					<input class="input mt-1.5 w-full font-mono text-sm" bind:value={draft} onkeydown={onKeydown} />
-					<span class="text-muted mt-1 block text-xs">{m.label_rename_hint()}</span>
-				</label>
-				<button type="button" class="btn btn-sm preset-filled-primary-500 mt-3 w-full" onclick={commit}>
-					{m.label_rename_confirm()}
-				</button>
+				{#if open}
+					<label class="block">
+						<span class="text-surface-900-100 text-sm font-medium">{m.label_rename_heading()}</span>
+						<input class="input mt-1.5 w-full font-mono text-sm" bind:value={draft} onkeydown={onKeydown} />
+						<span class="text-muted mt-1 block text-xs">{m.label_rename_hint()}</span>
+					</label>
+					<button type="button" class="btn btn-sm preset-filled-primary-500 mt-3 w-full" onclick={commit}>
+						{m.label_rename_confirm()}
+					</button>
+				{/if}
 			</Popover.Content>
 		</Popover.Positioner>
 	</Portal>

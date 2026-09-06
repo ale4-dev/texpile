@@ -91,7 +91,9 @@ export const baseMarks = {
 
 	textcolor: {
 		attrs: {
-			color: { default: 'black' }
+			color: { default: 'black' },
+			// the optional colour model of \textcolor[rgb]{...}; dropping it left an undefined colour
+			model: { default: null }
 		},
 		parseDOM: [
 			{

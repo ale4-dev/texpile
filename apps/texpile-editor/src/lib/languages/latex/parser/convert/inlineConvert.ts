@@ -8,8 +8,7 @@ import { ignoredMacros, SCOPED_SWITCHES } from '../macros';
 import { macroHandlers } from './macroHandlers';
 import { schema } from '../../schema/latexPMSchema';
 import { containsTabular } from './tableConvert';
-import { mathBodyRawSource } from './origCapture';
-import { nodeRawSource } from './origCapture';
+import { mathBodyRawSource, nodeRawSource, capture } from './origCapture';
 
 export function latexLigaturesToUnicode(text: string): string {
 	return (
@@ -44,8 +43,10 @@ export function applyLigaturesToNodes(nodes: PmNode[]): PmNode[] {
  */
 export function groupAfterRawChip(node: Node, prevAst: Node | null, lastPm: PmNode | undefined): PmNode | null {
 	if (node.type !== 'group' || prevAst?.type !== 'macro') return null;
-	// lexical control-word tail test on serialized chip text (no AST exists there any more)
-	if (!lastPm || lastPm.type.name !== 'inline_latex' || !/\\[a-zA-Z@]+$/.test(lastPm.textContent)) return null;
+	// lexical control-word tail test on serialized chip text (no AST exists there any more). a
+	// control SYMBOL counts too: the empty group of \^{} or \'{} is what keeps the accent off
+	// the next letter
+	if (!lastPm || lastPm.type.name !== 'inline_latex' || !/\\(?:[a-zA-Z@]+|[^a-zA-Z@\s])$/.test(lastPm.textContent)) return null;
 	return buildNode('inline_latex', null, [textNode(nodeRawSource(node) ?? printRaw(node))]);
 }
 
@@ -81,6 +82,19 @@ export function convertNodeToInline(node: Node, ctx: ConversionContext): PmNode[
 			return null;
 		case 'whitespace':
 			return textNodes(' ', ctx.marks.length > 0 ? ctx.marks : null);
+		// a blank line inside an argument or a cell is a paragraph break there; inline content has
+		// no paragraphs, and dropping it outright fused the words on either side
+		case 'parbreak':
+			return textNodes(' ', ctx.marks.length > 0 ? ctx.marks : null);
+		// a whole environment where only inline content can live (a tabular, minipage or itemize
+		// inside a cell or an argument): kept whole as a chip rather than dropped
+		case 'environment':
+		case 'mathenv':
+		case 'verbatim':
+		case 'displaymath': {
+			const envChip = buildNode('inline_latex', null, [textNode(nodeRawSource(node) ?? printRaw(node))]);
+			return [ctx.marks.length > 0 ? envChip.mark(realMarks(ctx.marks)) : envChip];
+		}
 		case 'macro': {
 			const macro = node as Macro;
 			// a commented call captured verbatim by the heuristics: emit as-is
@@ -128,7 +142,10 @@ export function convertNodeToInline(node: Node, ctx: ConversionContext): PmNode[
 		case 'inlinemath': {
 			// slice the exact source between the delimiters when trustworthy; printRaw fallback
 			const mathContent = mathBodyRawSource(node, ['$', '\\('], ['$', '\\)']) ?? printRaw(node.content || []);
-			return [buildNode('inline_math', null, [textNode(mathContent)])];
+			// \( \) comes back as written rather than widened to $ $
+			const start = (node as { position?: { start?: { offset?: number } } }).position?.start?.offset;
+			const paren = typeof start === 'number' && capture.rawSource?.startsWith('\\(', start);
+			return [buildNode('inline_math', { delim: paren ? 'paren' : null }, [textNode(mathContent)])];
 		}
 		case 'comment': {
 			// a mid-paragraph comment must be kept as an inline chip: dropped from PM content it
@@ -144,8 +161,9 @@ export function convertNodeToInline(node: Node, ctx: ConversionContext): PmNode[
 			// the default case and vanished. rebuild with the ORIGINAL delimiter and keep it raw
 			// rather than as \texttt-with-code-mark: \verb content is truly unescaped (\, %, _, {)
 			// which \texttt can't tolerate.
-			const v = node as unknown as { escape?: string; content?: string };
-			const verbChip = buildNode('inline_latex', null, [textNode(`\\verb${v.escape ?? '|'}${v.content ?? ''}${v.escape ?? '|'}`)]);
+			const v = node as unknown as { escape?: string; content?: string; env?: string };
+			const star = v.env === 'verb*' ? '*' : '';
+			const verbChip = buildNode('inline_latex', null, [textNode(`\\verb${star}${v.escape ?? '|'}${v.content ?? ''}${v.escape ?? '|'}`)]);
 			return [ctx.marks.length > 0 ? verbChip.mark(realMarks(ctx.marks)) : verbChip];
 		}
 		default:

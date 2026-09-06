@@ -14,20 +14,15 @@ export function childOf(node: SyntaxNode, name: string): SyntaxNode | null {
 	return null;
 }
 
-// code expressions that are statements: they configure the document or bind names, are
-// virtually always written on their own line, and always become their own raw block
-export const STATEMENT_KINDS = new Set([
-	'ModuleImport',
-	'ModuleInclude',
-	'LetBinding',
-	'SetRule',
-	'ShowRule',
-	'Conditional',
-	'ForLoop',
-	'WhileLoop',
-	'Contextual',
-	'CodeBlock'
-]);
+// code expressions that configure the document or bind names: typst wants them terminated by a
+// line end or a semicolon, so they are always their own raw block
+export const DECLARATION_KINDS = new Set(['ModuleImport', 'ModuleInclude', 'LetBinding', 'SetRule', 'ShowRule']);
+
+// code expressions that produce content: a raw block when alone in their paragraph, an inline
+// chip when prose surrounds them (`It is #if x [a] else [b] today.`)
+export const EXPRESSION_KINDS = new Set(['Conditional', 'ForLoop', 'WhileLoop', 'Contextual', 'CodeBlock']);
+
+export const STATEMENT_KINDS = new Set([...DECLARATION_KINDS, ...EXPRESSION_KINDS]);
 
 // shorthands become the character the reader sees; the reverse direction needs no mapping
 // because the character itself is valid Typst text
@@ -72,10 +67,51 @@ export function equationInner(eq: SyntaxNode, src: string): string {
 	return src.slice(eq.from, eq.to).replace(/^\$|\$$/g, '');
 }
 
-/** typst string literal -> its value; only the escapes a URL plausibly contains. */
+const STR_ESCAPES: Record<string, string> = { n: '\n', r: '\r', t: '\t', '"': '"', '\\': '\\' };
+
+/** typst string literal -> its value, the inverse of typStr. unknown escapes stay verbatim. */
 export function unquote(str: string): string {
 	const inner = str.startsWith('"') && str.endsWith('"') && str.length >= 2 ? str.slice(1, -1) : str;
-	return inner.replace(/\\(["\\])/g, '$1');
+	return inner.replace(/\\u\{([0-9a-fA-F]+)\}|\\(.)/gs, (whole, hex: string | undefined, ch: string | undefined) => {
+		if (hex != null) {
+			try {
+				return String.fromCodePoint(parseInt(hex, 16));
+			} catch {
+				return whole;
+			}
+		}
+		return ch != null && ch in STR_ESCAPES ? STR_ESCAPES[ch] : whole;
+	});
+}
+
+/** the one positional argument of `name(...)`, plus the content block, when the call has that
+ *  exact shape and nothing else. */
+function singleArgCall(call: SyntaxNode, src: string, name: string): { arg: SyntaxNode; content: SyntaxNode | null } | null {
+	if (call.name !== 'FuncCall') return null;
+	const ident = call.firstChild;
+	if (!ident || ident.name !== 'Ident' || src.slice(ident.from, ident.to) !== name) return null;
+	const args = ident.nextSibling;
+	if (!args || args.name !== 'Args') return null;
+	const real = children(args).filter((k) => !['LeftParen', 'RightParen', 'Comma', 'Space'].includes(k.name));
+	if (real.length < 1 || real.length > 2) return null;
+	const content = real[1] ?? null;
+	if (content && content.name !== 'ContentBlock') return null;
+	return { arg: real[0], content };
+}
+
+/** `#ref(<target>)`: the function form of `@target`, which the serializer writes when the
+ *  next character would otherwise extend the marker. */
+export function refCallTarget(call: SyntaxNode, src: string): string | null {
+	const parts = singleArgCall(call, src, 'ref');
+	if (!parts || parts.content || parts.arg.name !== 'Label') return null;
+	return src.slice(parts.arg.from + 1, parts.arg.to - 1);
+}
+
+/** `#raw("...")`: the function form of an inline raw, used when the text holds a backtick. */
+export function rawCallText(call: SyntaxNode, src: string): string | null {
+	const parts = singleArgCall(call, src, 'raw');
+	if (!parts || parts.content || parts.arg.name !== 'Str') return null;
+	return unquote(src.slice(parts.arg.from, parts.arg.to));
 }
 
 /** `#link("...")[...]` and nothing fancier; any other shape stays a chip. */
@@ -142,7 +178,14 @@ function fillColor(named: SyntaxNode, src: string): string | null {
 	return colorValue(kids[1], src);
 }
 
-const MARK_FUNCS: Record<string, 'u' | 'sup' | 'sub'> = { underline: 'u', super: 'sup', sub: 'sub' };
+// emph/strong: the function forms the serializer writes for an intraword mark (`un#strong[happy]ness`)
+const MARK_FUNCS: Record<string, 'u' | 'sup' | 'sub' | 'em' | 'strong'> = {
+	underline: 'u',
+	super: 'sup',
+	sub: 'sub',
+	emph: 'em',
+	strong: 'strong'
+};
 
 /** `#underline[..] / #super[..] / #sub[..] / #highlight[..] / #highlight(fill: c)[..] /
  *  #text(fill: c)[..]` -> a mark over the inline content. Any other shape (extra arguments,
@@ -219,12 +262,17 @@ export function convertInline(nodes: SyntaxNode[], src: string, marks: PmMark[])
 				}
 				break;
 			}
-			case 'Linebreak':
+			case 'Linebreak': {
 				out.push(buildNode('hard_break', { lineBreak: true }));
 				// the newline ending the broken line is part of the break, not a leading space
-				// on the continuation
-				if (nodes[i + 1]?.name === 'Space') i++;
+				// on the continuation; a same-line space after `\` is real text
+				const sp = nodes[i + 1];
+				if (sp?.name === 'Space') {
+					i++;
+					if (!/[\r\n]/.test(src.slice(sp.from, sp.to))) out.push(...textNodes(' ', marks));
+				}
 				break;
+			}
 			case 'Escape':
 				out.push(...textNodes(unescape(slice), marks));
 				break;
@@ -242,13 +290,22 @@ export function convertInline(nodes: SyntaxNode[], src: string, marks: PmMark[])
 				}
 				const link = linkParts(next, src);
 				const markCall = link ? null : markCallParts(next, src);
+				const refTarget = link || markCall ? null : refCallTarget(next, src);
+				const rawText = link || markCall || refTarget != null ? null : rawCallText(next, src);
 				if (link) {
 					const linkMark: PmMark = { type: 'link', attrs: { href: link.href, title: null, bare: false } };
 					out.push(...convertInline(children(link.markup), src, [...marks, linkMark]));
 				} else if (markCall) {
 					out.push(...convertInline(children(markCall.markup), src, [...marks, markCall.mark]));
+				} else if (refTarget != null) {
+					out.push(withMarks(buildNode('typ_ref', { target: refTarget }), marks));
+				} else if (rawText != null) {
+					out.push(...textNodes(rawText, [...marks, { type: 'code' }]));
 				} else {
-					out.push(...chip(src.slice(k.from, next.to), marks));
+					// a terminating semicolon belongs to the expression (`#a; text`)
+					const semi = nodes[i + 2]?.name === 'Semicolon' ? nodes[i + 2] : null;
+					out.push(...chip(src.slice(k.from, (semi ?? next).to), marks));
+					if (semi) i++;
 				}
 				i++;
 				break;

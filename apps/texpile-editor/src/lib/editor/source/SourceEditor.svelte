@@ -3,6 +3,7 @@
 	import { EditorView, type ViewUpdate } from '@codemirror/view';
 	import { EditorState, Compartment } from '@codemirror/state';
 	import { setCommentRanges, focusCommentThread, type CommentRange } from '$lib/editor/visual/extensions/comments';
+	import type { CommentThread } from '$lib/comments/log';
 	import { flashLineEffect } from '$lib/languages/latex/source/synctexFlash';
 	import { bindModalKeymap, modalKeymapCompartment } from '$lib/editor/source/extensions/keybindings/modalKeymap';
 	import { typstServerGen } from '$lib/languages/typst/intellisense/lspClient';
@@ -43,6 +44,7 @@
 		onAddComment,
 		onInsertCitation,
 		onSelectComment,
+		commentThreads = [],
 		readOnly = false
 	}: {
 		value?: string;
@@ -71,6 +73,8 @@
 		/** pick citations from Zotero and insert them at the caret (host + desktop only) */
 		onInsertCitation?: () => void;
 		onSelectComment?: (id: string, from: 'text' | 'gutter') => void;
+		/** this file's threads, read by the hover card over commented text and its line number */
+		commentThreads?: CommentThread[];
 		readOnly?: boolean;
 	} = $props();
 
@@ -168,6 +172,10 @@
 					lineWrap: settings.current.sourceLineWrap !== false,
 					onAddComment,
 					onSelectComment,
+					commentPreview: (id) => {
+						const thread = commentThreads.find((t) => t.id === id);
+						return thread ? { messages: thread.messages } : null;
+					},
 					onJumpToFile,
 					onOpenFileAt,
 					onHistoryBoundary,

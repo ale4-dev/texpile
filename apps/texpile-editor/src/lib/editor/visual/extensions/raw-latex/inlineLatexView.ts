@@ -1,8 +1,10 @@
 import { EditorView as CodeMirrorView, keymap as cmKeymap, drawSelection, type ViewUpdate, type KeyBinding } from '@codemirror/view';
 import { Compartment as CodeMirrorCompartment, EditorState } from '@codemirror/state';
 import { cmSyntaxHighlight } from '$lib/editor/source/cmHighlight';
+import { cursorLineDown, cursorLineUp } from '@codemirror/commands';
 import { exitCode } from 'prosemirror-commands';
 import { undo, redo } from 'prosemirror-history';
+import { positionOnAdjacentLine } from '$lib/editor/visual/verticalExit';
 import { TextSelection, Selection } from 'prosemirror-state';
 import type { Node } from 'prosemirror-model';
 import type { EditorView as ProseMirrorView } from 'prosemirror-view';
@@ -33,6 +35,10 @@ export class InlineLatexView {
 	dom: HTMLElement;
 	updating = false;
 	languageConf = new CodeMirrorCompartment();
+	// Chromium walks a vertical caret move into any editable island on the line, so a chip that does
+	// not hold the caret is kept non-editable: ArrowUp from the text after a chip otherwise lands in
+	// the chip, and the next ArrowUp comes back out, forever
+	private editableConf = new CodeMirrorCompartment();
 	/** plain-text stand-in until this chip nears the viewport */
 	private placeholder?: HTMLElement;
 
@@ -71,6 +77,7 @@ export class InlineLatexView {
 			doc: this.node.textContent,
 			extensions: [
 				cmKeymap.of(this.codeMirrorKeymap()),
+				this.editableConf.of(CodeMirrorView.editable.of(false)),
 				drawSelection(),
 				this.languageConf.of([]),
 				cmSyntaxHighlight(),
@@ -121,6 +128,8 @@ export class InlineLatexView {
 		}
 
 		cm.dom.addEventListener('blur', this.handleBlur, true);
+		// capture phase, so the content is editable by the time CodeMirror handles the click
+		cm.dom.addEventListener('mousedown', this.wakeOnMouse, true);
 
 		this.lastCommentKey = syncCmCommentHighlights(cm, this.view, () => this.getPos(), this.node, this.lastCommentKey);
 	};
@@ -128,7 +137,15 @@ export class InlineLatexView {
 	/** last comment ranges handed to CodeMirror, so a no-op update doesn't dispatch */
 	private lastCommentKey = '[]';
 
+	private setEditable(on: boolean): void {
+		if (!this.cm || this.cm.state.facet(CodeMirrorView.editable) === on) return;
+		this.cm.dispatch({ effects: this.editableConf.reconfigure(CodeMirrorView.editable.of(on)) });
+	}
+
+	private wakeOnMouse = (): void => this.setEditable(true);
+
 	handleBlur() {
+		this.setEditable(false);
 		this.deselectNode();
 	}
 
@@ -163,6 +180,7 @@ export class InlineLatexView {
 		// the caret is arriving, so the editor has to exist now regardless of the viewport
 		this.materialize();
 		if (!this.cm) return;
+		this.setEditable(true);
 		this.cm.focus();
 		this.updating = true;
 		this.cm.dispatch({ selection: { anchor, head } });
@@ -184,8 +202,10 @@ export class InlineLatexView {
 		return [
 			{ key: 'ArrowLeft', run: () => this.maybeEscape('char', -1) },
 			{ key: 'ArrowRight', run: () => this.maybeEscape('char', 1) },
-			{ key: 'ArrowUp', run: () => this.maybeEscape('char', -1) },
-			{ key: 'ArrowDown', run: () => this.maybeEscape('char', 1) },
+			// a soft-wrapped chip moves within itself first; from its top or bottom line the caret
+			// goes to the document line above or below, the way it would from plain text
+			{ key: 'ArrowUp', run: (cm) => (this.onEdgeLine(-1) ? this.escapeVertically(-1) : cursorLineUp(cm)) },
+			{ key: 'ArrowDown', run: (cm) => (this.onEdgeLine(1) ? this.escapeVertically(1) : cursorLineDown(cm)) },
 			{ key: 'Enter', run: exit },
 			{ key: 'Ctrl-Enter', mac: 'Cmd-Enter', run: exit },
 			{ key: 'Ctrl-z', mac: 'Cmd-z', run: () => undo(view.state, view.dispatch) },
@@ -212,6 +232,25 @@ export class InlineLatexView {
 		if (dir < 0 ? main.from > 0 : main.to < this.cm.state.doc.length) return false;
 		const targetPos = this.getPos() + (dir < 0 ? 0 : this.node.nodeSize);
 		const selection = Selection.near(this.view.state.doc.resolve(targetPos), dir);
+		this.view.dispatch(this.view.state.tr.setSelection(selection).scrollIntoView());
+		this.view.focus();
+		return true;
+	}
+
+	/** whether the caret sits on the chip's first (dir -1) or last (dir 1) visual line */
+	onEdgeLine(dir: -1 | 1): boolean {
+		if (!this.cm) return true;
+		const here = this.cm.coordsAtPos(this.cm.state.selection.main.head);
+		const edge = this.cm.coordsAtPos(dir < 0 ? 0 : this.cm.state.doc.length);
+		if (!here || !edge) return true;
+		return dir < 0 ? here.top < edge.bottom : here.bottom > edge.top;
+	}
+
+	/** the line above or below the chip, at the chip's edge column; the edge itself when there is none */
+	escapeVertically(dir: -1 | 1): boolean {
+		const edge = this.getPos() + (dir < 0 ? 0 : this.node.nodeSize);
+		const target = positionOnAdjacentLine(this.view, edge, dir) ?? edge;
+		const selection = Selection.near(this.view.state.doc.resolve(target), dir);
 		this.view.dispatch(this.view.state.tr.setSelection(selection).scrollIntoView());
 		this.view.focus();
 		return true;
@@ -259,6 +298,7 @@ export class InlineLatexView {
 
 	selectNode(): void {
 		this.materialize();
+		this.setEditable(true);
 		this.cm?.focus();
 	}
 
@@ -273,6 +313,7 @@ export class InlineLatexView {
 		cancelUpgrade(this.dom);
 		if (!this.cm) return;
 		this.cm.dom.removeEventListener('blur', this.handleBlur, true);
+		this.cm.dom.removeEventListener('mousedown', this.wakeOnMouse, true);
 		this.cm.destroy();
 	}
 }

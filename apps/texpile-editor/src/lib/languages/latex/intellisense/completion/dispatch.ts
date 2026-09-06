@@ -25,6 +25,10 @@ const NON_LETTER_END = /[({[|]$/;
 function macroCompletionSource(ctx: CompletionContext): CompletionResult | null {
 	const macro = ctx.matchBefore(MACRO_TRIGGER);
 	if (!macro) return null;
+	// `\\` at a line end (a tabular or align row break) is not a macro being typed: a backslash
+	// starts one only when the run of backslashes it ends is odd
+	const run = /\\*$/.exec(ctx.state.doc.sliceString(Math.max(0, macro.from - 32), macro.from))![0].length;
+	if (run % 2 === 1) return null;
 	const options = withMathBoost(macroOptions(docText(ctx.state.doc)), isMathContext(ctx.state, macro.from));
 	if (NON_LETTER_END.test(macro.text)) {
 		// delimiter names aren't letter-filterable by the widget; offer only the exact match (LW does the same)

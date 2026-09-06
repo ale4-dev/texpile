@@ -26,7 +26,7 @@ export function typSourceShortcuts(): Extension {
 		{ key: 'Mod-u', run: run((s) => computeWrap(s, '#underline[', ']')) },
 		{ key: 'Mod-`', run: run((s) => computeToggleDelim(s, '`')) },
 		{ key: 'Mod-.', run: run((s) => computeWrap(s, '#super[', ']')) },
-		{ key: 'Mod-,', run: run((s) => computeWrap(s, '#sub[', ']')) },
+		{ key: 'Mod-Shift-,', run: run((s) => computeWrap(s, '#sub[', ']')) },
 		{ key: 'Mod-m', run: run((s) => computeToggleDelim(s, '$')) },
 		{ key: 'Mod-Shift-m', run: run(computeMathBlock) },
 		{ key: 'Mod-Shift-b', run: run((s) => computeWrap(s, '#quote(block: true)[', ']')) },

@@ -5,11 +5,9 @@
 // getPdfDocument makes safe. Rendered once per URL for the session - the blob is a snapshot,
 // a regenerated figure shows after the file is reopened.
 import { getPdfDocument } from '$lib/pdf-view';
+import { figureRasterScale } from './pdfRasterScale';
 
 const cache = new Map<string, Promise<string | null>>();
-
-// 2x: crisp on hidpi without ballooning memory; figures are page-width at most
-const RENDER_SCALE = 2;
 
 /** blob URL of the PDF's first page, or null when it cannot be loaded or rendered. */
 export function pdfPageImageUrl(url: string): Promise<string | null> {
@@ -30,7 +28,8 @@ async function render(url: string): Promise<string | null> {
 	const doc = await task.promise;
 	try {
 		const page = await doc.getPage(1);
-		const viewport = page.getViewport({ scale: RENDER_SCALE });
+		const base = page.getViewport({ scale: 1 });
+		const viewport = page.getViewport({ scale: figureRasterScale(base.width, base.height) });
 		const canvas = document.createElement('canvas');
 		canvas.width = Math.ceil(viewport.width);
 		canvas.height = Math.ceil(viewport.height);

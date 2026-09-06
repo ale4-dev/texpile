@@ -28,3 +28,5 @@ export {
 	type FieldConfig,
 	type EntryTypeConfig
 } from './fieldConfig';
+
+export { bibDisplayText, bibAuthorShort } from './bibDisplayText';

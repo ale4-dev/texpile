@@ -15,6 +15,17 @@ const tableNodeSpecs = tableNodes({
 				// eslint-disable-next-line no-param-reassign -- prosemirror-tables collects DOM attrs by mutation
 				if (value) attrs.style = (attrs.style || '') + `background-color: ${value};`;
 			}
+		},
+		// the alignment spec of a source \multicolumn{n}{spec}{...}, re-emitted as written
+		mcAlign: {
+			default: null,
+			getFromDOM(dom) {
+				return dom.getAttribute('data-mc-align') || null;
+			},
+			setDOMAttr(value, attrs) {
+				// eslint-disable-next-line no-param-reassign -- prosemirror-tables collects DOM attrs by mutation
+				if (value) attrs['data-mc-align'] = value;
+			}
 		}
 	}
 } as TableNodesOptions);
@@ -31,7 +42,9 @@ tableNodeSpecs.table.attrs = {
 };
 tableNodeSpecs.table_row.attrs = {
 	...(tableNodeSpecs.table_row.attrs ?? {}),
-	topRules: { default: '' }
+	topRules: { default: '' },
+	// what followed the row's \\ in the source ('[2ex]', '*'), re-emitted as written
+	rowBreakSuffix: { default: '' }
 };
 
 export const imageNodes = {
@@ -122,7 +135,12 @@ export const tableFamilyNodes = {
 			// float placement specifier. [H] (float package) forces placement while [h] is only a
 			// hint, so preserve whichever the source had; [h] is the default only for a brand new
 			// editor-created table
-			placement: { default: '[h]' }
+			placement: { default: '[h]' },
+			// what the source float had, so regeneration adds nothing: a \centering line, the
+			// caption above (false) or below (true) the tabular, and the size switch on the notes
+			centering: { default: true },
+			captionBelow: { default: false },
+			notesSize: { default: null }
 		},
 		parseDOM: [
 			{
@@ -159,9 +177,14 @@ export const tableFamilyNodes = {
 
 	table_caption: {
 		content: 'inline*',
-		parseDOM: [{ tag: 'div[data-table-caption]' }],
-		toDOM() {
-			return ['div', { 'data-table-caption': '', class: 'table-caption' }, 0];
+		// starred: the source wrote \caption*, an unnumbered caption. captionOpt: the verbatim
+		// short caption of \caption[short]{long}, brackets excluded
+		attrs: { starred: { default: false }, captionOpt: { default: null } },
+		parseDOM: [
+			{ tag: 'div[data-table-caption]', getAttrs: (dom) => ({ starred: (dom as HTMLElement).getAttribute('data-starred') === 'true' }) }
+		],
+		toDOM(node) {
+			return ['div', { 'data-table-caption': '', 'data-starred': node.attrs.starred ? 'true' : 'false', class: 'table-caption' }, 0];
 		}
 	} as NodeSpec,
 

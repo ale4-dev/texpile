@@ -29,9 +29,34 @@ describe('Ctrl+W', () => {
 			terminalAvailable: () => false,
 			isCompiling: () => false,
 			runCompile: () => {},
-			stopCompile: () => {}
+			stopCompile: () => {},
+			openPreferences: () => {}
 		});
 		handle(ctrlW());
 		expect(closeTab).toHaveBeenCalledWith({ path: '/w/gone.tex', compare: undefined });
+	});
+});
+
+// Ctrl+, toggled subscript in the editors and opened nothing; the desktop convention is Preferences
+describe('Ctrl+,', () => {
+	it('opens Preferences and swallows the key', () => {
+		const openPreferences = vi.fn();
+		const preventDefault = vi.fn();
+		const handle = createKeydownHandler({
+			closeTab: () => {},
+			isGuest: () => false,
+			save: () => {},
+			toggleGlobalSearch: () => {},
+			terminalAvailable: () => false,
+			isCompiling: () => false,
+			runCompile: () => {},
+			stopCompile: () => {},
+			openPreferences
+		});
+		handle({ ctrlKey: true, metaKey: false, shiftKey: false, altKey: false, key: ',', preventDefault } as unknown as KeyboardEvent);
+		expect(openPreferences).toHaveBeenCalledTimes(1);
+		expect(preventDefault).toHaveBeenCalled();
+		handle({ ctrlKey: true, metaKey: false, shiftKey: true, altKey: false, key: ',', preventDefault } as unknown as KeyboardEvent);
+		expect(openPreferences).toHaveBeenCalledTimes(1); // Shift variant is the editors' subscript
 	});
 });

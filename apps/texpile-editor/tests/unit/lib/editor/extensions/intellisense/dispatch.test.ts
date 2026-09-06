@@ -163,3 +163,16 @@ describe('latex completion source', () => {
 		expect(typeof frac?.apply).toBe('function'); // \frac{·}{·} inserted as a snippet
 	});
 });
+
+// `a & b \` then Enter accepted a macro (`\author`), because the second backslash read as the
+// start of a macro name
+describe('a row break is not a macro trigger', () => {
+	it('offers nothing after a double backslash at a line end', async () => {
+		expect(await completeAt('a & b \\\\')).toBeNull();
+		expect(await completeAt('x \\\\\\\\')).toBeNull();
+	});
+
+	it('still completes a macro typed right after a row break', async () => {
+		expect(labels(await completeAt('a \\\\\\sec'))).toContain('\\section');
+	});
+});

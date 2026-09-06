@@ -18,15 +18,39 @@ function isCommented(text: string, idx: number): boolean {
 	return false;
 }
 
-/** indexOf, skipping occurrences that sit inside a LaTeX comment. */
+// a \begin{document} quoted inside one of these is text, not the wrapper: a preamble
+// filecontents block that writes a whole .tex file, or a chapter about LaTeX that spells the
+// wrapper out in \verb
+const QUOTING = [
+	/\\begin\{(filecontents\*?|verbatim\*?|comment|lstlisting|minted)\}[\s\S]*?\\end\{\1\}/g,
+	/\\verb\*?([^\sA-Za-z*])[\s\S]*?\1/g
+];
+
+function quotedRanges(text: string): Array<[number, number]> {
+	const out: Array<[number, number]> = [];
+	for (const re of QUOTING) {
+		re.lastIndex = 0;
+		for (let m = re.exec(text); m; m = re.exec(text)) out.push([m.index, m.index + m[0].length]);
+	}
+	return out;
+}
+
+/** indexOf, skipping occurrences that sit inside a LaTeX comment or a quoting environment. */
 function uncommentedIndexOf(text: string, marker: string, last = false): number {
 	let found = -1;
+	const quoted = quotedRanges(text);
 	for (let from = text.indexOf(marker); from >= 0; from = text.indexOf(marker, from + 1)) {
 		if (isCommented(text, from)) continue;
+		if (quoted.some(([a, b]) => from > a && from < b)) continue;
 		if (!last) return from;
 		found = from;
 	}
 	return found;
+}
+
+/** whether the text has a real \begin{document}: not commented out, not quoted */
+export function hasDocumentEnv(text: string): boolean {
+	return uncommentedIndexOf(text, BEGIN) >= 0;
 }
 
 export type ParsedLatexFile = {

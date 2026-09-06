@@ -26,7 +26,7 @@ function makeOpener(parse: FileOpenerDeps['parse']) {
 	const opener = new FileOpener({
 		doc,
 		parser,
-		readText: async () => 'contents',
+		readSource: async () => ({ text: 'contents', encoding: 'utf8' as const }),
 		whenIdle: async () => {},
 		isVisualMode: () => true,
 		isSourceMode: () => false,

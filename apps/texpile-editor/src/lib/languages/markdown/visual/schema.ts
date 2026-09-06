@@ -69,6 +69,13 @@ nodes.inline_latex = {
 	}
 };
 
+// what markdown records about a list that the shared spec does not: the delimiter as written
+// (`-` `*` `+`, or `.` `)`; null on a node the editor made) and whether the items are
+// blank-line separated
+nodes.list = { ...base.list, attrs: { ...base.list.attrs, marker: { default: null }, loose: { default: false } } };
+// the file's line ending, so regenerated blocks match the untouched ones
+nodes.doc = { ...base.doc, attrs: { ...base.doc.attrs, eol: { default: null } } };
+
 const marks: Record<string, MarkSpec> = {};
 for (const name of MD_MARKS) marks[name] = (baseMarks as Record<string, MarkSpec>)[name];
 marks.s = {

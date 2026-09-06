@@ -3,15 +3,11 @@
 // file. signature scanning only, never written back to disk. `read` is injectable so a shared
 // session resolves through the workspace provider instead of the disk.
 import { readTextFile, dirname, joinPath, type TexFile } from './fileSystem';
+import { hasDocumentEnv } from './latexRoundtrip';
 
 type ReadFn = (path: string) => Promise<string>;
 
 const BEGIN_DOC = /\\begin\s*\{document\}/;
-
-/** strips line comments so a commented-out \begin{document} or \input doesn't count. */
-function decomment(s: string): string {
-	return s.replace(/(^|[^\\])%[^\n]*/g, '$1');
-}
 
 /** everything before \begin{document}; the whole string if there is none. */
 function preambleOf(text: string): string {
@@ -50,7 +46,7 @@ export async function detectMainFile(files: TexFile[], read: ReadFn = readTextFi
 	const scanned = await Promise.all(
 		files.map(async (f) => {
 			try {
-				return { f, hasDoc: BEGIN_DOC.test(decomment(await read(f.path))) };
+				return { f, hasDoc: hasDocumentEnv(await read(f.path)) };
 			} catch {
 				return { f, hasDoc: false };
 			}
@@ -68,13 +64,13 @@ export async function detectMainFile(files: TexFile[], read: ReadFn = readTextFi
 	return roots[0].path;
 }
 
-/** the subset of files whose (decommented) text has a real \begin{document}. */
+/** the subset of files with a real \begin{document}: not commented out, not quoted. */
 export async function findDocRoots(files: TexFile[]): Promise<Set<string>> {
 	const out = new Set<string>();
 	await Promise.all(
 		files.map(async (f) => {
 			try {
-				if (BEGIN_DOC.test(decomment(await readTextFile(f.path)))) out.add(f.path);
+				if (hasDocumentEnv(await readTextFile(f.path))) out.add(f.path);
 			} catch {
 				/* unreadable, not a root */
 			}

@@ -31,7 +31,8 @@ export function tableBody(node: Node, indent: string, renderBlocks: (parent: Nod
 		});
 	});
 	function cellText(cell: Node) {
-		return cell.childCount === 1 && cell.child(0).type.name === 'paragraph' ? renderInline(cell.child(0), false) : renderBlocks(cell);
+		// a `[` body is fresh markup: a marker at its start would open a list or heading
+		return cell.childCount === 1 && cell.child(0).type.name === 'paragraph' ? renderInline(cell.child(0), true) : renderBlocks(cell);
 	}
 	/** a merged cell has to go back through table.cell(); a plain one stays a bare [..] */
 	function cellCall(cell: Node) {
@@ -80,16 +81,26 @@ export function tableBody(node: Node, indent: string, renderBlocks: (parent: Nod
 	// align: these are not required to be per-column, so a column add/delete cannot invalidate them
 	// in a way this can detect, and dropping them would be the more destructive guess.
 	for (const arg of asStrings(node.attrs.typArgs)) lines.push(`  ${arg},`);
-	const headerRow = rows[0]?.isHeader ? rows[0] : null;
-	// cellCall, not a bare [..]: a merged header cell used to lose its span here, so merging two
-	// header cells survived until the next source round trip and then silently came apart
-	if (headerRow) lines.push(`  table.header(${headerRow.cells.map(cellCall).join(', ')}),`);
-	for (const r of headerRow ? rows.slice(1) : rows) {
+	for (let i = 0; i < rows.length; i++) {
+		const r = rows[i];
 		for (const rule of asStrings(r.rules)) lines.push(`  ${rule},`);
 		// a row whose cells are all covered by a rowspan from above contributes NO arguments. It
 		// used to emit a lone `,`, which is not just a lost merge but a file typst refuses to
 		// parse ("unexpected comma") - a 2x2 merge produced one every time
-		if (r.cells.length) lines.push(rowLine(r));
+		if (!r.cells.length) continue;
+		if (!r.isHeader) {
+			lines.push(rowLine(r));
+			continue;
+		}
+		// consecutive header rows are one table.header, wherever the run sits (typst 0.13+
+		// accepts a header at any row). cellCall, not a bare [..]: a merged header cell used to
+		// lose its span here, so merging two header cells came apart on the next round trip
+		let j = i;
+		while (j + 1 < rows.length && rows[j + 1].isHeader && rows[j + 1].cells.length && asStrings(rows[j + 1].rules).length === 0) j++;
+		const run = rows.slice(i, j + 1);
+		if (run.length === 1) lines.push(`  table.header(${run[0].cells.map(cellCall).join(', ')}),`);
+		else lines.push('  table.header(', ...run.map((h) => `    ${h.cells.map(cellCall).join(', ')},`), '  ),');
+		i = j;
 	}
 	for (const rule of asStrings(node.attrs.typBottomRules)) lines.push(`  ${rule},`);
 	return `table(\n${lines.map((l) => indent + l).join('\n')}\n${indent})`;

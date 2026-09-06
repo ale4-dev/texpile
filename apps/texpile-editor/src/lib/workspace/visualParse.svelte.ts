@@ -14,6 +14,9 @@ import { mark } from '$lib/debug/startupDoctor';
 // nodes, while a 1.9MB paper whose \def-aliased environments defeat the parser reaches 322k
 // (104k of them node views) and never finishes mounting.
 const MAX_VISUAL_NODES = 100_000;
+// the node count misses prose-heavy files: a 1.3 MB single file stays under it and still builds
+// 371k DOM nodes over three minutes. past this many bytes the file opens in source mode
+export const MAX_VISUAL_BYTES = 800 * 1024;
 const MIN_TIMEOUT_MS = 3000;
 const MAX_TIMEOUT_MS = 30000;
 
@@ -22,6 +25,8 @@ export type ParseFailure = {
 	message: string;
 	/** doc parsed but is too large to render; carries the node count for the message */
 	tooComplex?: number;
+	/** refused before parsing on size alone; carries the byte count for the message */
+	tooLarge?: number;
 };
 
 export type ParseOutcome = {
@@ -51,6 +56,7 @@ export class VisualParser {
 	 * still the current one, and a superseded parse must not yank the user out of visual mode. */
 	async parse(text: string, format: 'tex' | 'md' | 'typ' = 'tex'): Promise<ParseOutcome> {
 		mark('parse');
+		if (text.length > MAX_VISUAL_BYTES) return { failure: { timeout: false, tooLarge: text.length, message: 'too-large' } };
 		if (format === 'typ') return this.parseTypst(text);
 		try {
 			const timeoutMs = Math.min(MAX_TIMEOUT_MS, MIN_TIMEOUT_MS + Math.floor(text.length / 100));

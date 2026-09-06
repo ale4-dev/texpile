@@ -1,7 +1,7 @@
 // hover tooltips: macro signature/doc, package/class blurb, full citation entry, glossary
 // description, \ref target preview (rendered math when the label sits in a math environment,
 // with the resolved number from the .aux), and an inline image preview for \includegraphics.
-import { hoverTooltip, type Tooltip } from '@codemirror/view';
+import { EditorView, hoverTooltip, type Tooltip } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
 import { convertLatexToMarkup } from 'mathlive';
 import { referenceStore } from '$lib/stores/editorStore';
@@ -142,70 +142,77 @@ function labelPreview(name: string, sourceText: string): { html: string; from?: 
 
 const CITE_FIELDS = ['author', 'title', 'journal', 'journaltitle', 'booktitle', 'publisher', 'year', 'date', 'doi', 'url'] as const;
 
+// the tooltip chrome brings border and background; the inset is the card's own, shared with the
+// comment card that reuses the class
+const hoverCardTheme = EditorView.baseTheme({ '.cm-tooltip-latex-hover': { padding: '6px 8px' } });
+
 /** hover tooltip provider for macros, packages/classes, citations, glossary keys, refs, graphics. */
 export function latexHover(): Extension {
-	return hoverTooltip((view, pos): Tooltip | null => {
-		const line = view.state.doc.lineAt(pos);
-		const token = tokenAt(line.text, line.from, pos);
-		if (!token) return null;
-		const at = { pos: token.from, end: token.to, above: true };
+	return [
+		hoverCardTheme,
+		hoverTooltip((view, pos): Tooltip | null => {
+			const line = view.state.doc.lineAt(pos);
+			const token = tokenAt(line.text, line.from, pos);
+			if (!token) return null;
+			const at = { pos: token.from, end: token.to, above: true };
 
-		if (token.kind === 'macro') {
-			const found = macroLookup(docText(view.state.doc), token.value);
-			if (!found) return null; // unrecognized macro: no hover, matching LaTeX Workshop
-			const shape = found.detail ?? '';
-			const doc = found.info ? `<div class="text-xs opacity-80">${escapeHtml(found.info)}</div>` : '';
-			return { ...at, create: () => ({ dom: dom(`<code>\\${escapeHtml(token.value)}${escapeHtml(shape)}</code>${doc}`) }) };
-		}
-		if (token.kind === 'package' || token.kind === 'class') {
-			const pkgInfo = (token.kind === 'package' ? PACKAGE_INFO : CLASS_INFO).get(token.value);
-			if (!pkgInfo?.detail && !pkgInfo?.url) return null;
-			const parts = [
-				`<b>${escapeHtml(token.value)}</b>`,
-				pkgInfo.detail ? escapeHtml(pkgInfo.detail) : '',
-				pkgInfo.url ? `<span class="text-xs opacity-70">${escapeHtml(pkgInfo.url)}</span>` : ''
-			].filter(Boolean);
-			return { ...at, create: () => ({ dom: dom(parts.join('<br>')) }) };
-		}
-		if (token.kind === 'citekey') {
-			const ref = (referenceStore.current ?? []).find((r) => r.key === token.value);
-			if (!ref) return null;
-			const rows = CITE_FIELDS.map((f) => [f, ref[f]] as const)
-				.filter(([, v]) => typeof v === 'string' && v)
-				.map(([f, v]) => `<div><span class="opacity-60">${f}:</span> ${escapeHtml(String(v))}</div>`);
-			if (!rows.length) return null;
-			return { ...at, create: () => ({ dom: dom(`<b>${escapeHtml(ref.key)}</b>${rows.join('')}`) }) };
-		}
-		if (token.kind === 'glosskey') {
-			const entry = projectIntelStore.current.glossary.find((g) => g.key === token.value);
-			if (!entry?.description) return null;
-			return { ...at, create: () => ({ dom: dom(escapeHtml(entry.description)) }) };
-		}
-		if (token.kind === 'label') {
-			const preview = labelPreview(token.value, docText(view.state.doc));
-			if (!preview) return null;
-			const suffix = preview.from ? `<div class="text-xs opacity-60">${escapeHtml(preview.from)}</div>` : '';
-			return { ...at, create: () => ({ dom: dom(preview.html + suffix) }) };
-		}
-		if (token.kind === 'graphic') {
-			const urls = graphicUrls(token.value);
-			if (!urls.length) return null;
-			return {
-				...at,
-				create: () => {
-					const div = dom('');
-					const img = div.appendChild(document.createElement('img'));
-					img.style.maxWidth = '320px';
-					img.style.maxHeight = '240px';
-					let i = 0;
-					img.onerror = () => (i < urls.length - 1 ? (img.src = urls[++i]) : div.remove());
-					img.src = urls[0];
-					return { dom: div };
-				}
-			};
-		}
-		return null;
-	});
+			if (token.kind === 'macro') {
+				const found = macroLookup(docText(view.state.doc), token.value);
+				if (!found) return null; // unrecognized macro: no hover, matching LaTeX Workshop
+				const shape = found.detail ?? '';
+				const doc = found.info ? `<div class="text-xs opacity-80">${escapeHtml(found.info)}</div>` : '';
+				return { ...at, create: () => ({ dom: dom(`<code>\\${escapeHtml(token.value)}${escapeHtml(shape)}</code>${doc}`) }) };
+			}
+			if (token.kind === 'package' || token.kind === 'class') {
+				const pkgInfo = (token.kind === 'package' ? PACKAGE_INFO : CLASS_INFO).get(token.value);
+				if (!pkgInfo?.detail && !pkgInfo?.url) return null;
+				const parts = [
+					`<b>${escapeHtml(token.value)}</b>`,
+					pkgInfo.detail ? escapeHtml(pkgInfo.detail) : '',
+					pkgInfo.url ? `<span class="text-xs opacity-70">${escapeHtml(pkgInfo.url)}</span>` : ''
+				].filter(Boolean);
+				return { ...at, create: () => ({ dom: dom(parts.join('<br>')) }) };
+			}
+			if (token.kind === 'citekey') {
+				const ref = (referenceStore.current ?? []).find((r) => r.key === token.value);
+				if (!ref) return null;
+				const rows = CITE_FIELDS.map((f) => [f, ref[f]] as const)
+					.filter(([, v]) => typeof v === 'string' && v)
+					.map(([f, v]) => `<div><span class="opacity-60">${f}:</span> ${escapeHtml(String(v))}</div>`);
+				if (!rows.length) return null;
+				return { ...at, create: () => ({ dom: dom(`<b>${escapeHtml(ref.key)}</b>${rows.join('')}`) }) };
+			}
+			if (token.kind === 'glosskey') {
+				const entry = projectIntelStore.current.glossary.find((g) => g.key === token.value);
+				if (!entry?.description) return null;
+				return { ...at, create: () => ({ dom: dom(escapeHtml(entry.description)) }) };
+			}
+			if (token.kind === 'label') {
+				const preview = labelPreview(token.value, docText(view.state.doc));
+				if (!preview) return null;
+				const suffix = preview.from ? `<div class="text-xs opacity-60">${escapeHtml(preview.from)}</div>` : '';
+				return { ...at, create: () => ({ dom: dom(preview.html + suffix) }) };
+			}
+			if (token.kind === 'graphic') {
+				const urls = graphicUrls(token.value);
+				if (!urls.length) return null;
+				return {
+					...at,
+					create: () => {
+						const div = dom('');
+						const img = div.appendChild(document.createElement('img'));
+						img.style.maxWidth = '320px';
+						img.style.maxHeight = '240px';
+						let i = 0;
+						img.onerror = () => (i < urls.length - 1 ? (img.src = urls[++i]) : div.remove());
+						img.src = urls[0];
+						return { dom: div };
+					}
+				};
+			}
+			return null;
+		})
+	];
 }
 
 // resolved lazily so this module stays importable outside Electron (tests)

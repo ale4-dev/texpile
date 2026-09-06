@@ -3,9 +3,13 @@
 import markdownit from 'markdown-it';
 import type { MarkdownIt } from 'markdown-it';
 import { mathPlugin } from './visual/math';
+import { footnotePlugin } from './visual/footnotes';
+import { referenceDefinitionPlugin } from './visual/referenceDefinitions';
 
 export function createMarkdownEngine(): MarkdownIt {
 	const md = markdownit({ html: true, linkify: false, typographer: false });
 	md.use(mathPlugin);
+	md.use(footnotePlugin);
+	md.use(referenceDefinitionPlugin);
 	return md;
 }

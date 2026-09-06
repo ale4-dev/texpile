@@ -2,6 +2,8 @@ export type ParsedBibtexEntry = {
 	citationKey: string;
 	entryType: string;
 	entryTags: Record<string, string>;
+	/** fields whose value used a macro name or # concatenation, as written; the writer emits these bare */
+	rawValues?: Record<string, string>;
 };
 
 /**
@@ -194,23 +196,37 @@ class BibtexParser {
 			}
 			if (key.match(/^[0-9]+$/)) {
 				return key;
-			} else if (this.months.indexOf(key.toLowerCase()) >= 0) {
-				return key.toLowerCase();
+			} else if (key.match(/^[A-Za-z][\w:.+/-]*$/)) {
+				// a month macro or an @string abbreviation: the file defines what it means, so the
+				// name is kept as written and the writer puts it back bare (see rawValue)
+				this.sawMacroValue = true;
+				return key;
 			} else {
 				throw new Error(`Value expected at position ${start}, found: "${this.input.substring(start, start + 20)}"`);
 			}
 		}
 	}
 
+	/** set by value(): the last value used a macro name or # concatenation and must be
+	 * written back as its raw source, not re-braced */
+	private sawMacroValue = false;
+	private lastValueRaw: string | null = null;
+
 	private value(): string {
+		const start = this.pos;
+		this.sawMacroValue = false;
+		this.lastValueRaw = null;
 		const values: string[] = [];
 		values.push(this.singleValue());
+		let concatenated = false;
 
 		while (this.tryMatch('#')) {
 			this.match('#');
 			values.push(this.singleValue());
+			concatenated = true;
 		}
 
+		if (this.sawMacroValue || concatenated) this.lastValueRaw = this.input.substring(start, this.pos).trim();
 		return values.join('');
 	}
 
@@ -258,6 +274,7 @@ class BibtexParser {
 		const kv = this.keyEqualsValue();
 		this.currentEntry.entryTags = {};
 		this.currentEntry.entryTags[kv[0]] = kv[1];
+		this.noteRawValue(kv[0]);
 
 		while (true) {
 			if (this.tryMatch(',')) {
@@ -272,7 +289,18 @@ class BibtexParser {
 			}
 			const nextKv = this.keyEqualsValue();
 			this.currentEntry.entryTags[nextKv[0]] = nextKv[1];
+			this.noteRawValue(nextKv[0]);
 		}
+	}
+
+	// a value written with a macro name or # concatenation keeps its source form in rawValues,
+	// keyed by field, so regeneration writes `month = mar` and `"P" # " and " # "Q"` as they were
+	private noteRawValue(key: string): void {
+		if (this.lastValueRaw == null) return;
+		const raw = this.currentEntry.rawValues ?? {};
+		raw[key] = this.lastValueRaw;
+		this.currentEntry.rawValues = raw;
+		this.lastValueRaw = null;
 	}
 
 	private entryBody(directive: string): void {

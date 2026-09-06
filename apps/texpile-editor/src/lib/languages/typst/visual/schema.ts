@@ -15,7 +15,7 @@ import { baseNodes, baseMarks } from '$lib/editor/visual/schema/basePMSchema';
 const schemaImageSettings: SchemaImageSettings = {
 	hasTitle: true,
 	isBlock: true,
-	extraAttributes: { width: null, height: null, maxWidth: null }
+	extraAttributes: { width: null, height: null, maxWidth: null, typGap: null }
 };
 
 // everything the converter can emit, nothing more. Tables and real math nodes arrive with their
@@ -99,6 +99,13 @@ nodes.table_row = {
 const mathAttrs = { typst: { default: null }, latexOrig: { default: null } };
 nodes.inline_math = { ...base.inline_math, attrs: { ...base.inline_math.attrs, ...mathAttrs } };
 nodes.block_math = { ...base.block_math, attrs: { ...base.block_math.attrs, ...mathAttrs } };
+// typNumber: the explicit "5." an enum item was written with (null for "+"); order stays the
+// display counter flat-list reads
+nodes.list = { ...base.list, attrs: { ...base.list.attrs, typNumber: { default: null } } };
+// a trailing <label> attaches to the heading in typst, so it lives on the node
+nodes.heading = { ...base.heading, attrs: { ...base.heading.attrs, label: { default: null } } };
+// typFile: what the bytes outside the markup looked like (a leading BOM, CRLF line endings)
+nodes.doc = { ...base.doc, attrs: { ...base.doc.attrs, typFile: { default: null } } };
 
 // Typst-only nodes, declared here the way mdSchema declares its `s` mark: term lists
 // (`/ term: description`) have no tex counterpart. The title is its own child textblock so
@@ -135,6 +142,17 @@ nodes.term_item = {
 	parseDOM: [{ tag: 'div[data-term-item]' }],
 	toDOM: () => ['div', { 'data-term-item': '', class: 'term-item' }, 0]
 };
+
+// typGap: how the source separated this block from the one before it, 'newline' or 'blank'
+// (null = editor-created, the serializer picks a default per pair). in typst a single newline
+// keeps `Text.\n#set text(red)\nMore.` one paragraph and `- a\n  - b` a tight nest, so the
+// serializer has to know which it was. image gets it through extraAttributes below; the
+// flat-list spec's group is "flatList block", so the group is split rather than compared whole
+for (const name of Object.keys(nodes)) {
+	const spec = nodes[name];
+	const isBlock = (spec.group ?? '').split(/\s+/).includes('block');
+	if (isBlock && name !== 'image') nodes[name] = { ...spec, attrs: { ...spec.attrs, typGap: { default: null } } };
+}
 
 const marks: Record<string, MarkSpec> = {};
 for (const name of TYP_MARKS) marks[name] = (baseMarks as Record<string, MarkSpec>)[name];

@@ -2,23 +2,39 @@
 import type { Node, Mark } from 'prosemirror-model';
 import { latexToTypst } from './latexToTypst';
 
+/** a math node's typst: the stored source while its LaTeX is untouched, else MathLive's
+ *  conversion, else the stored source again. never the LaTeX: a .typ cannot hold it */
 export function mathTypstOf(node: Node): string {
 	const latex = node.textContent;
 	const typst = typeof node.attrs.typst === 'string' ? node.attrs.typst : null;
 	if (typst != null && latex === node.attrs.latexOrig) return typst;
-	return latexToTypst(latex) ?? typst ?? latex;
+	return latexToTypst(latex) ?? typst ?? '';
+}
+
+/** inline math keeps its padding across an edit: `$ x $` mid-paragraph is display math */
+function inlineMathTypst(node: Node): string {
+	const t = mathTypstOf(node);
+	const orig = typeof node.attrs.typst === 'string' ? node.attrs.typst : '';
+	if (t === orig || !/^\s/.test(orig) || !/\s$/.test(orig)) return t;
+	return ` ${t.trim()} `;
+}
+
+/** list/term/heading markers and "1." enum markers bind at line start, indentation included */
+export function escLineStart(str: string): string {
+	return str.replace(/^(\s*)([-+/=])/, '$1\\$2').replace(/^(\s*)(\d+)\./, '$1$2\\.');
 }
 
 /**
  * Backslash-escape Typst markup structure. `_` stays literal intraword (Typst emphasis only
  * opens at word boundaries, so snake_case is safe); `@` only starts a ref before a word char;
- * `//` would start a comment, so the first slash of a pair is escaped.
+ * `//` would start a comment, so the first slash of a pair is escaped. `extra` lists characters
+ * that are structure only in the caller's context (the colon of a term title).
  */
-export function escTypst(str: string, startOfLine = false): string {
+export function escTypst(str: string, startOfLine = false, extra = ''): string {
 	let out = '';
 	for (let i = 0; i < str.length; i++) {
 		const ch = str[i];
-		if ('\\#$`*[]<~'.includes(ch)) {
+		if ('\\#$`*[]<~'.includes(ch) || (extra && extra.includes(ch))) {
 			out += '\\' + ch;
 			continue;
 		}
@@ -37,24 +53,25 @@ export function escTypst(str: string, startOfLine = false): string {
 		}
 		out += ch;
 	}
-	if (startOfLine) {
-		// list/term/heading markers and "1." enum markers only bind at line start
-		out = out.replace(/^[-+/=]/, '\\$&').replace(/^(\d+)\./, '$1\\.');
-	}
-	return out;
+	return startOfLine ? escLineStart(out) : out;
 }
 
-/** inline raw with a backtick fence longer than any run inside, padded when the ends collide. */
+/** inline raw. typst has no two-backtick form and the three-backtick one takes a language word,
+ *  so a backtick inside the text goes through the function form */
 function codeSpan(text: string): string {
-	const runs = text.match(/`+/g);
-	const fence = '`'.repeat(runs ? Math.max(...runs.map((r) => r.length)) + 1 : 1);
-	const pad = text.startsWith('`') || text.endsWith('`') ? ' ' : '';
-	return fence + pad + text + pad + fence;
+	return text.includes('`') ? `#raw(${typStr(text)})` : '`' + text + '`';
 }
 
-/** typst string literal for a link target; JSON escaping is a compatible subset. */
+const STR_ESCAPES: Record<string, string> = { '"': '\\"', '\\': '\\\\', '\n': '\\n', '\r': '\\r', '\t': '\\t' };
+
+/** typst string literal; the inverse of unquote. control characters take the \u{..} form */
 export function typStr(value: string): string {
-	return JSON.stringify(value);
+	let out = '"';
+	for (const ch of value) {
+		const code = ch.codePointAt(0)!;
+		out += STR_ESCAPES[ch] ?? (code < 0x20 || code === 0x7f ? `\\u{${code.toString(16)}}` : ch);
+	}
+	return out + '"';
 }
 
 type MarkDelims = {
@@ -134,19 +151,25 @@ function orderedMarks(marks: readonly Mark[]): Mark[] {
 type InlineRun = {
 	content: string;
 	marks: Mark[];
-	/** plain prose (whitespace expelling applies); false for chips and breaks */
-	isText: boolean;
+	/** 'text' is plain prose (escaped, whitespace expelling applies); 'comment' a `//` chip that
+	 *  owns the rest of its line; 'ref' an @target atom */
+	kind: 'text' | 'comment' | 'ref' | 'break' | 'other';
 };
 
-function buildRuns(parent: Node, startOfLine: boolean): InlineRun[] {
+function buildRuns(parent: Node, startOfLine: boolean, extra: string): InlineRun[] {
 	const runs: InlineRun[] = [];
 	let atLineStart = startOfLine;
 	parent.forEach((node) => {
 		if (node.isText) {
+			const text = node.text ?? '';
 			if (node.marks.some((m) => m.type.name === 'code')) {
-				runs.push({ content: codeSpan(node.text ?? ''), marks: orderedMarks(node.marks), isText: false });
+				runs.push({ content: codeSpan(text), marks: orderedMarks(node.marks), kind: 'other' });
 			} else {
-				runs.push({ content: escTypst(node.text ?? '', atLineStart), marks: orderedMarks(node.marks), isText: true });
+				// a space typed after a hard break stays on the break's line (typst drops
+				// indentation after a line end, so `\` + newline + space would lose it)
+				const prev = runs[runs.length - 1];
+				if (prev?.kind === 'break' && /^[ \t]/.test(text)) prev.content = '\\';
+				runs.push({ content: escTypst(text, atLineStart, extra), marks: orderedMarks(node.marks), kind: 'text' });
 			}
 			atLineStart = false;
 			return;
@@ -154,74 +177,168 @@ function buildRuns(parent: Node, startOfLine: boolean): InlineRun[] {
 		switch (node.type.name) {
 			case 'hard_break':
 				if (node.attrs?.lineBreak === false) return; // legacy no-op break
-				runs.push({ content: '\\\n', marks: [], isText: false });
+				runs.push({ content: '\\\n', marks: [], kind: 'break' });
 				atLineStart = true;
 				return;
-			case 'inline_latex':
-				runs.push({ content: node.textContent, marks: orderedMarks(node.marks), isText: false });
+			case 'inline_latex': {
+				const text = node.textContent;
+				runs.push({ content: text, marks: orderedMarks(node.marks), kind: text.startsWith('//') ? 'comment' : 'other' });
 				break;
+			}
 			case 'typ_ref':
-				runs.push({ content: `@${String(node.attrs.target ?? '')}`, marks: orderedMarks(node.marks), isText: false });
+				runs.push({ content: `@${String(node.attrs.target ?? '')}`, marks: orderedMarks(node.marks), kind: 'ref' });
 				break;
-			case 'inline_math':
-				runs.push({ content: `$${mathTypstOf(node)}$`, marks: orderedMarks(node.marks), isText: false });
+			case 'inline_math': {
+				const t = inlineMathTypst(node);
+				runs.push({ content: t.trim() ? `$${t}$` : '', marks: orderedMarks(node.marks), kind: 'other' });
 				break;
+			}
 			default:
-				runs.push({ content: node.isLeaf ? '' : renderInline(node, false), marks: orderedMarks(node.marks), isText: false });
+				runs.push({ content: node.isLeaf ? '' : renderInline(node, false), marks: orderedMarks(node.marks), kind: 'other' });
 		}
 		atLineStart = false;
 	});
 	return runs.filter((r) => r.content !== '');
 }
 
-function commonPrefixLen(a: Mark[], b: Mark[]): number {
+function commonPrefixLen(a: readonly Mark[], b: readonly Mark[]): number {
 	let n = 0;
 	while (n < a.length && n < b.length && a[n].eq(b[n])) n++;
 	return n;
 }
 
+/** typst's in_word test: `*` and `_` are literal between two alphanumerics */
+function isAlnum(ch: string | undefined): boolean {
+	return ch != null && /[\p{L}\p{N}]/u.test(ch);
+}
+
+/** the run index where the mark at position `k` of run `r` closes */
+function spanEnd(runs: InlineRun[], r: number, k: number): number {
+	let j = r;
+	while (j + 1 < runs.length && commonPrefixLen(runs[j].marks, runs[j + 1].marks) > k) j++;
+	return j;
+}
+
+/** the character emitted right after the mark at position `k` closes behind run `end`; '' when
+ *  a delimiter comes first */
+function charAfterSpan(runs: InlineRun[], end: number, k: number): string {
+	const next = runs[end + 1];
+	if (!next) return '';
+	const keep = commonPrefixLen(runs[end].marks, next.marks);
+	if (k !== keep || next.marks.length > keep) return '';
+	return next.content[0] ?? '';
+}
+
+/** would this text extend a ref marker it follows? typst eats [A-Za-z0-9_:.-] after `@`,
+ *  giving back only trailing `.`/`:` */
+function extendsRef(s: string): boolean {
+	return /^[\p{L}\p{N}_-]/u.test(s) || /^[.:]+[\p{L}\p{N}_-]/u.test(s);
+}
+
+type ActiveMark = { mark: Mark; close: string; expel: boolean };
+
 /** minimal open/close mark transitions over same-mark runs, expelling boundary whitespace out
  *  of emphasis delimiters (`* bold*` never parses back as strong). */
-export function renderInline(parent: Node, startOfLine = true): string {
-	const runs = buildRuns(parent, startOfLine);
+export function renderInline(parent: Node, startOfLine = true, extra = ''): string {
+	const runs = buildRuns(parent, startOfLine, extra);
 	let out = '';
-	let active: Mark[] = [];
+	let active: ActiveMark[] = [];
+	// where the last @ref was written, while the next emission may still extend it
+	let refAt = -1;
+	let refTarget = '';
+	// a // comment owns the rest of its line: the next emission starts a new one
+	let lineEnd = false;
 
-	function emitCloses(closing: Mark[]) {
+	function emit(s: string) {
+		if (!s) return;
+		if (refAt >= 0) {
+			if (extendsRef(s)) out = out.slice(0, refAt) + `#ref(<${refTarget}>)`;
+			refAt = -1;
+		}
+		out += s;
+	}
+
+	function emitCloses(closing: ActiveMark[], allowSteal: boolean) {
 		let stolen = '';
-		if (closing.some((m) => MARK_DELIMS[m.type.name]?.(m.attrs).expel)) {
+		if (allowSteal && closing.some((a) => a.expel)) {
 			const ws = out.match(/(\s+)$/);
 			if (ws && ws[1].length < out.length) {
 				out = out.slice(0, -ws[1].length);
 				stolen = ws[1];
 			}
 		}
-		for (const m of closing) {
-			const d = MARK_DELIMS[m.type.name];
-			if (d) out += d(m.attrs).close;
-		}
-		out += stolen;
+		for (const a of closing) emit(a.close);
+		emit(stolen);
 	}
 
-	for (const run of runs) {
-		const keep = commonPrefixLen(active, run.marks);
-		emitCloses(active.slice(keep).reverse());
-		const opening = run.marks.slice(keep);
+	for (let r = 0; r < runs.length; r++) {
+		const run = runs[r];
 		let content = run.content;
-		if (run.isText && opening.some((m) => MARK_DELIMS[m.type.name]?.(m.attrs).expel)) {
-			const lead = content.match(/^\s+/);
-			if (lead && lead[0].length < content.length) {
-				out += lead[0];
-				content = content.slice(lead[0].length);
+		let newLine = false;
+		if (lineEnd) {
+			emit('\n');
+			lineEnd = false;
+			newLine = true;
+			if (run.kind === 'text') content = escLineStart(content.replace(/^[ \t]+/, ''));
+		}
+		const keep = commonPrefixLen(
+			active.map((a) => a.mark),
+			run.marks
+		);
+		emitCloses(active.slice(keep).reverse(), !newLine);
+		active = active.slice(0, keep);
+		let bracketBody = false;
+		for (let k = keep; k < run.marks.length; k++) {
+			const m = run.marks[k];
+			const d = MARK_DELIMS[m.type.name]?.(m.attrs);
+			if (!d) {
+				active.push({ mark: m, close: '', expel: false });
+				continue;
 			}
+			if (!d.expel) {
+				emit(d.open);
+				active.push({ mark: m, close: d.close, expel: false });
+				bracketBody = d.open.endsWith('[');
+				continue;
+			}
+			const end = spanEnd(runs, r, k);
+			// emphasis over nothing but whitespace has no delimiters: `__` would be literal
+			if (runs.slice(r, end + 1).every((x) => x.kind === 'text' && x.content.trim() === '')) {
+				active.push({ mark: m, close: '', expel: false });
+				continue;
+			}
+			// `*` and `_` are literal between two alphanumerics, so an intraword boundary on
+			// either side takes the function form
+			const intraword =
+				(isAlnum(out[out.length - 1]) && isAlnum(content[0])) ||
+				(isAlnum(runs[end].content[runs[end].content.length - 1]) && isAlnum(charAfterSpan(runs, end, k)));
+			if (intraword) {
+				emit(m.type.name === 'strong' ? '#strong[' : '#emph[');
+				active.push({ mark: m, close: ']', expel: false });
+				bracketBody = true;
+				continue;
+			}
+			if (run.kind === 'text') {
+				const lead = content.match(/^\s+/);
+				if (lead && lead[0].length < content.length) {
+					emit(lead[0]);
+					content = content.slice(lead[0].length);
+				}
+			}
+			emit(d.open);
+			active.push({ mark: m, close: d.close, expel: true });
+			bracketBody = false;
 		}
-		for (const m of opening) {
-			const d = MARK_DELIMS[m.type.name];
-			if (d) out += d(m.attrs).open;
+		// a `[` body starts fresh markup, where a marker binds like at a line start
+		if (bracketBody && run.kind === 'text') content = escLineStart(content);
+		emit(content);
+		if (run.kind === 'ref') {
+			refAt = out.length - content.length;
+			refTarget = content.slice(1);
 		}
-		out += content;
-		active = run.marks;
+		if (run.kind === 'comment') lineEnd = true;
 	}
-	emitCloses([...active].reverse());
+	if (lineEnd && active.some((a) => a.close)) emit('\n');
+	emitCloses([...active].reverse(), !lineEnd);
 	return out;
 }

@@ -13,14 +13,9 @@ import type { ParseOptions } from './types';
  */
 export const ignoredMacros = new Set([
 	'indent',
-	'centering',
-	'raggedright',
-	'raggedleft',
-	// the smallskip family stays dropped on purpose: the table serializer emits \par\smallskip
-	// itself, so preserving these would compound one per save. tiny fixed spaces, cheap to lose.
-	'smallskip',
-	'medskip',
-	'bigskip',
+	// \centering and the skips are NOT here: they change rendering, and outside a float (a
+	// minipage, a page of prose) nothing re-emits them. inside a table float the extractor
+	// drops the ones the wrapper serializer emits itself, so they cannot compound
 	// size switches (\large, \small, ...) are NOT here: dropping them changes rendering. the one
 	// compounding case (the table-notes serializer's own {\small ...}) is stripped structurally
 	// in extractTableComponents, not by a document-wide drop.
@@ -134,6 +129,8 @@ export const MACRO_SIGNATURES: NonNullable<ParseOptions['macros']> = {
 	cite: { signature: 'o o m' },
 	// override: the default registers no signature; biblatex takes [options].
 	printbibliography: { signature: 'o' },
+	// override: the default `o m` has no star, so \caption*{x} parsed as \caption{*} with x adrift
+	caption: { signature: 's o m' },
 
 	// cross-document includes / legacy graphics, missing from the default DB
 	subfile: { signature: 'm' },
@@ -175,7 +172,9 @@ export const ENV_SIGNATURES: NonNullable<ParseOptions['environments']> = {
 	adjustwidth: { signature: 'm m' },
 	wrapfigure: { signature: 'o m m' }, // [lines]{placement}{width}
 	wraptable: { signature: 'o m m' },
-	'table*': { signature: 'o' } // float placement [t]/[h]/[!htbp]
+	'table*': { signature: 'o' }, // float placement [t]/[h]/[!htbp]
+	// unregistered, the column spec became the first cell's text
+	longtable: { signature: 'o m' }
 };
 
 /**
@@ -188,7 +187,10 @@ export function stripSamelineComments(nodes: Node[] | undefined): void {
 	for (let i = nodes.length - 1; i >= 0; i--) {
 		const n = nodes[i];
 		if (n.type === 'comment' && n.sameline) {
-			nodes.splice(i, 1);
+			// the tokenizer folds the space before `%` into the comment; TeX keeps that space and
+			// eats the newline, so `A % c` + newline + `B` is "A B", never "AB"
+			const keepsSpace = n.leadingWhitespace && i > 0 && nodes[i - 1].type !== 'whitespace';
+			nodes.splice(i, 1, ...(keepsSpace ? [{ type: 'whitespace' } as Node] : []));
 			continue;
 		}
 		if ('content' in n && Array.isArray(n.content)) stripSamelineComments(n.content);

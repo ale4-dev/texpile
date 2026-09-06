@@ -26,8 +26,8 @@ describe('simpleFrontmatter — body raw_latex detection (AST, not regex)', () =
 
 describe('placeholderCommand (hidden structural commands)', () => {
 	it('recognises \\maketitle and friends (with surrounding whitespace)', () => {
-		expect(placeholderCommand('\\maketitle')).toEqual({ command: 'maketitle', label: 'Title' });
-		expect(placeholderCommand('  \\maketitle\n')).toEqual({ command: 'maketitle', label: 'Title' });
+		expect(placeholderCommand('\\maketitle')).toEqual({ command: 'maketitle', label: 'Title block' });
+		expect(placeholderCommand('  \\maketitle\n')).toEqual({ command: 'maketitle', label: 'Title block' });
 		expect(placeholderCommand('\\tableofcontents')?.command).toBe('tableofcontents');
 	});
 

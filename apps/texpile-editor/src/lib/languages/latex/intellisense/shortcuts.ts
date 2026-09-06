@@ -123,7 +123,7 @@ export function formatShortcuts(): Extension {
 		{ key: 'Mod-u', run: (v) => toggleWrapKeyword(v, 'underline') },
 		{ key: 'Mod-`', run: (v) => toggleWrapKeyword(v, 'texttt') },
 		{ key: 'Mod-.', run: (v) => toggleWrapKeyword(v, 'textsuperscript') },
-		{ key: 'Mod-,', run: (v) => toggleWrapKeyword(v, 'textsubscript') },
+		{ key: 'Mod-Shift-,', run: (v) => toggleWrapKeyword(v, 'textsubscript') }, // Mod-, is Preferences
 		{ key: 'Mod-Shift-b', run: (v) => wrapBlock(v, '\\begin{quote}\n', '\n\\end{quote}') },
 		{ key: 'Mod-Shift-`', run: (v) => wrapBlock(v, '\\begin{verbatim}\n', '\n\\end{verbatim}') },
 		{ key: 'Mod-Alt-1', run: (v) => wrapBlock(v, '\\section{', '}') },

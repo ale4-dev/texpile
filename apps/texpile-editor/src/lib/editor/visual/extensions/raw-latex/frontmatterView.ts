@@ -80,7 +80,9 @@ export function replacePreambleFrontmatter(preamble: string, kind: string, inner
 // structural commands that produce output but have nothing to edit (\maketitle, \printbibliography, ...):
 // rendered as a subtle selectable placeholder; the node keeps its content so it round-trips verbatim.
 const PLACEHOLDER_COMMANDS: Record<string, string> = {
-	maketitle: 'Title',
+	// sits right under the editable title and author fields, where a bare "Title" read as an
+	// empty field of its own
+	maketitle: 'Title block',
 	tableofcontents: 'Contents',
 	listoffigures: 'List of figures',
 	listoftables: 'List of tables',

@@ -35,7 +35,10 @@ const MARKS: Record<string, (attrs: Record<string, unknown>) => { open: string; 
 	sub: () => ({ open: '\\textsubscript{', close: '}' }),
 	code: () => ({ open: '\\texttt{', close: '}' }),
 	link: (a) => ({ open: `\\href{${String(a.href ?? '')}}{`, close: '}' }),
-	textcolor: (a) => ({ open: `\\textcolor{${esc(String(a.color ?? 'black'))}}{`, close: '}' }),
+	textcolor: (a) => ({
+		open: `\\textcolor${typeof a.model === 'string' && a.model ? `[${a.model}]` : ''}{${esc(String(a.color ?? 'black'))}}{`,
+		close: '}'
+	}),
 	highlight: (a) => ({ open: `{\\sethlcolor{${esc(String(a.color ?? 'yellow'))}}\\hl{`, close: '}}' })
 };
 

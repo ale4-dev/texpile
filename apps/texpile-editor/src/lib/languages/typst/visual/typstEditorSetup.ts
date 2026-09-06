@@ -33,6 +33,7 @@ import { TYP_BLOCK_INSERT_ITEMS } from './blockInsertItems';
 import { isMac } from '$lib/platform';
 import { toggleHeading } from '$lib/editor/visual/helperCommands';
 import { createMathField } from '$lib/editor/visual/extensions/mathlivebridge/mlcommands';
+import { typstMathSyncPlugin } from './mathSyncPlugin';
 import { imagePlugin } from '$lib/editor/visual/extensions/image';
 import { createTypstImageSettings } from './imageSettings.svelte';
 import { createCodeBlock } from '$lib/editor/visual/extensions/codemirrorbridge/cmcommands';
@@ -165,7 +166,7 @@ export function typstEditorPlugins(setup: TypstEditorSetup): Plugin[] {
 			'Mod-i': toggleMark(typSchema.marks.em),
 			'Mod-u': toggleMark(typSchema.marks.u),
 			'Mod-.': toggleMark(typSchema.marks.sup),
-			'Mod-,': toggleMark(typSchema.marks.sub),
+			'Mod-Shift-,': toggleMark(typSchema.marks.sub), // Mod-, is Preferences
 			'Mod-`': toggleMark(typSchema.marks.code),
 			'Mod-Shift-`': createCodeBlock(),
 			'Mod-m': createMathField(),
@@ -181,6 +182,7 @@ export function typstEditorPlugins(setup: TypstEditorSetup): Plugin[] {
 		cmarrowHandlers,
 		mlarrowHandlers,
 		mathlivePlugin,
+		typstMathSyncPlugin,
 		keymap(baseKeymap),
 		imagePlugin(createTypstImageSettings(docDir)),
 		menuUpdatePlugin(),

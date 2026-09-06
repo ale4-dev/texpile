@@ -20,6 +20,7 @@
 	import { search } from 'prosemirror-search';
 	import { mdSchema } from './schema';
 	import { markdownCopyPlugin } from './clipboard';
+	import { listAttrInheritance } from './listAttrInheritance';
 	import { isMac } from '$lib/platform';
 	import { editorViewStore, referenceStore } from '$lib/stores/editorStore';
 	import { revealBuiltEditor, BUILDING_CLASS } from '$lib/editor/visual/revealBuiltEditor';
@@ -139,6 +140,7 @@
 			tableViewOnly,
 			tableEditing(),
 			...createListPlugins({ schema: mdSchema }),
+			listAttrInheritance,
 			history(),
 			keymap(listKeymap),
 			inputRules({ rules: [...listInputRules, ...mdInputRules] }),

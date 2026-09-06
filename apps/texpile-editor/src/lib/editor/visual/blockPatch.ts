@@ -17,9 +17,12 @@ export type BlockPatch = {
 	nodes: PMNode[];
 };
 
-function attrsEqualExceptOrig(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
-	const ka = Object.keys(a).filter((k) => k !== 'orig');
-	const kb = Object.keys(b).filter((k) => k !== 'orig');
+// parse-time stamps the live doc never sets itself: the verbatim slice, and typst's source gap
+const PARSE_STAMPS = new Set(['orig', 'typGap']);
+
+function attrsEqualExceptStamps(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+	const ka = Object.keys(a).filter((k) => !PARSE_STAMPS.has(k));
+	const kb = Object.keys(b).filter((k) => !PARSE_STAMPS.has(k));
 	if (ka.length !== kb.length) return false;
 	for (const k of ka) if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) return false;
 	return true;
@@ -27,7 +30,7 @@ function attrsEqualExceptOrig(a: Record<string, unknown>, b: Record<string, unkn
 
 // orig lives only on top-level blocks, so children compare with plain .eq
 function blockEq(a: PMNode, b: PMNode): boolean {
-	return a.type === b.type && Mark.sameSet(a.marks, b.marks) && attrsEqualExceptOrig(a.attrs, b.attrs) && a.content.eq(b.content);
+	return a.type === b.type && Mark.sameSet(a.marks, b.marks) && attrsEqualExceptStamps(a.attrs, b.attrs) && a.content.eq(b.content);
 }
 
 /** null when every block matches (orig attrs may still differ; run syncOrigAttrs regardless). */
@@ -119,7 +122,7 @@ export function protectCaretBlock(oldDoc: PMNode, newDoc: PMNode, head: number):
 	if (newDoc.childCount !== oldDoc.childCount) return newDoc;
 	const newB = newDoc.child(ci);
 	if (blockEq(oldB, newB)) return newDoc;
-	if (oldB.type !== newB.type || !Mark.sameSet(oldB.marks, newB.marks) || !attrsEqualExceptOrig(oldB.attrs, newB.attrs)) return newDoc;
+	if (oldB.type !== newB.type || !Mark.sameSet(oldB.marks, newB.marks) || !attrsEqualExceptStamps(oldB.attrs, newB.attrs)) return newDoc;
 	const trimmed = trimTrailingWs(oldB);
 	if (!trimmed || !trimmed.content.eq(newB.content)) return newDoc;
 	// graft: keep the live content (with its trailing whitespace), adopt the parse's attrs

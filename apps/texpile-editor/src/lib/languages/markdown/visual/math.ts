@@ -40,7 +40,6 @@ function mathBlock(state: StateBlock, startLine: number, endLine: number, silent
 	let pos = state.bMarks[startLine] + state.tShift[startLine];
 	let max = state.eMarks[startLine];
 	if (pos + 2 > max || state.src.slice(pos, pos + 2) !== '$$') return false;
-	if (silent) return true;
 
 	pos += 2;
 	let firstLine = state.src.slice(pos, max);
@@ -57,6 +56,7 @@ function mathBlock(state: StateBlock, startLine: number, endLine: number, silent
 	while (!found) {
 		nextLine++;
 		if (nextLine >= endLine) return false; // unclosed: let the paragraph rule keep it literal
+		if (state.isEmpty(nextLine)) return false; // a blank line ends display math in TeX as well
 		pos = state.bMarks[nextLine] + state.tShift[nextLine];
 		max = state.eMarks[nextLine];
 		if (pos < max && state.tShift[nextLine] < state.blkIndent) return false;
@@ -66,6 +66,7 @@ function mathBlock(state: StateBlock, startLine: number, endLine: number, silent
 			found = true;
 		}
 	}
+	if (silent) return true;
 
 	state.line = nextLine + 1;
 	const token = state.push('math_block', 'math', 0);

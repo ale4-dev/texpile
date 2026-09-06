@@ -2,15 +2,59 @@
 // mutually recursive with convertNodesToBlocks in converter.ts; ESM live bindings make the circular import safe
 import type { Node, Macro, Environment } from '@unified-latex/unified-latex-types';
 import { printRaw } from '@unified-latex/unified-latex-util-print-raw';
-import { getTextContent, isMathEnvironment, type RawStamped } from '../ast-utils';
+import { isMathEnvironment, type RawStamped } from '../ast-utils';
 import { buildNode, textNode, nodeToLatexString, type PmNode, type ConversionContext, type ConversionOptions } from '../builders';
 import { ignoredMacros } from '../macros';
 import { convertNodesToBlocks } from '../converter';
 import { macroHandlers } from './macroHandlers';
 import { envHandlers, transparentEnvironments } from './envHandlers';
 import { VERBATIM_ENVS } from './blockKinds';
-import { nodeRawSource, mathBodyRawSource } from './origCapture';
+import { nodeRawSource, mathBodyRawSource, envBeginEnd } from './origCapture';
 import { createBlockMath } from './mathConvert';
+
+/**
+ * An environment with no registered signature gets its arguments parsed as body: `[1]` after
+ * `\begin{algorithmic}` as loose strings, `{1.5}` after `\begin{spacing}` as a group. Anything
+ * glued to the \begin is an argument and belongs on the node's `args`, not in the first paragraph.
+ */
+function startOf(n: Node): number | undefined {
+	return (n as { position?: { start?: { offset?: number } } }).position?.start?.offset;
+}
+
+function endOf(n: Node): number | undefined {
+	return (n as { position?: { end?: { offset?: number } } }).position?.end?.offset;
+}
+
+function hoistLeadingEnvArgs(env: Environment): { args: string; rest: Node[] } {
+	const content = env.content;
+	const none = { args: '', rest: content };
+	// glued means no whitespace in the SOURCE: the parser drops the newline after \begin, so a
+	// `{\bfseries Title}` on the next line looks adjacent in the AST and is body
+	let cursor = envBeginEnd(env);
+	if (cursor == null) return none;
+	const parts: string[] = [];
+	let i = 0;
+	while (i < content.length) {
+		const n = content[i];
+		if (startOf(n) !== cursor) break;
+		if (n.type === 'group') {
+			parts.push(printRaw(n));
+			cursor = endOf(n) ?? -1;
+			i++;
+			continue;
+		}
+		if (n.type === 'string' && n.content === '[') {
+			const close = content.findIndex((c, k) => k > i && c.type === 'string' && c.content === ']');
+			if (close < 0) break;
+			parts.push(printRaw(content.slice(i, close + 1)));
+			cursor = endOf(content[close]) ?? -1;
+			i = close + 1;
+			continue;
+		}
+		break;
+	}
+	return i > 0 ? { args: parts.join(''), rest: content.slice(i) } : none;
+}
 
 export function convertNodeToBlock(node: Node, ctx: ConversionContext, options: ConversionOptions): PmNode[] | null {
 	switch (node.type) {
@@ -45,9 +89,16 @@ export function convertNodeToBlock(node: Node, ctx: ConversionContext, options: 
 
 			// default: auto-wrap any other environment as editable, carrying the \begin args
 			// verbatim so e.g. minipage keeps its {width}.
-			const envArgs = (env as Environment).args && (env as Environment).args!.length ? printRaw((env as Environment).args!) : '';
-			const envInner = convertNodesToBlocks(env.content, options);
-			return [buildNode('environment', { name: env.env, args: envArgs }, envInner.length > 0 ? envInner : [buildNode('paragraph')])];
+			const attached = env.args && env.args.length ? printRaw(env.args) : '';
+			const leading = attached ? { args: '', rest: env.content } : hoistLeadingEnvArgs(env);
+			const envInner = convertNodesToBlocks(leading.rest, options);
+			return [
+				buildNode(
+					'environment',
+					{ name: env.env, args: attached + leading.args },
+					envInner.length > 0 ? envInner : [buildNode('paragraph')]
+				)
+			];
 		}
 		case 'mathenv': {
 			// the declared type says `env: string`, but some math envs hand back a nested node
@@ -55,29 +106,10 @@ export function convertNodeToBlock(node: Node, ctx: ConversionContext, options: 
 			const mathEnv = node as Omit<Environment, 'env'> & { env: string | { content?: string } };
 			const envName = typeof mathEnv.env === 'string' ? mathEnv.env : mathEnv.env?.content || 'equation';
 			const starred = envName.endsWith('*');
-
-			const lineLabels: string[] = [];
-			const contentWithoutLabel: Node[] = [];
-
-			for (const n of mathEnv.content || []) {
-				if (n.type === 'macro' && n.content === 'label') {
-					const mandatoryArgs = (n as Macro).args?.filter((arg) => arg.openMark === '{') || [];
-					const labelText = mandatoryArgs[0] ? getTextContent(mandatoryArgs[0].content) : '';
-					if (labelText) lineLabels.push(labelText);
-				} else {
-					contentWithoutLabel.push(n);
-				}
-			}
-
-			// slice the exact source only when NO labels were extracted (the label text would
-			// remain in the slice and get re-added, duplicating); printRaw fallback.
-			let mathContent =
-				(lineLabels.length === 0 ? mathBodyRawSource(node, [`\\begin{${envName}}`], [`\\end{${envName}}`]) : null) ??
-				printRaw(contentWithoutLabel);
 			// order matters: 'alignat'.startsWith('align'), so alignat/flalign must be checked
 			// BEFORE the plain 'align' prefix (alignat also takes a {n} arg align doesn't, so the
 			// misclassification can fail to compile).
-			let environment: string | null = null;
+			let environment: string | undefined;
 			if (envName.startsWith('alignat')) environment = 'alignat';
 			else if (envName.startsWith('flalign')) environment = 'flalign';
 			else if (envName.startsWith('align')) environment = 'align';
@@ -86,30 +118,8 @@ export function convertNodeToBlock(node: Node, ctx: ConversionContext, options: 
 			// regeneration (see the envHandlers comment).
 			else if (envName.startsWith('multline')) environment = 'multline';
 			else if (envName.startsWith('eqnarray')) environment = 'eqnarray';
-
-			// the editor expects multiline environments wrapped in the content string
-			const MULTILINE_ENVS = [
-				'align',
-				'align*',
-				'gather',
-				'gather*',
-				'alignat',
-				'alignat*',
-				'flalign',
-				'flalign*',
-				'eqnarray',
-				'eqnarray*',
-				'multline',
-				'multline*'
-			];
-			if (MULTILINE_ENVS.includes(envName)) {
-				mathContent = `\\begin{${envName}}${mathContent}\\end{${envName}}`;
-			}
-
-			const label = lineLabels.length > 0 ? lineLabels[0] : null;
-			return [
-				buildNode('block_math', { label, numbered: !starred, environment, lineLabels }, [textNode(String(mathContent || '').trim())])
-			];
+			// one converter for both AST shapes: labels per row, the source slice, the starred form
+			return createBlockMath({ ...(mathEnv as object), env: envName } as Environment, starred, environment);
 		}
 		case 'displaymath': {
 			// slice the exact source between the delimiters; printRaw fallback

@@ -159,7 +159,7 @@ describe('converted document shape', () => {
 	});
 
 	it('code mode statements and lone calls become raw blocks, inline calls chips', () => {
-		const doc = docOf('#let x = 4\n\nText with #emph[x] chip.\n\n#lorem(20)\n');
+		const doc = docOf('#let x = 4\n\nText with #strike[x] chip.\n\n#lorem(20)\n');
 		expect(doc.child(0).type.name).toBe('raw_latex');
 		expect(doc.child(0).textContent).toBe('#let x = 4');
 		expect(doc.child(2).type.name).toBe('raw_latex');
@@ -168,7 +168,7 @@ describe('converted document shape', () => {
 		doc.child(1).forEach((n) => {
 			if (n.type.name === 'inline_latex') chip = n.textContent;
 		});
-		expect(chip).toBe('#emph[x]');
+		expect(chip).toBe('#strike[x]');
 	});
 
 	it('#include with a plain .typ string becomes a navigable chip node', () => {
@@ -299,7 +299,7 @@ describe('converted document shape', () => {
 	});
 
 	it('untranslatable equations stay raw islands', () => {
-		const doc = docOf('has $mat(1, 0; 0, 1)$ and $sqrt(x)$ and $theta.alt$ inline\n\n$ f = cases(1, 0) $\n');
+		const doc = docOf('has $mat(1, 0; 0, 1)$ and $sqrt(x)$ and $arrow.r$ inline\n\n$ f = cases(1, 0) $\n');
 		const para = doc.child(0);
 		let chips = 0;
 		para.forEach((n) => {

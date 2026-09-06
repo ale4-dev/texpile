@@ -1,10 +1,11 @@
 // Builds one workspace window: chrome, guards on what it may navigate or open, the held close
 // for unsaved edits, and the registry bookkeeping tied to its lifetime.
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, dialog, shell } from 'electron';
 import * as path from 'node:path';
 import { readSettings } from '../appSettings';
 import { isDev } from '../appIdentity';
 import { stopWorkspaceWatch } from '../fs/workspaceWatch';
+import { orderForPlatform } from '../ipc/messageBoxOrder';
 import { forgetWindow } from '../mcp/windowState';
 import { forgetWindowChrome, watchWindowState } from '../windowChrome';
 import { releaseDraftOwnerFor } from '../ipc/draftIpc';
@@ -182,6 +183,7 @@ export function createWindow(url: string, pending?: PendingOpen): BrowserWindow 
 	win.on('close', (e) => {
 		if (closeReady) return;
 		if (!windowRoots.get(wcId)) return; // no claimed folder (start screen): nothing to flush
+		if (win.webContents.isCrashed()) return; // nothing left to flush or to answer the hold
 		e.preventDefault();
 		// already held (double X-click, quit racing a click): keep the FIRST hold's timer — a
 		// second arm would orphan it and the orphan force-closes through the renderer's modal
@@ -203,6 +205,29 @@ export function createWindow(url: string, pending?: PendingOpen): BrowserWindow 
 				}
 			}
 		});
+	});
+	// a renderer that dies (out of memory on a huge document) leaves a window that never repaints
+	// and nothing inside it to ask for a reload, so main asks. The folder is re-armed so the reload
+	// lands back in it; the renderer's own visualMountGuard keeps it out of the build that killed it.
+	win.webContents.on('render-process-gone', (_e, details) => {
+		if (details.reason === 'clean-exit' || details.reason === 'killed' || win.isDestroyed()) return;
+		const root = windowRoots.get(wcId);
+		const order = orderForPlatform(['Reload', 'Close'], 1);
+		void dialog
+			.showMessageBox(win, {
+				type: 'error',
+				message: 'Texpile stopped responding',
+				detail: `The editor process ended (${details.reason}).${root ? ` Reload to reopen ${root.raw}.` : ''}`,
+				buttons: order.buttons,
+				defaultId: order.defaultId,
+				cancelId: order.cancelId
+			})
+			.then(({ response }) => {
+				if (win.isDestroyed()) return;
+				if (order.original[response] !== 0) return win.destroy();
+				if (root) pendingOpens.set(wcId, { kind: 'folder', path: root.raw });
+				win.webContents.reload();
+			});
 	});
 	win.on('closed', () => {
 		windowRoots.delete(wcId);

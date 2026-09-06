@@ -36,6 +36,8 @@ export const baseNodes = {
 		content: 'block+',
 		group: 'block',
 		defining: true,
+		// env: 'quotation' when the source used that environment rather than quote
+		attrs: { env: { default: null } },
 		parseDOM: [{ tag: 'blockquote' }],
 		toDOM() {
 			return blockquoteDom;
@@ -141,7 +143,14 @@ export const baseNodes = {
 			label: { default: null },
 			numbered: { default: false },
 			environment: { default: null }, // 'align' | 'gather' | 'alignat' | null
-			lineLabels: { default: [] } // per-line labels for multi-line environments
+			lineLabels: { default: [] }, // per-line labels for multi-line environments
+			// the source wrote \begin{equation*}, not \[ \]
+			starredEnv: { default: false },
+			// a display that sits INSIDE a paragraph in the source (no blank line before it, and
+			// none after when continuesAfter): the text around it is one paragraph, and a
+			// regenerated blank line would start a new one with an indent and extra space
+			inParagraph: { default: false },
+			continuesAfter: { default: false }
 		},
 		toDOM: (node) => {
 			return [
@@ -183,8 +192,9 @@ export const baseNodes = {
 		group: 'inline',
 		selectable: false,
 		// true = a \\ forced break. false is a legacy value kept so stale docs don't crash;
-		// it serializes to nothing
-		attrs: { lineBreak: { default: true } },
+		// it serializes to nothing. suffix: what followed the \\ in the source ('*', '[2ex]');
+		// command: 'newline' when the source wrote \newline
+		attrs: { lineBreak: { default: true }, suffix: { default: '' }, command: { default: null } },
 		parseDOM: [{ tag: 'br' }],
 		toDOM() {
 			return brDom;
@@ -199,6 +209,8 @@ export const baseNodes = {
 		code: true,
 		defining: true,
 		atom: true,
+		// delim: 'paren' when the source wrote \( \); anything else comes back as $ $
+		attrs: { delim: { default: null } },
 		toDOM: () => {
 			return [
 				'span',
@@ -214,7 +226,7 @@ export const baseNodes = {
 			}
 		],
 		leafText: (node) => {
-			return `$${node.textContent}$`;
+			return node.attrs.delim === 'paren' ? `\\(${node.textContent}\\)` : `$${node.textContent}$`;
 		}
 	} as NodeSpec,
 
@@ -257,7 +269,16 @@ export const baseNodes = {
 // raw LaTeX between \begin{itemize} and the first \item (\setlength\itemsep{0pt} setup is
 // common). the list node models one PM node per \item, so this has nowhere else to live:
 // carried verbatim on the FIRST list node of the group, spliced back after \begin{...}
-baseNodes.list.attrs = { ...(baseNodes.list.attrs ?? {}), preBody: { default: null } };
+// envArgs: the environment's own options (enumitem's [resume], [label=...]), same first-node rule
+// envName: 'description' when the source environment was one (the editor shows bullets, the file
+// keeps its environment); itemLabel: the raw [label] of \item[label], on that item's node
+baseNodes.list.attrs = {
+	...(baseNodes.list.attrs ?? {}),
+	preBody: { default: null },
+	envArgs: { default: null },
+	envName: { default: null },
+	itemLabel: { default: null }
+};
 
 // verbatim source preservation: every block an importer can emit at the top level carries
 // orig: { latex, norm, pre, seq, start, group* }. latex = original slice; norm = its parse-time

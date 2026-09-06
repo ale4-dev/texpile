@@ -1,6 +1,6 @@
 // Format-neutral doc assembly: verbatim `orig` substitution over top-level blocks, shared by the
-// LaTeX and Markdown serializers. Knows nothing about either syntax — it deals in opaque source
-// slices (orig.latex), parse-time normal forms (orig.norm), seq chains and inter-block gaps.
+// LaTeX, Markdown and Typst serializers. Knows nothing about any syntax — it deals in opaque
+// source slices (orig.latex), parse-time normal forms (orig.norm), seq chains and inter-block gaps.
 import { Fragment } from 'prosemirror-model';
 import type { Node } from 'prosemirror-model';
 import type { Ctx } from './types';
@@ -97,8 +97,21 @@ export type DocSerializeResult = {
 
 function neighborKey(sib: Node | null): string {
 	if (!sib) return '';
-	return sib.type.name === 'list' ? `list:${String(sib.attrs.kind ?? '')}` : sib.type.name;
+	if (sib.type.name !== 'list') return sib.type.name;
+	// the LaTeX list handler coalesces only within one source group (see sameSourceList)
+	const group = (sib.attrs.orig as { group?: number | null } | null)?.group;
+	return `list:${String(sib.attrs.kind ?? '')}:${group == null ? '' : String(group)}`;
 }
+
+export type BlockAssemblyOptions = {
+	/**
+	 * The separator between two adjacent emissions when at least one of them regenerated, or
+	 * they are pristine but no longer source-adjacent. `contiguous` says whether `next` still
+	 * directly followed `prev` in the source (consecutive seq). null keeps the default: a hard
+	 * blank line.
+	 */
+	boundary?: (prev: Node, next: Node, contiguous: boolean) => string | null;
+};
 
 /**
  * Builds the doc-children serializer for one dialect. Each dialect gets its OWN memo cache: the
@@ -108,11 +121,11 @@ function neighborKey(sib: Node | null): string {
  * Assembly semantics: a block still serializing to its parse-time norm re-emits its source
  * slice; pristine neighbours (consecutive seq) re-join on their original inter-block source
  * (`pre`); every verbatim/regenerated boundary gets a hard blank line so paragraphs can't merge
- * on re-parse. with no orig attrs this equals plain concatenation. also reproduces the body's
- * leading/trailing gaps (they belong to no node) and does the final trim, ONLY at edges that
- * aren't verbatim-protected.
+ * on re-parse, unless the dialect's `boundary` hook decides otherwise. with no orig attrs this
+ * equals plain concatenation. also reproduces the body's leading/trailing gaps (they belong to
+ * no node) and does the final trim, ONLY at edges that aren't verbatim-protected.
  */
-export function createBlockAssembly(serializeNode: (node: Node, ctx: Ctx) => string) {
+export function createBlockAssembly(serializeNode: (node: Node, ctx: Ctx) => string, options: BlockAssemblyOptions = {}) {
 	// per-block memo. PM nodes are immutable and structurally shared across transactions, so an
 	// untouched top-level block keeps its object identity keystroke to keystroke: serializing the
 	// whole doc becomes O(edited blocks), not O(doc). a block's output depends only on itself plus
@@ -142,12 +155,26 @@ export function createBlockAssembly(serializeNode: (node: Node, ctx: Ctx) => str
 		// blocks serializing to '' (empty paragraphs) don't break the chain, so pristine neighbours
 		// separated by a since-emptied paragraph still re-join on their original whitespace.
 		let prevSeq: number | null = null;
+		// the last child that emitted anything, verbatim or not; what the boundary hook sees
+		let lastNode: Node | null = null;
 		let leadProtected = false;
 		let i = 0;
+		function dialectBoundary(next: Node): string | null {
+			if (!options.boundary || !lastNode) return null;
+			const a = origOf(lastNode)?.seq;
+			const b = origOf(next)?.seq;
+			return options.boundary(lastNode, next, typeof a === 'number' && b === a + 1);
+		}
+		function trimmedEnd(): string {
+			let end = out.length;
+			while (end > 0 && out[end - 1] === '\n') end--;
+			return out.slice(0, end);
+		}
 		while (i < n) {
 			const run = verbatimRun(doc, parts, i);
 			if (run > 0) {
-				const orig = origOf(doc.child(i))!;
+				const node = doc.child(i);
+				const orig = origOf(node)!;
 				const contiguous = prevSeq != null && orig.seq === prevSeq + 1;
 				if (out === '') {
 					// if the doc's first emission truly starts at pristine block 0, its `pre` IS the
@@ -163,17 +190,20 @@ export function createBlockAssembly(serializeNode: (node: Node, ctx: Ctx) => str
 				} else {
 					// hard boundary after regenerated output: exactly one blank line (a guaranteed
 					// parbreak; without it a verbatim paragraph could merge into its neighbour).
-					let end = out.length;
-					while (end > 0 && out[end - 1] === '\n') end--;
-					out = out.slice(0, end) + '\n\n' + orig.latex;
+					out = trimmedEnd() + (dialectBoundary(node) ?? '\n\n') + orig.latex;
 				}
 				const lastSeq = origOf(doc.child(i + run - 1))?.seq;
 				prevSeq = typeof lastSeq === 'number' ? lastSeq : null;
+				lastNode = doc.child(i + run - 1);
 				i += run;
 			} else {
 				if (parts[i] !== '') {
-					out += prevSeq != null ? '\n\n' + parts[i].replace(/^\n+/, '') : parts[i];
+					const node = doc.child(i);
+					const sep = out === '' ? null : dialectBoundary(node);
+					if (sep != null) out = trimmedEnd() + sep + parts[i].replace(/^\n+/, '');
+					else out += prevSeq != null ? '\n\n' + parts[i].replace(/^\n+/, '') : parts[i];
 					prevSeq = null;
+					lastNode = node;
 				}
 				i++;
 			}
@@ -189,9 +219,10 @@ export function createBlockAssembly(serializeNode: (node: Node, ctx: Ctx) => str
 		}
 
 		// trim ONLY unprotected edges (identical to a blanket .trim() when no orig/docTail data
-		// exists: editor-created docs, direct converter callers).
-		if (!leadProtected) out = out.replace(/^\s+/, '');
-		if (!tailProtected) out = out.replace(/\s+$/, '');
+		// exists: editor-created docs, direct converter callers). ascii whitespace only: a
+		// leading BOM or a no-break space is content, not a gap
+		if (!leadProtected) out = out.replace(/^[ \t\r\n]+/, '');
+		if (!tailProtected) out = out.replace(/[ \t\r\n]+$/, '');
 		return { text: out, leadProtected, tailProtected };
 	}
 

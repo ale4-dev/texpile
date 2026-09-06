@@ -9,8 +9,9 @@
 // stays all-or-nothing and an item edit regenerates the whole list.
 import type { Token } from 'markdown-it';
 import { buildNode, textNodes, collapseTextNodes, type PmNode, type PmMark, realMarks } from './builders';
-import { type Cap, buildLineStarts, offsetOfLine, sliceEnd, constructEnd } from './sourceSlices';
+import { type Cap, buildLineStarts, offsetOfLine, sliceEnd, trimBlankTail, constructEnd } from './sourceSlices';
 import { attrStr, dest, imageMarkdown, imageBlock } from './tokenAttrs';
+import { formatLinkDest, formatLinkTitle } from './inlineSyntax';
 import { createMarkdownEngine } from '../engine';
 
 function withMarks(node: PmNode, marks: PmMark[]): PmNode {
@@ -31,6 +32,14 @@ function convertInline(children: Token[], marks: PmMark[]): PmNode[] {
 		const open = tok.type.endsWith('_open') ? tok.type.slice(0, -5) : null;
 		const close = tok.type.endsWith('_close') ? tok.type.slice(0, -6) : null;
 		if (open && (MARK_TOKENS[open] || open === 'link')) {
+			const end = constructEnd(children, i);
+			if (open === 'link' && end === i + 1) {
+				// `[](u)`: a mark needs text to sit on, so an empty link stays a literal chip
+				const literal = `[](${formatLinkDest(dest(tok, 'href'))}${formatLinkTitle(attrStr(tok, 'title'))})`;
+				out.push(withMarks(buildNode('inline_latex', { lang: 'markdown' }, textNodes(literal)), marks));
+				i = end;
+				continue;
+			}
 			const mark: PmMark =
 				open === 'link'
 					? {
@@ -42,7 +51,6 @@ function convertInline(children: Token[], marks: PmMark[]): PmNode[] {
 							}
 						}
 					: { type: MARK_TOKENS[open] };
-			const end = constructEnd(children, i);
 			out.push(...convertInline(children.slice(i + 1, end), [...marks, mark]));
 			i = end;
 			continue;
@@ -86,13 +94,14 @@ function paragraphContent(inline: Token | undefined): PmNode[] {
 	return inline?.children ? convertInline(inline.children, []) : [];
 }
 
-/** GFM task marker on the item's first paragraph: strip it and lift into kind/checked attrs. */
-function detectTask(blocks: PmNode[]): { blocks: PmNode[]; checked: boolean | null } {
+/** GFM task marker on the item's first paragraph: strip it and lift into kind/checked attrs.
+ *  `raw` is that paragraph's source, so an escaped `\[x\]` is not a box. */
+function detectTask(blocks: PmNode[], raw: string): { blocks: PmNode[]; checked: boolean | null } {
 	const first = blocks[0];
-	if (!first || first.type.name !== 'paragraph' || first.childCount === 0) return { blocks, checked: null };
+	if (!/^\[[ xX]\][ \t]/.test(raw) || !first || first.type.name !== 'paragraph' || first.childCount === 0) return { blocks, checked: null };
 	const lead = first.child(0);
 	if (!lead.isText || !lead.text) return { blocks, checked: null };
-	const m = /^\[([ xX])\] /.exec(lead.text);
+	const m = /^\[([ xX])\][ \t]/.exec(lead.text);
 	if (!m) return { blocks, checked: null };
 	const rest = lead.text.slice(m[0].length);
 	const kids: PmNode[] = [];
@@ -102,10 +111,20 @@ function detectTask(blocks: PmNode[]): { blocks: PmNode[]; checked: boolean | nu
 	return { blocks: [para, ...blocks.slice(1)], checked: m[1] !== ' ' };
 }
 
+/** markdown-it hides the paragraphs of a tight list's items; a visible one means blank lines */
+function isLoose(tokens: Token[], i: number, j: number): boolean {
+	const level = tokens[i].level + 2;
+	for (let k = i + 1; k < j; k++) if (tokens[k].type === 'paragraph_open' && tokens[k].level === level && !tokens[k].hidden) return true;
+	return false;
+}
+
 function listItems(tokens: Token[], i: number, j: number): PmNode[] {
 	const open = tokens[i];
 	const kind = open.type === 'ordered_list_open' ? 'ordered' : 'bullet';
 	const start = kind === 'ordered' ? Number(open.attrGet('start') ?? 1) : null;
+	// the delimiter as written: `-` `*` `+`, or `.` `)`; what tells two adjacent lists apart
+	const marker = open.markup || null;
+	const loose = isLoose(tokens, i, j);
 	const items: PmNode[] = [];
 	let k = i + 1;
 	while (k < j) {
@@ -115,7 +134,8 @@ function listItems(tokens: Token[], i: number, j: number): PmNode[] {
 		}
 		const e = constructEnd(tokens, k);
 		const inner = convertTokens(tokens, k + 1, e);
-		const { blocks, checked } = detectTask(inner.length > 0 ? inner : [buildNode('paragraph')]);
+		const raw = tokens[k + 1]?.type === 'paragraph_open' && tokens[k + 2]?.type === 'inline' ? tokens[k + 2].content : '';
+		const { blocks, checked } = detectTask(inner.length > 0 ? inner : [buildNode('paragraph')], raw);
 		items.push(
 			buildNode(
 				'list',
@@ -125,7 +145,9 @@ function listItems(tokens: Token[], i: number, j: number): PmNode[] {
 					order: kind === 'ordered' ? (items.length === 0 ? (start ?? 1) : 1) : null,
 					checked,
 					collapsed: false,
-					preBody: null
+					preBody: null,
+					marker,
+					loose
 				},
 				blocks
 			)
@@ -133,7 +155,9 @@ function listItems(tokens: Token[], i: number, j: number): PmNode[] {
 		k = e + 1;
 	}
 	if (items.length === 0)
-		items.push(buildNode('list', { kind, order: null, checked: null, collapsed: false, preBody: null }, [buildNode('paragraph')]));
+		items.push(
+			buildNode('list', { kind, order: null, checked: null, collapsed: false, preBody: null, marker, loose }, [buildNode('paragraph')])
+		);
 	return items;
 }
 
@@ -218,16 +242,25 @@ function convertConstruct(tokens: Token[], i: number, j: number, cap: Cap | null
 			return [buildNode('raw_latex', { lang: 'html' }, textNodes(tok.content.replace(/\n$/, '')))];
 		case 'math_block':
 			return [buildNode('block_math', { label: null, numbered: false, environment: null, lineLabels: [] }, textNodes(tok.content.trim()))];
-		default: {
+		// link reference and footnote definitions are invisible to the reader but load-bearing
+		// for the file: blocks of their own, verbatim, never a neighbour's gap
+		case 'reference_definition':
+		case 'footnote_definition':
+			return rawBlock(tok, cap);
+		default:
 			// unknown block construct: preserve its exact source lines as a raw markdown block
-			if (cap && tok.map) {
-				const min = offsetOfLine(cap, tok.map[0]);
-				const end = sliceEnd(cap, tok.map[1]);
-				if (end > min) return [buildNode('raw_latex', { lang: 'markdown' }, textNodes(cap.source.slice(min, end)))];
-			}
-			return tok.content ? [buildNode('raw_latex', { lang: 'markdown' }, textNodes(tok.content.replace(/\n$/, '')))] : [];
-		}
+			return rawBlock(tok, cap);
 	}
+}
+
+/** the construct's exact source lines (top level), else the content its rule recorded */
+function rawBlock(tok: Token, cap: Cap | null): PmNode[] {
+	if (cap && tok.map) {
+		const min = offsetOfLine(cap, tok.map[0]);
+		const end = trimBlankTail(cap.source, min, sliceEnd(cap, tok.map[1]));
+		if (end > min) return [buildNode('raw_latex', { lang: 'markdown' }, textNodes(cap.source.slice(min, end)))];
+	}
+	return tok.content ? [buildNode('raw_latex', { lang: 'markdown' }, textNodes(tok.content.replace(/\n$/, '')))] : [];
 }
 
 function ensureBlocks(blocks: PmNode[]): PmNode[] {
@@ -271,7 +304,7 @@ export function markdownToProseMirror(source: string): MarkdownParseResult {
 		// only a trustworthy span gets the slice. multi-block constructs (a list) share it
 		// under a group id so substitution is all-or-nothing.
 		const min = map ? offsetOfLine(cap, map[0]) : NaN;
-		const end = map ? sliceEnd(cap, map[1]) : NaN;
+		const end = map ? trimBlankTail(source, min, sliceEnd(cap, map[1])) : NaN;
 		const spanOk = map != null && Number.isFinite(min) && min >= cap.prevEnd && end <= source.length && min < end;
 		const slice = spanOk ? source.slice(min, end) : null;
 		const pre = spanOk ? source.slice(cap.prevEnd, min) : null;
@@ -297,9 +330,10 @@ export function markdownToProseMirror(source: string): MarkdownParseResult {
 	// trailing bytes past the last block (usually just "\n") belong to no node; stash them on
 	// the doc so a pristine save reproduces the file's exact tail. an EMPTY tail is stashed
 	// too: it protects a missing final newline from being "fixed" on a no-edit save
-	let docAttrs: Record<string, unknown> | null = null;
-	if (result.length > 0) {
-		docAttrs = { docTail: { text: source.slice(cap.prevEnd), afterSeq: cap.seq - 1 } };
-	}
+	const docAttrs: Record<string, unknown> = {
+		docTail: result.length > 0 ? { text: source.slice(cap.prevEnd), afterSeq: cap.seq - 1 } : null,
+		// a file that is CRLF throughout gets its regenerated blocks written the same way
+		eol: source.includes('\r\n') && !/(^|[^\r])\n/.test(source) ? '\r\n' : null
+	};
 	return { doc: buildNode('doc', docAttrs, ensureBlocks(result)) };
 }

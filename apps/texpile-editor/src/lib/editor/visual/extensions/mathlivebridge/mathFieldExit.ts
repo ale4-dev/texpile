@@ -88,6 +88,11 @@ export class MathFieldExit {
 		} else if (dir == 'forward') {
 			this.maybedelete(1);
 			this.land(this.h.getPos() + this.h.node().nodeSize, 1);
+		} else if (dir == 'upward') {
+			// arrow keys walked into the field; walking on must get out again, an empty field kept
+			this.land(this.h.getPos(), -1);
+		} else if (dir == 'downward') {
+			this.land(this.h.getPos() + this.h.node().nodeSize, 1);
 		}
 	}
 
