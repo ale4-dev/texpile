@@ -46,7 +46,6 @@ export class WorkspaceEditFlow {
 			autosaveActive: () => this.autosaveActive(),
 			// autosave stands down for this file: writing would recreate a name the user did not ask
 			// for, or re-trip the guard behind a question they postponed
-			fileMissing: (p) => samePath(p, doc.path ?? '') && (doc.deletedOnDisk || this.external.deferred?.path === doc.path),
 			clearDeleted: () => (doc.deletedOnDisk = false),
 			writeText: (p, content) => d.provider.writeText(p, content),
 			getEol: () => doc.eol,
@@ -184,7 +183,17 @@ export class WorkspaceEditFlow {
 	// nothing until a recompile; a session's host is the persistence authority). So autosave is
 	// forced effectively on in both, WITHOUT changing the user's setting (it reverts on exit).
 	// The Preferences toggle shows this as forced+disabled.
+	/**
+	 * Autosave writes the open file without being asked, which is only ever right when writing it
+	 * is the obvious thing to do. It is not, for a file that was deleted or renamed from outside
+	 * (the write recreates a name nobody asked for) or one holding a conflict the user postponed.
+	 * Reporting that as "autosave is not active" rather than checking for it at each call site is
+	 * what makes the timer, the switch prompt, the tab close and the window close all agree.
+	 */
 	autosaveActive(): boolean {
+		const doc = this.d.wsdoc.doc;
+		// `external` is assigned after the save pipeline, whose deps can ask this during construction
+		if (doc.deletedOnDisk || (doc.path && this.external?.deferred?.path === doc.path)) return false;
 		const s = settings.current;
 		return s.autosave !== false || compileConfig.current.latex.liveMode || (this.d.session().active && !this.d.guest());
 	}
