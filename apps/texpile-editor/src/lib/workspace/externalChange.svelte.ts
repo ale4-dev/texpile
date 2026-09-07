@@ -8,6 +8,9 @@ import { activeFilePath, isDirty } from '$lib/workspace/workspaceStore';
 import { toLf, detectEol, type Eol } from '$lib/workspace/fileSystem';
 import { recordDiskStamp } from '$lib/workspace/diskStamp';
 
+// long enough for a rewrite-in-place to finish, short enough that the banner still feels immediate
+const RECHECK_MS = 100;
+
 export type ExternalChangeDeps = {
 	getLoadedPath(): string | null;
 	/** only text-ish kinds can meaningfully conflict */
@@ -30,6 +33,10 @@ export type ExternalChangeDeps = {
 	discardQueuedSave(): void;
 	/** fold adopted content into the shared doc so guests see it too */
 	sessionEdit(path: string, content: string): void;
+	/** is the path still on disk? a failed read alone does not settle it */
+	exists(path: string): Promise<boolean>;
+	/** the open file went missing on disk, or came back */
+	setDeleted(deleted: boolean): void;
 	/** "keep mine": overwrite disk now. Must FORCE past the save pipeline's external-write guard -
 	 * the guard is what raised this conflict, and by choosing "keep" the user has seen that disk
 	 * differs and decided to overwrite it. An unforced save would just re-trip the guard forever. */
@@ -38,6 +45,13 @@ export type ExternalChangeDeps = {
 
 export class ExternalChangeWatcher {
 	conflict = $state<{ path: string; disk: string; eol: Eol } | null>(null);
+	/**
+	 * The conflict the user postponed, and the disk content they postponed it against. Held so
+	 * that "decide later" actually means later: without it the next autosave re-trips the save
+	 * guard and the same question comes back 1.5 seconds after the next keystroke. A fresh
+	 * external write is a different question and does get asked.
+	 */
+	deferred = $state<{ path: string; disk: string } | null>(null);
 	/** told after disk content replaced the buffer, for state resolved against the old text */
 	onAdopted: (() => void) | null = null;
 
@@ -53,8 +67,10 @@ export class ExternalChangeWatcher {
 		try {
 			raw = await d.readText(path);
 		} catch {
+			await this.checkOrphaned(path);
 			return;
 		}
+		d.setDeleted(false); // it reads, so it is there: an earlier deletion has been undone
 		const disk = toLf(raw); // compare in LF against our LF baseline/buffers
 		if (activeFilePath.current !== path) return;
 		if (disk === d.getDiskBaseline()) {
@@ -64,8 +80,26 @@ export class ExternalChangeWatcher {
 			return;
 		}
 		const eol = detectEol(raw); // the external writer may have changed the ending
-		if (!isDirty.current || d.getBuffer() === disk) this.applyDiskReload(disk, eol);
-		else this.conflict = { path, disk, eol };
+		if (!isDirty.current || d.getBuffer() === disk) return this.applyDiskReload(disk, eol);
+		// already asked about exactly this, and told to wait
+		if (this.deferred?.path === path && this.deferred.disk === disk) return;
+		this.deferred = null;
+		this.conflict = { path, disk, eol };
+	}
+
+	/**
+	 * The read failed. Usually that means the file was renamed or deleted from outside, and the
+	 * buffer is now the only copy: it stays on screen, edits and all, and the editor says so
+	 * rather than letting the next save quietly write the old name back.
+	 *
+	 * A failed read is not proof on its own, so existence is re-checked after a moment. VS Code
+	 * does the same, for the same reason: network shares report deletes for files that are still
+	 * there, and a file being rewritten is briefly unreadable.
+	 */
+	private async checkOrphaned(path: string): Promise<void> {
+		await new Promise((r) => setTimeout(r, RECHECK_MS));
+		if (this.deps.getLoadedPath() !== path) return;
+		if (!(await this.deps.exists(path))) this.deps.setDeleted(true);
 	}
 
 	/** adopt the on-disk version into the editor, discarding local edits; disk is LF-normalized */
@@ -80,8 +114,9 @@ export class ExternalChangeWatcher {
 			d.setRawContent(disk);
 		}
 		isDirty.current = false;
-		// the buffer now matches disk: drop any queued autosave of the edits we just replaced, or a
-		// later flush would clobber the version the user chose to keep
+		// the buffer now matches disk: nothing left to postpone, and any queued autosave of the
+		// edits we just replaced has to go, or a later flush would clobber the version they kept
+		this.deferred = null;
 		d.discardQueuedSave();
 		// the host materializer's lastWritten update prevents an echo write back to disk
 		const path = d.getLoadedPath();
@@ -94,12 +129,18 @@ export class ExternalChangeWatcher {
 		this.onAdopted?.();
 	}
 
-	/** 'defer' answers neither: disk keeps its bytes, the buffer keeps its edits and stays dirty,
-	 * and the next save attempt asks again. The only answer that destroys nothing. */
+	/** 'defer' answers neither: disk keeps its bytes, the buffer keeps its edits and stays dirty.
+	 * The only answer that destroys nothing, and it holds until disk changes again or the file is
+	 * saved deliberately. */
 	resolve(choice: 'reload' | 'keep' | 'defer'): void {
 		const c = this.conflict;
 		this.conflict = null;
-		if (!c || choice === 'defer') return;
+		if (!c) return;
+		if (choice === 'defer') {
+			this.deferred = { path: c.path, disk: c.disk };
+			return;
+		}
+		this.deferred = null;
 		if (choice === 'reload') this.applyDiskReload(c.disk, c.eol);
 		else if (this.deps.getLoadedPath() === c.path) this.deps.saveNow();
 	}

@@ -234,6 +234,20 @@
 			<p class="min-w-0 truncate"><span class="font-medium">{m.wsview_read_only()}.</span> {encodingIssue}</p>
 		</div>
 	{/if}
+	<!-- the buffer is now the only copy, so it stays on screen; what a save will do is spelled out
+	     because it recreates the old name rather than following the rename -->
+	{#if loadedPath && fileDeleted && !comparing}
+		<div
+			class="border-surface-200-800 bg-surface-100-900 text-muted flex min-h-10 shrink-0 items-center gap-2 border-b px-3 text-xs"
+			use:tip={m.wsview_file_deleted_note()}
+		>
+			<CircleAlert class="text-warning-ink size-3.5 shrink-0" />
+			<p class="min-w-0 truncate">
+				<span class="font-medium">{m.wsview_file_deleted_title()}.</span>
+				{m.wsview_file_deleted_note()}
+			</p>
+		</div>
+	{/if}
 	{#if loadedPath && comparing && viewMode === 'visual' && structured}
 		<div class="bg-surface-100-900 text-muted border-surface-200-800 flex min-h-10 shrink-0 items-center gap-2 border-b px-3 text-xs">
 			<GitCompare class="size-3.5 shrink-0" />

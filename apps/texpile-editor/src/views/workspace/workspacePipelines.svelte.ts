@@ -98,6 +98,8 @@ export function createWorkspacePipelines(d: PipelineDeps) {
 		setPdfPaneOpen: (open: boolean) => d.layout().setPdfPaneOpen(open),
 		openCompileModal: d.openCompileModal,
 		openMainConfirm: (then) => void d.files().mainPrompt.prompt(then),
+		fileExists: async (p) => (await d.provider.stat(p)).exists,
+		clearMainFile: () => void d.files().applyMainFile(null),
 		// the Compile button doubles as the draft status (live / paused)
 		runDraftCompile: () => draftCtl.compile(),
 		openTypstPreview: () => typstPreview.enable(),

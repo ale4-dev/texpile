@@ -27,6 +27,8 @@ function makeWatcher(over: Partial<ExternalChangeDeps> = {}) {
 		discardQueuedSave: () => {},
 		sessionEdit: () => {},
 		saveNow: () => {},
+		exists: async () => true,
+		setDeleted: () => {},
 		...over
 	};
 	return new ExternalChangeWatcher(deps);
@@ -79,5 +81,86 @@ describe('ExternalChangeWatcher.resolve', () => {
 		await w.check();
 		w.resolve('keep');
 		expect(saveNow).toHaveBeenCalled();
+	});
+});
+
+// Renaming or deleting the open file from outside left Texpile none the wiser: the read failed,
+// the watcher returned, the save guard reported "unchanged" for a file that was not there, and the
+// next save recreated it under the old name with no indication anything had happened.
+describe('the open file going missing', () => {
+	const gone = async () => {
+		throw new Error('ENOENT: no such file or directory');
+	};
+
+	it('marks the document deleted once the path is confirmed gone', async () => {
+		const setDeleted = vi.fn();
+		const w = makeWatcher({ readText: gone, exists: async () => false, setDeleted });
+		await w.check();
+		expect(setDeleted).toHaveBeenCalledWith(true);
+	});
+
+	// a file being rewritten in place is briefly unreadable, and network shares report deletes for
+	// files that are still there; one failed read is not proof
+	it('says nothing when the file is still there after all', async () => {
+		const setDeleted = vi.fn();
+		const w = makeWatcher({ readText: gone, exists: async () => true, setDeleted });
+		await w.check();
+		expect(setDeleted).not.toHaveBeenCalledWith(true);
+	});
+
+	it('clears the mark when the file comes back', async () => {
+		const setDeleted = vi.fn();
+		const w = makeWatcher({ setDeleted });
+		await w.check();
+		expect(setDeleted).toHaveBeenCalledWith(false);
+	});
+
+	it('leaves the buffer alone: it is the only copy left', async () => {
+		const setTexSource = vi.fn();
+		const discardQueuedSave = vi.fn();
+		const w = makeWatcher({ readText: gone, exists: async () => false, setTexSource, discardQueuedSave });
+		await w.check();
+		expect(setTexSource).not.toHaveBeenCalled();
+		expect(discardQueuedSave).not.toHaveBeenCalled();
+		expect(isDirty.current).toBe(true);
+	});
+});
+
+// "Decide later" has to mean later. Autosave is on by default, so without this the same question
+// came back 1.5 seconds after the next keystroke, forever.
+describe('a postponed conflict', () => {
+	const conflicting = { readText: async () => 'theirs', getBuffer: () => 'mine' };
+
+	it('is not asked again for the same disk content', async () => {
+		const w = makeWatcher(conflicting);
+		await w.check();
+		expect(w.conflict).not.toBeNull();
+		w.resolve('defer');
+
+		await w.check();
+		expect(w.conflict).toBeNull(); // still postponed
+		expect(w.deferred?.disk).toBe('theirs');
+	});
+
+	it('is asked again when disk changes to something else', async () => {
+		let disk = 'theirs';
+		const w = makeWatcher({ readText: async () => disk, getBuffer: () => 'mine' });
+		await w.check();
+		w.resolve('defer');
+
+		disk = 'theirs, edited again';
+		await w.check();
+		expect(w.conflict?.disk).toBe('theirs, edited again');
+	});
+
+	it('stops being postponed once the next question is answered', async () => {
+		let disk = 'theirs';
+		const w = makeWatcher({ readText: async () => disk, getBuffer: () => 'mine' });
+		await w.check();
+		w.resolve('defer');
+		disk = 'theirs again';
+		await w.check();
+		w.resolve('keep');
+		expect(w.deferred).toBeNull();
 	});
 });

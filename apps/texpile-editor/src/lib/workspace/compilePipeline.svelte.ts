@@ -115,6 +115,17 @@ export class CompilePipeline {
 			toaster.warning({ title: m.project_command_blocked_title(), description: m.project_command_blocked_desc(), duration: 5000 });
 			return;
 		}
+		// The chosen main file can go missing without Texpile touching it: renamed, moved or
+		// deleted from outside. Checked here rather than watched, so a file that is briefly absent
+		// (a checkout in flight) costs nothing, and every lane below gets a main that exists.
+		const main = mainFile.current;
+		if (main && !(await this.deps.fileExists(main))) {
+			this.deps.clearMainFile();
+			this.deps.openMainConfirm(() => {
+				if (mainFile.current) void this.runCompile();
+			});
+			return;
+		}
 		// first compile in a folder with no explicitly chosen main file: confirm it first
 		if (this.deps.mainConfirmed() !== true && texFiles.current.length > 1) {
 			this.deps.openMainConfirm(() => void this.runCompile());

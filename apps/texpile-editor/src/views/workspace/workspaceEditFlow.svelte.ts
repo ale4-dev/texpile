@@ -44,6 +44,10 @@ export class WorkspaceEditFlow {
 			sessionEdit: (path, content) => d.session().edit(path, content),
 			isGuest: d.guest,
 			autosaveActive: () => this.autosaveActive(),
+			// autosave stands down for this file: writing would recreate a name the user did not ask
+			// for, or re-trip the guard behind a question they postponed
+			fileMissing: (p) => samePath(p, doc.path ?? '') && (doc.deletedOnDisk || this.external.deferred?.path === doc.path),
+			clearDeleted: () => (doc.deletedOnDisk = false),
 			writeText: (p, content) => d.provider.writeText(p, content),
 			getEol: () => doc.eol,
 			getLoadedPath: () => doc.path,
@@ -65,6 +69,8 @@ export class WorkspaceEditFlow {
 			isStructured: () => hasVisualMode(doc.kind),
 			whenIdle: () => this.saver.whenIdle(),
 			readText: (p) => d.provider.readText(p),
+			exists: async (p) => (await d.provider.stat(p)).exists,
+			setDeleted: (v) => (doc.deletedOnDisk = v),
 			getDiskBaseline: () => doc.diskBaseline,
 			setDiskBaseline: (t) => (doc.diskBaseline = t),
 			getBuffer: () => (hasVisualMode(doc.kind) ? doc.texSource : doc.rawContent),

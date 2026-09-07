@@ -30,6 +30,8 @@ function deps(stat: CompileDeps['stat'], record: { onDone?: (out: string) => voi
 		getCompileCommand: () => '',
 		terminalAvailable: () => true,
 		mainConfirmed: () => true,
+		fileExists: async () => true,
+		clearMainFile: () => {},
 		commandPending: () => false,
 		getSession: () => ({ active: false }) as never,
 		getDock: () => ({ runCommand: (_cmd: string, onDone?: (out: string) => void) => (record.onDone = onDone), interrupt: () => {} }),

@@ -11,6 +11,8 @@ function makePipeline(over: Partial<SaveDeps> = {}) {
 		sessionEdit: () => {},
 		isGuest: () => false,
 		autosaveActive: () => true,
+		fileMissing: () => false,
+		clearDeleted: () => {},
 		writeText: async (path, content) => {
 			writes.push({ path, content });
 		},
@@ -194,5 +196,45 @@ describe('SavePipeline retarget only speaks for its own path', () => {
 		await pipeline.whenIdle();
 		await tick();
 		expect(pipeline.pending).toBeNull();
+	});
+});
+
+// A file renamed or deleted from outside is still open here, with the buffer as the only copy.
+// Autosave would recreate it under the old name 1.5s later without anyone asking, which is how a
+// rename in another editor ended up leaving two files behind.
+describe('SavePipeline with the file missing from disk', () => {
+	const tick = () => new Promise((r) => setTimeout(r, 0));
+
+	it('keeps the edit queued instead of writing it back', async () => {
+		vi.useFakeTimers();
+		const { pipeline, writes } = makePipeline({ fileMissing: () => true });
+		pipeline.schedule('/ws/main.tex', 'mine');
+		vi.advanceTimersByTime(5000);
+		vi.useRealTimers();
+		await pipeline.whenIdle();
+		expect(writes).toEqual([]);
+		expect(pipeline.pending).toEqual({ path: '/ws/main.tex', content: 'mine' });
+	});
+
+	it('an explicit save still writes it back, and the file is no longer missing', async () => {
+		const clearDeleted = vi.fn();
+		const { pipeline, writes } = makePipeline({ fileMissing: () => true, clearDeleted });
+		await pipeline.enqueue('/ws/main.tex', 'mine', true);
+		expect(writes).toEqual([{ path: '/ws/main.tex', content: 'mine' }]);
+		expect(clearDeleted).toHaveBeenCalled();
+	});
+
+	it('autosaves normally once the file is back', async () => {
+		vi.useFakeTimers();
+		let missing = true;
+		const { pipeline, writes } = makePipeline({ fileMissing: () => missing });
+		pipeline.schedule('/ws/main.tex', 'first');
+		missing = false;
+		pipeline.schedule('/ws/main.tex', 'second');
+		vi.advanceTimersByTime(2000);
+		vi.useRealTimers();
+		await pipeline.whenIdle();
+		await tick();
+		expect(writes).toEqual([{ path: '/ws/main.tex', content: 'second' }]);
 	});
 });

@@ -14,6 +14,10 @@ export type SaveDeps = {
 	/** a guest has no disk: edits live in the CRDT only, pending/writes never engage. */
 	isGuest(): boolean;
 	autosaveActive(): boolean;
+	/** was this path deleted or renamed from outside? autosave stands down; an explicit save still writes */
+	fileMissing(path: string): boolean;
+	/** a write landed, so the path exists again */
+	clearDeleted(): void;
 	writeText(path: string, content: string): Promise<unknown>;
 	getEol(): Eol;
 	getLoadedPath(): string | null;
@@ -67,8 +71,11 @@ export class SavePipeline {
 		if (this.deps.isGuest()) return;
 		if (this._pending && this._pending.path !== path) this.flush();
 		this._pending = { path, content };
-		// autosave off: track the edit (so Save / the switch-guard have it) but don't auto-write
-		if (!this.deps.autosaveActive()) return;
+		// autosave off: track the edit (so Save / the switch-guard have it) but don't auto-write.
+		// A file deleted or renamed from outside is the same situation for a different reason:
+		// writing would recreate it under the old name, and nobody asked for that. The edit stays
+		// queued, and an explicit Save still puts it back.
+		if (!this.deps.autosaveActive() || this.deps.fileMissing(path)) return;
 		this.cancelTimer();
 		this.timer = setTimeout(() => this.flush(), AUTOSAVE_MS);
 	}
@@ -175,6 +182,7 @@ export class SavePipeline {
 				if (content === this.deps.getLiveContent()) this.deps.setDirty(false);
 			}
 			if (notify) toaster.success({ title: m.wsview_toast_saved_title(), description: basename(path), duration: 1200 });
+			this.deps.clearDeleted(); // the bytes are on disk again, whatever happened to the old name
 			return true;
 		} catch (e) {
 			toaster.error({ title: m.wsview_toast_save_failed_title(), description: e instanceof Error ? e.message : m.wsview_error_unknown() });

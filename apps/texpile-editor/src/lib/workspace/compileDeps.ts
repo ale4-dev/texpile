@@ -25,6 +25,10 @@ export type CompileDeps = {
 	setPdfPaneOpen(open: boolean): void;
 	openCompileModal(): void;
 	openMainConfirm(then?: () => void): void;
+	/** is this path still there? the chosen main file can be renamed or deleted from outside */
+	fileExists(path: string): Promise<boolean>;
+	/** forget a main file that is no longer on disk, so the picker opens instead of a dead target */
+	clearMainFile(): void;
 	runDraftCompile(): Promise<void>;
 	/** open the Typst live preview pane (its own attach effect does the rest). */
 	openTypstPreview(): void;

@@ -324,6 +324,8 @@
 	"wsview_refupdate_apply": "Alle aktualisieren",
 	"wsview_open_in_workspace": "Im Arbeitsbereich öffnen",
 	"wsview_diff_heading": "Änderungen seit der letzten Version",
+	"wsview_file_deleted_title": "Auf dem Datenträger gelöscht",
+	"wsview_file_deleted_note": "Diese Datei wurde außerhalb von Texpile umbenannt oder gelöscht. Automatisches Speichern pausiert; beim Speichern wird sie unter dem alten Namen neu angelegt.",
 	"wsview_diff_file_deleted": "Diese Datei wurde gelöscht",
 	"wsview_diff_finding_changes": "Änderungen werden gesucht…",
 	"wsview_diff_version_unparsed": "Diese Version ist zu komplex für die visuelle Ansicht — bitte den Quelltextvergleich verwenden",

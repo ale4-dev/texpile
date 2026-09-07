@@ -30,6 +30,8 @@ function staleDeps(record: { previewOpens: number; ran: string[] }, over: Partia
 		getCompileCommand: () => 'latexmk -pdf {main}', // the stale cache
 		terminalAvailable: () => true,
 		mainConfirmed: () => true,
+		fileExists: async () => true,
+		clearMainFile: () => {},
 		commandPending: () => false,
 		getSession: () => ({ active: false }) as never,
 		getDock: () => ({ runCommand: (cmd: string) => record.ran.push(cmd), interrupt: () => {} }),
