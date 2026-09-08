@@ -16,6 +16,7 @@
 	import { openFolderInWindow } from '$lib/workspace/openWorkspace';
 	import { openTutorialProject } from '$lib/workspace/starters';
 	import { m } from '$lib/paraglide/messages';
+	import { RecentsFit } from './startRecentsFit.svelte';
 
 	let busy = $state(false);
 	let error = $state<string | null>(null);
@@ -23,7 +24,8 @@
 	// lives in a popup instead of inline
 	const RECENT_COLLAPSED_COUNT = 5;
 	let recentModalOpen = $state(false);
-	const visibleRecents = $derived(recentFolders.current.slice(0, RECENT_COLLAPSED_COUNT));
+	const fit = new RecentsFit(RECENT_COLLAPSED_COUNT);
+	const visibleRecents = $derived(recentFolders.current.slice(0, fit.count));
 	let tutorialModalOpen = $state(false);
 	let prefsOpen = $state(false); // the menu bar isn't on this screen, so settings need a way in from here
 	const appVersion = __APP_VERSION__; // injected by Vite from package.json
@@ -101,7 +103,7 @@
      push the top above the scroll origin, where it can't be reached -->
 <AppFrame>
 	<div class="flex min-h-full shrink-0 justify-center px-6 py-12">
-		<div class="my-auto w-full max-w-md">
+		<div class="my-auto w-full max-w-md" use:fit.attach>
 			<img src={logoOnLight} alt="Texpile" class="mx-auto mb-8 h-9 w-auto dark:hidden" />
 			<img src={logoOnDark} alt="Texpile" class="mx-auto mb-8 hidden h-9 w-auto dark:block" />
 
@@ -143,29 +145,31 @@
 				<p class="text-error-ink mt-2 px-2 text-sm">{error}</p>
 			{/if}
 
-			{#if recentFolders.current.length > 0}
-				<div class="mt-7 mb-1 flex items-center gap-3">
-					<span class="text-muted shrink-0 text-xs font-semibold tracking-wider uppercase">{m.start_recent_heading()}</span>
-					<span class="border-surface-200-800 h-px flex-1 border-t"></span>
-				</div>
-				{#each visibleRecents as folder (folder)}
-					<!-- min-w-0 on the row and the path: flex items default to min-width:auto, so
+			{#if recentFolders.current.length > 0 && fit.count > 0}
+				<div data-recent-block class="pt-7">
+					<div class="mb-1 flex items-center gap-3">
+						<span class="text-muted shrink-0 text-xs font-semibold tracking-wider uppercase">{m.start_recent_heading()}</span>
+						<span class="border-surface-200-800 h-px flex-1 border-t"></span>
+					</div>
+					{#each visibleRecents as folder (folder)}
+						<!-- min-w-0 on the row and the path: flex items default to min-width:auto, so
 					     without it `truncate` never engages and long paths overflow -->
-					<button class="{rowClass} group min-w-0" onclick={() => openFolder(folder)} disabled={busy} use:tip={folder}>
-						<Folder class="text-muted size-4 shrink-0" />
-						<!-- inner baseline row: the icon stays centred in the row, but the name (text-sm) and
+						<button class="{rowClass} group min-w-0" data-recent-row onclick={() => openFolder(folder)} disabled={busy} use:tip={folder}>
+							<Folder class="text-muted size-4 shrink-0" />
+							<!-- inner baseline row: the icon stays centred in the row, but the name (text-sm) and
 						     path (text-xs) sit on a shared baseline, else the smaller one rides low -->
-						<span class="flex min-w-0 flex-1 items-baseline gap-2">
-							<span class="max-w-[45%] shrink-0 truncate group-hover:underline">{basename(folder)}</span>
-							<span class="text-faint min-w-0 truncate text-xs">{folder}</span>
-						</span>
-					</button>
-				{/each}
-				{#if recentFolders.current.length > RECENT_COLLAPSED_COUNT}
-					<button class="text-muted hover:text-surface-950-50 mt-1 px-2 text-xs" onclick={() => (recentModalOpen = true)}>
-						{m.start_recent_show_all({ count: recentFolders.current.length })}
-					</button>
-				{/if}
+							<span class="flex min-w-0 flex-1 items-baseline gap-2">
+								<span class="max-w-[45%] shrink-0 truncate group-hover:underline">{basename(folder)}</span>
+								<span class="text-faint min-w-0 truncate text-xs">{folder}</span>
+							</span>
+						</button>
+					{/each}
+					{#if recentFolders.current.length > visibleRecents.length}
+						<button class="text-muted hover:text-surface-950-50 mt-1 px-2 text-xs" onclick={() => (recentModalOpen = true)}>
+							{m.start_recent_show_all({ count: recentFolders.current.length })}
+						</button>
+					{/if}
+				</div>
 			{/if}
 
 			<!-- release notes belong next to the version, not competing with the actions above -->
