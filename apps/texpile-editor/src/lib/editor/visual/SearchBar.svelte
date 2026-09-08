@@ -2,7 +2,8 @@
 	import { slide } from 'svelte/transition';
 	import { onMount, onDestroy } from 'svelte';
 	import { displaySearchBarStore as display, editorViewStore } from '$lib/stores/editorStore';
-	import { setSearchState, SearchQuery, findNext, findPrev, replaceNext, replaceAll } from 'prosemirror-search';
+	import { setSearchState, SearchQuery } from 'prosemirror-search';
+	import { visibleMatches, replaceAllVisible, replaceNextVisible, stepToMatch } from '$lib/editor/visual/searchVisibleText';
 	import FindBar from '$lib/editor/find/FindBar.svelte';
 	import { NO_FIND_OPTIONS, toggledFindOption, type FindOptions } from '$lib/editor/find/findOptions';
 
@@ -22,22 +23,17 @@
 		if (!view?.state) return;
 		if (resetPosition) current = 0;
 		const q = searchQuery();
-
-		let found = 0;
-		// a half-typed regex throws out of findNext
-		try {
-			for (let from = 0, res; (res = q.findNext(view.state, from)); from = res.to) found++;
-		} catch {
-			found = 0;
-		}
-		total = found;
+		// the count has to agree with what stepping and replacing will do, so it skips chips too
+		total = visibleMatches(view.state, q).length;
 		view.dispatch(setSearchState(view.state.tr, q));
 	}
 
 	function step(dir: 1 | -1): void {
 		const view = editorViewStore.current;
 		if (!view?.state || total === 0) return;
-		(dir === 1 ? findNext : findPrev)(view.state, view.dispatch);
+		const sel = stepToMatch(view.state, dir);
+		if (!sel) return;
+		view.dispatch(view.state.tr.setSelection(sel).scrollIntoView());
 		current = dir === 1 ? (current % total) + 1 : current - 1 || total;
 		scrollToSelection();
 	}
@@ -58,7 +54,7 @@
 	function runReplace(all: boolean): void {
 		const view = editorViewStore.current;
 		if (!view?.state) return;
-		(all ? replaceAll : replaceNext)(view.state, view.dispatch);
+		(all ? replaceAllVisible : replaceNextVisible)(view.state, view.dispatch);
 		commit(all); // the document moved under the count, so recount
 	}
 

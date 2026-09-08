@@ -10,7 +10,6 @@ import type { Ctx } from '$lib/serializer/types';
 type SerializeNodeFn = (node: Node, ctx: Ctx) => string;
 
 type TableStyle = {
-	width: string;
 	headerColFirst: string;
 	headerColRest: string;
 	defaultCol: string;
@@ -19,11 +18,13 @@ type TableStyle = {
 	rowRule: string;
 };
 
+// tabular, not the tabularx its stretchy X columns would need: a table the editor invents has to
+// compile in the document the user already has, and the preamble is never rewritten to add a
+// \usepackage nobody asked for. the Source editor's inserter makes the same call
 const BORDERED: TableStyle = {
-	width: '0.8\\textwidth',
 	headerColFirst: 'l',
-	headerColRest: 'X',
-	defaultCol: 'X',
+	headerColRest: 'c',
+	defaultCol: 'c',
 	vertical: true,
 	topRule: true,
 	rowRule: ' \\\\\\hline'
@@ -93,11 +94,16 @@ function wrapper(node: Node, serializeNode: SerializeNodeFn): string {
 	// other can visibly move the table to a different page.
 	const placement = node.attrs.placement != null ? String(node.attrs.placement) : '[h]';
 	const centering = node.attrs.centering === false ? '' : '\\centering\n';
+	// \label rides WITH the caption, never ahead of it: a \label before \caption binds to whatever
+	// counter was stepped last (a list item, the previous section), so every \ref to the table
+	// silently resolves to that instead, with no undefined-reference warning to give it away
+	const labels = `${extraLabels}${label}`;
 	// a caption the source put after the tabular stays there (the number is the same; the
 	// vertical space is not)
-	const above = node.attrs.captionBelow ? '' : caption;
-	const below = node.attrs.captionBelow ? `\n${caption.replace(/\n$/, '')}` : '';
-	return `\\begin{${env}}${placement}\n${centering}${above}${extraLabels}${label}${preBody}${body}${below}\n${notes}${postBody}\n\\end{${env}}\n`;
+	const belowParts = [caption.replace(/\n$/, ''), labels.replace(/\n+$/, '')].filter(Boolean);
+	const above = node.attrs.captionBelow ? '' : `${caption}${labels}`;
+	const below = node.attrs.captionBelow && belowParts.length ? `\n${belowParts.join('\n')}` : '';
+	return `\\begin{${env}}${placement}\n${centering}${above}${preBody}${body}${below}\n${notes}${postBody}\n\\end{${env}}\n`;
 }
 
 function buildRowspanCoverage(table: Node): RowspanCoverage {
@@ -170,7 +176,7 @@ function assembleTable(table: Node, serializeNode: SerializeNodeFn): string {
 			serializeNode
 		);
 
-	// fallback: an editor-created table with no captured architecture gets a bordered tabularx
+	// fallback: an editor-created table with no captured architecture gets a bordered tabular
 	const coverage = buildRowspanCoverage(table);
 	const numColumns = countColumns(table, coverage);
 	const cols = columnSpec(numColumns, hasHeaderColumn(table));
@@ -179,7 +185,7 @@ function assembleTable(table: Node, serializeNode: SerializeNodeFn): string {
 	table.forEach((row, _o, rowIndex) => rows.push(renderRow(row, rowIndex, coverage, serializeNode)));
 	const top = ACTIVE_STYLE.topRule ? '\\hline\n' : '';
 
-	return `\\begin{tabularx}{${ACTIVE_STYLE.width}}{${cols}}\n${top}${rows.join('\n')}\n\\end{tabularx}`;
+	return `\\begin{tabular}{${cols}}\n${top}${rows.join('\n')}\n\\end{tabular}`;
 }
 
 /** Reproduce a parsed table exactly from its captured architecture. */

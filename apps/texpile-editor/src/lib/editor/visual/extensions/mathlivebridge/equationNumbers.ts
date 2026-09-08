@@ -2,7 +2,7 @@
 // environments and plain equations use CSS ::after fed by data-equation-number.
 import type { EditorView } from 'prosemirror-view';
 import type { Node } from 'prosemirror-model';
-import { SINGLE_LABEL_ENVIRONMENTS } from './mathEnvironments';
+import { SINGLE_LABEL_ENVIRONMENTS, numberedLineCount } from './mathEnvironments';
 
 /** equation numbers are sequential across the whole doc, count everything numbered before this node. */
 function equationStartNumber(view: EditorView, myPos: number): number {
@@ -12,17 +12,11 @@ function equationStartNumber(view: EditorView, myPos: number): number {
 		if (pos >= myPos) return false;
 
 		if (n.type.name === 'block_math' && n.attrs.numbered) {
-			const nodeLineLabels = (n.attrs.lineLabels as string[]) || [];
 			const nodeEnv = n.attrs.environment || '';
 			const isSingleLabel = (SINGLE_LABEL_ENVIRONMENTS as readonly string[]).includes(nodeEnv);
-
-			if (isSingleLabel) {
-				count++;
-			} else if (nodeLineLabels.length > 0) {
-				count += nodeLineLabels.filter((l) => l && l.trim()).length;
-			} else if (n.attrs.label) {
-				count++;
-			}
+			// multline prints one number for the whole block; everything else numbers per row, and
+			// counting labels here skipped every row nobody had labelled
+			count += isSingleLabel ? 1 : numberedLineCount(n.textContent || '');
 		}
 	});
 
@@ -49,7 +43,7 @@ export function renderEquationNumbers(view: EditorView, node: Node, dom: HTMLEle
 		return;
 	}
 
-	const effectiveLineCount = Math.max(lineLabels.length, 1);
+	const effectiveLineCount = numberedLineCount(node.textContent || '');
 
 	container.style.display = 'flex';
 

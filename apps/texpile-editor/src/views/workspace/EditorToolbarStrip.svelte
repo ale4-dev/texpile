@@ -12,7 +12,7 @@
 	let { kind, mode }: { kind: FileKind; mode: 'visual' | 'source' } = $props();
 </script>
 
-<div class="border-surface-200-800 @container relative z-20 flex min-h-10 items-center overflow-hidden border-b px-2">
+<div class="border-surface-200-800 @container relative z-20 flex min-h-10 items-center overflow-clip border-b px-2">
 	{#if mode === 'visual'}
 		{#if kind === 'md'}
 			<MarkdownToolbar />

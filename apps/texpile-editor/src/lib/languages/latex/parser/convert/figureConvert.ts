@@ -24,6 +24,31 @@ export function collectMacrosDeep(nodes: readonly Node[], name: string, out: Mac
 	return out;
 }
 
+/**
+ * The float's OWN source with the three editable macros swapped for sentinels, so its line breaks
+ * and indentation survive an edit. printRaw reprints from the tree, which turns every newline into
+ * a space: a caption edit used to collapse the whole float onto one line. Only for the plain case
+ * of one macro each; anything else falls back to the reprint, which is merely ugly, not wrong.
+ */
+function figureTemplateFromSource(env: Environment): string | null {
+	const raw = nodeRawSource(env);
+	if (!raw) return null;
+	let out = raw;
+	for (const [name, slot] of [
+		['includegraphics', FIG_IMG_SLOT],
+		['caption', FIG_CAP_SLOT],
+		['label', FIG_LAB_SLOT]
+	] as const) {
+		const found = collectMacrosDeep(env.content, name);
+		if (found.length === 0) continue;
+		if (found.length > 1) return null;
+		const text = nodeRawSource(found[0]);
+		if (!text || out.indexOf(text) !== out.lastIndexOf(text)) return null;
+		out = out.replace(text, slot);
+	}
+	return out;
+}
+
 /** Deep-clone a figure subtree, swapping \includegraphics/\caption/\label for sentinel tokens. */
 export function slotifyFigure(node: Node): Node {
 	if (node.type === 'macro') {
@@ -58,7 +83,7 @@ export function createFigureWrapper(env: Environment, ctx: ConversionContext, _o
 			const labelMacro = collectMacrosDeep(env.content, 'label')[0];
 			const mand = labelMacro?.args?.filter((a) => a.openMark === '{') || [];
 			const label = mand[0] ? getTextContent(mand[0].content) : null;
-			const figureTemplate = nodeToLatexString(slotifyFigure(env));
+			const figureTemplate = figureTemplateFromSource(env) ?? nodeToLatexString(slotifyFigure(env));
 			// bareOriginal is about a STANDALONE call: false here, this one came from a real figure
 			// \caption* is an unnumbered caption, the same thing the editor's numbered toggle means
 			const numbered = captionMacro ? !macroHasStar(captionMacro) : true;
@@ -72,8 +97,6 @@ export function createFigureWrapper(env: Environment, ctx: ConversionContext, _o
 		}
 	}
 
-	// tier 2/3 (subfigures, tikz, no graphic): preserve the float verbatim. NB: the tier-1
-	// figureTemplate must STAY on nodeToLatexString: slotifyFigure's sentinel nodes don't exist
-	// in the source, so slicing it would be wrong.
+	// tier 2/3 (subfigures, tikz, no graphic): preserve the float verbatim
 	return [buildNode('raw_latex', null, [textNode(nodeRawSource(env) ?? nodeToLatexString(env))])];
 }

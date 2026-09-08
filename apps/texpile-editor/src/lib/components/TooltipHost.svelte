@@ -1,7 +1,11 @@
 <script lang="ts">
-	// Draws the single hover hint. Mounted once, at the app root; `use:tip` in tooltip.svelte.ts
-	// is what fills it.
+	// Draws the single hover hint. One per window: the app root mounts one, the popped-out
+	// preview mounts another into its own document, and each draws only the tips raised in its
+	// window. `use:tip` in tooltip.svelte.ts is what fills it.
 	import { shownTip, hideTip, type ShownTip } from './tooltip.svelte';
+
+	/** the window this host draws in; the popout passes its own */
+	let { win = window }: { win?: Window } = $props();
 
 	const GAP = 6;
 	const EDGE = 6;
@@ -12,36 +16,40 @@
 	// hand back a proxy of the tip it holds, which never === the tip itself.
 	let placed = $state.raw<{ x: number; y: number; for: ShownTip } | null>(null);
 
+	const mine = $derived(shownTip.current?.win === win ? shownTip.current : null);
+
 	$effect(() => {
-		const shown = shownTip.current;
+		const shown = mine;
 		if (!shown || !card) return;
 		const { offsetWidth: w, offsetHeight: h } = card;
-		const x = Math.min(Math.max(EDGE, shown.rect.left + shown.rect.width / 2 - w / 2), window.innerWidth - w - EDGE);
+		const x = Math.min(Math.max(EDGE, shown.rect.left + shown.rect.width / 2 - w / 2), win.innerWidth - w - EDGE);
 		const below = shown.rect.bottom + GAP;
-		placed = { x, y: below + h > window.innerHeight - EDGE ? shown.rect.top - h - GAP : below, for: shown };
+		placed = { x, y: below + h > win.innerHeight - EDGE ? shown.rect.top - h - GAP : below, for: shown };
 	});
 
 	// the card is pinned to a rect measured once, so anything that moves the trigger under it
-	// has to take it down rather than leave it stranded
+	// has to take it down rather than leave it stranded. On `win`, not svelte:window: that is
+	// always the opener's
 	$effect(() => {
-		document.addEventListener('scroll', hideTip, true);
-		window.addEventListener('resize', hideTip);
+		const onKey = (e: KeyboardEvent) => e.key === 'Escape' && hideTip();
+		win.document.addEventListener('scroll', hideTip, true);
+		win.addEventListener('resize', hideTip);
+		win.addEventListener('keydown', onKey);
 		return () => {
-			document.removeEventListener('scroll', hideTip, true);
-			window.removeEventListener('resize', hideTip);
+			win.document.removeEventListener('scroll', hideTip, true);
+			win.removeEventListener('resize', hideTip);
+			win.removeEventListener('keydown', onKey);
 		};
 	});
 </script>
 
-<svelte:window onkeydown={(e) => e.key === 'Escape' && hideTip()} />
-
-{#if shownTip.current}
+{#if mine}
 	<div
 		bind:this={card}
 		role="tooltip"
 		class="border-surface-300-700 bg-surface-50-950 text-surface-700-200 z-tooltip pointer-events-none fixed max-w-xs card border px-2 py-1 text-xs whitespace-pre-line shadow-lg"
-		style="left: {placed?.x ?? 0}px; top: {placed?.y ?? 0}px; opacity: {placed?.for === shownTip.current ? 1 : 0}"
+		style="left: {placed?.x ?? 0}px; top: {placed?.y ?? 0}px; opacity: {placed?.for === mine ? 1 : 0}"
 	>
-		{shownTip.current.text}
+		{mine.text}
 	</div>
 {/if}

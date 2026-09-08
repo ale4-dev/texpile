@@ -10,7 +10,8 @@ import { undo as cmUndo, redo as cmRedo } from '@codemirror/commands';
 import { undo, redo } from 'prosemirror-history';
 import { toggleMark } from 'prosemirror-commands';
 import { toggleHeading, toggleBlockQuote } from '$lib/editor/visual/helperCommands';
-import { editorViewStore, displaySearchBarStore, viewMode, sourceCmView } from '$lib/stores/editorStore';
+import { editorViewStore, displaySearchBarStore, pdfFindToggle, viewMode, sourceCmView } from '$lib/stores/editorStore';
+import { TYPING_HOSTS } from '$lib/workspace/shortcuts';
 import { computeToggleWrap, computeWrapBlock } from '$lib/languages/latex/intellisense/shortcuts';
 import {
 	computeToggleDelim as mdDelim,
@@ -84,6 +85,12 @@ export function cmReplace(cm: CMView, before: string, after = '') {
 }
 
 export function editSelect(value: string) {
+	// a .pdf tab has no editor: Find is the viewer's, the rest has nothing to act on. Not while typing
+	// somewhere else (the macOS accelerator fires wherever focus is), same rule as the window shortcut
+	if (pdfFindToggle.current) {
+		if (value === 'find' && !document.activeElement?.closest(TYPING_HOSTS)) pdfFindToggle.current();
+		return;
+	}
 	// source mode: the document history and the search UI are CodeMirror's, not ProseMirror's
 	const cm = activeCm();
 	if (cm) {

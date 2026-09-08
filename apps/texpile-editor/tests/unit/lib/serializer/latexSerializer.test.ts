@@ -133,7 +133,9 @@ describe('table', () => {
 	const cell = (txt: string, attrs?: Record<string, unknown>): Node => N.table_cell.create(attrs ?? null, p(tx(txt)));
 	const row = (...cells: Node[]): Node => N.table_row.create(null, cells);
 
-	it('2×2 bordered tabularx with & separators and \\hline rows', () => {
+	// kernel tabular, never tabularx: an inserted table must compile without a \usepackage the
+	// document does not have, and the preamble is never rewritten
+	it('2×2 bordered tabular with & separators and \\hline rows', () => {
 		const out = serializeToLatex(
 			doc(
 				N.table_wrapper.create({ label: null, showNotes: false, spanning: false }, [
@@ -142,7 +144,8 @@ describe('table', () => {
 				])
 			)
 		);
-		expect(out).toContain('\\begin{tabularx}{0.8\\textwidth}{|X|X|}');
+		expect(out).toContain('\\begin{tabular}{|c|c|}');
+		expect(out).not.toContain('tabularx');
 		expect(out).toContain('\\caption{My table}');
 		expect(out).toContain('a &b');
 		expect(out).toContain('\\hline');

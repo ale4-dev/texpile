@@ -26,7 +26,7 @@
 		>
 	</p>
 	<button class="btn preset-tonal shrink-0 text-xs" onclick={() => void probe.run()} disabled={probe.probing}>
-		{m.prefs_toolchain_recheck()}
+		{probe.probing ? m.prefs_toolchain_checking() : m.prefs_toolchain_recheck()}
 	</button>
 </div>
 {#if probe.probeFailed}
@@ -53,7 +53,11 @@
 					: hit?.detail}
 			<div class="border-surface-200-800 flex min-w-0 items-baseline gap-2 border-b py-2" use:tip={tool.purpose}>
 				<span class="shrink-0 font-mono text-sm font-medium">{tool.name}</span>
-				{#if probe.probing || probe.probeFailed}
+				<!-- probing says so: nine rows of bare "…" for the seconds this takes read as a stalled
+				     panel. A failed probe keeps the ellipsis, with the banner above carrying the reason -->
+				{#if probe.probing}
+					<span class="text-faint text-xs">{m.prefs_toolchain_checking()}</span>
+				{:else if probe.probeFailed}
 					<span class="text-faint text-xs">…</span>
 				{:else}
 					<span class="shrink-0 text-xs {found ? 'text-success-ink' : 'text-faint'}">

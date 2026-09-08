@@ -70,6 +70,13 @@ function injection(opts: PreparePageOptions): string {
 		stroke-opacity: 0.5;
 		stroke-width: 300px;
 	}
+	/* tinymist puts the grab hand on the paper. Chromium draws that hand from its own bitmap, and when
+	   the pointer reaches the frame across the pane splitter (a col-resize system cursor) the bitmap
+	   comes up white with no edge, invisible on a white page. The system arrow has no such state, and
+	   here the paper only scrolls and click-jumps */
+	#typst-container, #typst-container * {
+		cursor: default !important;
+	}
 </style>
 <script id="texpile-bridge">
 (function () {

@@ -30,13 +30,20 @@
 	};
 
 	let { entry, depth, sel, dnd, editor, focused, gitStatus, isActive, isMain, onOpen, openCtx, createInput }: Props = $props();
+	let row = $state<HTMLDivElement>();
+	$effect(() => {
+		if (isActive(entry)) row?.scrollIntoView?.({ block: 'nearest' });
+	});
 </script>
 
 <div>
 	<!-- accent TEXT only while the tree has focus: it promises Ctrl+Z acts on files, not the document -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
-		class="group flex items-center rounded-base text-sm transition-colors {isActive(entry)
+		bind:this={row}
+		class="group flex rounded-base text-sm transition-colors {editor.renaming === entry.path
+			? 'flex-col items-stretch'
+			: 'items-center'} {isActive(entry)
 			? `bg-primary-tint font-medium ${focused ? 'text-primary-ink' : ''}`
 			: sel.selected.includes(entry.path)
 				? 'bg-surface-strong-wash'
@@ -128,6 +135,13 @@
 					<MoreHorizontal class="size-3.5" />
 				</button>
 			</span>
+		{/if}
+		<!-- spelled out under the field, not only in the hover hint: Enter on a taken name refuses
+		     silently, and a red border alone does not say why -->
+		{#if editor.renaming === entry.path && editor.renameError}
+			<span class="text-error-ink max-w-56 pb-1 text-[11px] leading-tight" style="padding-left: {depth * 12 + 24}px"
+				>{editor.renameError}</span
+			>
 		{/if}
 	</div>
 

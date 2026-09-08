@@ -46,8 +46,8 @@
 >
 	<Popover.Trigger class="toolbarButton rounded-base p-1 hover:bg-surface-200-800">
 		<button aria-label={m.mathpal_insert_math_aria()} use:tip={m.mathpal_insert_math_aria()} class="flex items-center gap-0.5">
-			<SquareRadical class="h-5 w-5 text-surface-800-200" />
-			<ChevronDown class="text-muted size-3 shrink-0" />
+			<SquareRadical class="h-5 w-5" />
+			<ChevronDown class="size-3 shrink-0" />
 		</button>
 	</Popover.Trigger>
 

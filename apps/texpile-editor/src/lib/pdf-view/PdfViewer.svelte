@@ -107,6 +107,7 @@
 		zoomIn: () => rendererActions?.zoomIn(),
 		zoomOut: () => rendererActions?.zoomOut(),
 		fitWidth: () => rendererActions?.fitWidth(),
+		fitPage: () => rendererActions?.fitPage(),
 		setScale: (scale: number) => rendererActions?.setScale(scale),
 		rotateClockwise: () => rendererActions?.rotateClockwise(),
 		rotateCounterClockwise: () => rendererActions?.rotateCounterClockwise(),

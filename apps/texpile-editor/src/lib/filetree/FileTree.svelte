@@ -105,12 +105,17 @@
 		onCopyIn: (paths, dir) => onCopyIn?.(paths, dir)
 	});
 
-	// keep the selection only when it holds the file being opened; a row click selects and opens at once
+	// keep the selection only when it holds the file being opened; a row click selects and opens at once.
+	// the folders above it open once per file (the tree can arrive after the path on a restore), so a
+	// folder the user closes afterwards stays closed
+	let revealed: string | null = null;
 	$effect(() => {
 		const a = activePath;
+		void tree;
 		if (!a) return;
 		untrack(() => {
 			if (!sel.selected.some((p) => samePath(p, a))) sel.selected = [];
+			if (revealed !== a && sel.reveal(a)) revealed = a;
 		});
 	});
 
@@ -269,42 +274,49 @@
 />
 
 {#snippet createInput(depth: number)}
-	<div class="flex items-center gap-1 py-0.5" style="padding-left: {depth * 12 + 6}px">
-		<!-- the icon previews what the row will become, so it tracks the name as it is typed -->
-		{#if editor.createType === 'dir'}<FileIcon
-				name=""
-				folder="closed"
-				class="size-4 shrink-0"
-			/>{:else if editor.createType === 'include'}<FileSymlink class="text-faint size-4 shrink-0" />{:else}<FileIcon
-				name={editor.createValue}
-				class="size-4 shrink-0"
-			/>{/if}
-		<!-- size=1: an input is ~20 characters wide by default, and the tree's min-w-max would adopt
+	<div class="flex flex-col" style="padding-left: {depth * 12 + 6}px">
+		<div class="flex items-center gap-1 py-0.5">
+			<!-- the icon previews what the row will become, so it tracks the name as it is typed -->
+			{#if editor.createType === 'dir'}<FileIcon
+					name=""
+					folder="closed"
+					class="size-4 shrink-0"
+				/>{:else if editor.createType === 'include'}<FileSymlink class="text-faint size-4 shrink-0" />{:else}<FileIcon
+					name={editor.createValue}
+					class="size-4 shrink-0"
+				/>{/if}
+			<!-- size=1: an input is ~20 characters wide by default, and the tree's min-w-max would adopt
 		     that as the row width, pushing the explorer wider than its column -->
-		<input
-			class="input h-6 min-w-0 flex-1 py-0 text-sm {editor.createError ? 'border-error-500 text-error-ink' : ''}"
-			size={1}
-			aria-invalid={!!editor.createError}
-			use:tip={editor.createError ?? undefined}
-			placeholder={editor.createType === 'dir'
-				? m.filetree_placeholder_folder_name()
-				: editor.createType === 'include'
-					? m.filetree_placeholder_include_name()
-					: m.filetree_placeholder_file_name()}
-			value={editor.createValue}
-			oninput={(e) => {
-				editor.createValue = e.currentTarget.value;
-				editor.createEdited = true;
-			}}
-			use:focusSelect
-			draggable="false"
-			onpointerdown={(e) => e.stopPropagation()}
-			onkeydown={(e) => {
-				if (e.key === 'Enter') editor.commitCreate();
-				else if (e.key === 'Escape') editor.cancelCreate();
-			}}
-			onblur={(e) => editor.blurCreate(e)}
-		/>
+			<input
+				class="input h-6 min-w-0 flex-1 py-0 text-sm {editor.createError ? 'border-error-500 text-error-ink' : ''}"
+				size={1}
+				aria-invalid={!!editor.createError}
+				use:tip={editor.createError ?? undefined}
+				placeholder={editor.createType === 'dir'
+					? m.filetree_placeholder_folder_name()
+					: editor.createType === 'include'
+						? m.filetree_placeholder_include_name()
+						: m.filetree_placeholder_file_name()}
+				value={editor.createValue}
+				oninput={(e) => {
+					editor.createValue = e.currentTarget.value;
+					editor.createEdited = true;
+				}}
+				use:focusSelect
+				draggable="false"
+				onpointerdown={(e) => e.stopPropagation()}
+				onkeydown={(e) => {
+					if (e.key === 'Enter') editor.commitCreate();
+					else if (e.key === 'Escape') editor.cancelCreate();
+				}}
+				onblur={(e) => editor.blurCreate(e)}
+			/>
+		</div>
+		<!-- spelled out under the field, not only in the hover hint: Enter on a taken name refuses
+		     silently, and a red border alone does not say why -->
+		{#if editor.createError}
+			<span class="text-error-ink max-w-56 pb-1 pl-5 text-[11px] leading-tight">{editor.createError}</span>
+		{/if}
 	</div>
 {/snippet}
 

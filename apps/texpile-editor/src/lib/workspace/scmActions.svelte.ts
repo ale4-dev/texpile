@@ -113,10 +113,15 @@ export class ScmActions {
 		}
 		this.busy = false;
 		if (err) toaster.error({ title: m.wsview_toast_discard_failed_title(), description: err });
-		const openAffected = !!loadedPath && changes.some((c) => c.path === loadedPath);
+		// samePath, as two lines above: git and the file tree hand back separators and case that do
+		// not always match, and a miss here leaves the editor showing content that is no longer on disk
+		const openAffected = !!loadedPath && changes.some((c) => samePath(c.path, loadedPath));
 		await this.deps.refreshTree();
 		await refreshGitStatus(root);
 		if (openAffected && loadedPath) await this.deps.loadFile(loadedPath); // its on-disk content changed
+		// an open comparison was computed against the changes just thrown away, and went on showing
+		// them as additions and deletions that no longer exist anywhere
+		if (this.deps.isDiffMode()) this.deps.captureDiffSnapshot();
 	};
 
 	/** the index is reset and rebuilt from the tick boxes every time, so what the button promised

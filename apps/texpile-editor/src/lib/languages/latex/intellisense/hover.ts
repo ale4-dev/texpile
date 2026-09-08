@@ -159,9 +159,18 @@ export function latexHover(): Extension {
 			if (token.kind === 'macro') {
 				const found = macroLookup(docText(view.state.doc), token.value);
 				if (!found) return null; // unrecognized macro: no hover, matching LaTeX Workshop
-				const shape = found.detail ?? '';
-				const doc = found.info ? `<div class="text-xs opacity-80">${escapeHtml(found.info)}</div>` : '';
-				return { ...at, create: () => ({ dom: dom(`<code>\\${escapeHtml(token.value)}${escapeHtml(shape)}</code>${doc}`) }) };
+				// `detail` is an argument shape for most entries ({text}, [opt]), but the LaTeX Workshop
+				// table also uses it for a full form (\left( ... \right)) and for plain prose (Begin a
+				// new environment); only a shape belongs glued to the name
+				const detail = found.detail ?? '';
+				const isForm = detail.startsWith('\\');
+				const isShape = /^[{[(<*]/.test(detail);
+				const code = isForm ? detail : `\\${token.value}${isShape ? detail : ''}`;
+				const notes = [isForm || isShape ? '' : detail, found.info ?? '']
+					.filter(Boolean)
+					.map((t) => `<div class="text-xs opacity-80">${escapeHtml(t)}</div>`)
+					.join('');
+				return { ...at, create: () => ({ dom: dom(`<code>${escapeHtml(code)}</code>${notes}`) }) };
 			}
 			if (token.kind === 'package' || token.kind === 'class') {
 				const pkgInfo = (token.kind === 'package' ? PACKAGE_INFO : CLASS_INFO).get(token.value);

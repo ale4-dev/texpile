@@ -6,6 +6,8 @@ import type { EditorConfiguration } from '$lib/types/editorcfg';
 
 export const editorViewStore = box<EditorView | null>(null);
 export const displaySearchBarStore = box(false);
+// the find switch of a .pdf open as a tab, for the Find command; null while no such tab is up
+export const pdfFindToggle = box<(() => void) | null>(null);
 // true while a raw-LaTeX CodeMirror block inside the visual editor has focus;
 // the toolbar swaps to a raw-LaTeX bar (see Toolbar.svelte)
 export const rawEditorActiveStore = box(false);

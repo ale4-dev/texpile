@@ -58,8 +58,9 @@
 		return w;
 	});
 	const isTabularx = $derived(tableEnv === 'tabularx' || tableEnv === 'tabulary');
-	// the captured spec, or a default (all centred) for editor-created tables
-	const effectiveColspec = $derived(colspec && colspec.trim() ? colspec : 'c'.repeat(columnCount));
+	// the captured spec, or what the serializer writes for an editor-created table: centred and
+	// ruled. Guessing an unruled one here left the border toggle reading off for every new table
+	const effectiveColspec = $derived(colspec && colspec.trim() ? colspec : columnCount > 0 ? `|${'c|'.repeat(columnCount)}` : '');
 	const colModel = $derived(parseColspec(effectiveColspec));
 	const verticalLines = $derived(!!colModel && colModel.rules.length > 1 && colModel.rules.every(Boolean));
 

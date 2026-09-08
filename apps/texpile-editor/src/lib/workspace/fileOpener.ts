@@ -35,7 +35,8 @@ export type FileOpenerDeps = {
 	/** the parse failed: drop to source mode with a toast rather than a stuck spinner */
 	fallbackToSource(failure: ParseFailure): void;
 	/** anchors and cross-mode history are keyed to the outgoing file */
-	resetHistory(text: string): void;
+	/** the file being opened owns its own undo stack, kept while its tab is open */
+	openHistory(path: string, text: string): void;
 	disableHistory(): void;
 	clearPerFileViewState(): void;
 	captureDiffSnapshot(): void;
@@ -141,7 +142,7 @@ export class FileOpener {
 				void recordDiskStamp(path); // arm the external-write guard: disk is known as of this read
 				d.parser.lastParsedSource = cached ? text : null;
 				isDirty.current = false;
-				d.resetHistory(text); // the on-disk content is the floor of the cross-mode undo history
+				d.openHistory(path, text); // on-disk content is the floor of a resumed stack too
 				d.clearPerFileViewState();
 				if (d.isDiffMode()) d.captureDiffSnapshot(); // re-diff the newly-opened file
 			} else if (isRawTextKind(k)) {

@@ -57,7 +57,8 @@ export class ExternalChangeWatcher {
 
 	constructor(private deps: ExternalChangeDeps) {}
 
-	async check(): Promise<void> {
+	/** `deliberate` = raised by a manual Save, which reopens a question the user postponed */
+	async check(deliberate = false): Promise<void> {
 		const d = this.deps;
 		const path = d.getLoadedPath();
 		if (!path || !d.isTextual() || this.conflict) return;
@@ -81,8 +82,9 @@ export class ExternalChangeWatcher {
 		}
 		const eol = detectEol(raw); // the external writer may have changed the ending
 		if (!isDirty.current || d.getBuffer() === disk) return this.applyDiskReload(disk, eol);
-		// already asked about exactly this, and told to wait
-		if (this.deferred?.path === path && this.deferred.disk === disk) return;
+		// already asked about exactly this, and told to wait. Pressing Save is the user revisiting it,
+		// so it asks again rather than leaving the keystroke to do nothing at all
+		if (!deliberate && this.deferred?.path === path && this.deferred.disk === disk) return;
 		this.deferred = null;
 		this.conflict = { path, disk, eol };
 	}

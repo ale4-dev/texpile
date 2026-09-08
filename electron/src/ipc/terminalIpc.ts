@@ -1,5 +1,7 @@
 // the node-pty shells behind the terminal dock, keyed by a renderer-chosen string id
 import { app, ipcMain } from 'electron';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as typstService from '../typstService';
@@ -19,6 +21,45 @@ try {
 	console.error('node-pty unavailable, run `pnpm electron:rebuild`:', e instanceof Error ? e.message : e);
 }
 const ptys = new Map<string, PtyProcess>();
+const execFileP = promisify(execFile);
+
+/** pids of the shell's direct children: the foreground job a Stop should end */
+async function childPids(pid: number): Promise<number[]> {
+	try {
+		const { stdout } =
+			process.platform === 'win32'
+				? await execFileP(
+						'powershell.exe',
+						['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ParentProcessId=${pid}").ProcessId`],
+						{ windowsHide: true }
+					)
+				: await execFileP('pgrep', ['-P', String(pid)]);
+		return stdout
+			.split(/\s+/)
+			.map(Number)
+			.filter((n) => n > 0);
+	} catch {
+		return []; // pgrep exits 1 when there are none
+	}
+}
+
+/** a job and everything it spawned */
+function killTree(pid: number): void {
+	if (process.platform === 'win32') {
+		execFile('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true }, () => {});
+		return;
+	}
+	// an interactive shell gives each job its own process group, so the group is the tree
+	try {
+		process.kill(-pid, 'SIGTERM');
+	} catch {
+		try {
+			process.kill(pid, 'SIGTERM');
+		} catch {
+			/* already gone */
+		}
+	}
+}
 
 function defaultShell(): string {
 	if (process.platform === 'win32') return process.env.COMSPEC || 'powershell.exe';
@@ -143,6 +184,18 @@ export function registerTerminalIpc(): void {
 		} catch {
 			/* a resize after exit can throw; ignore */
 		}
+	});
+
+	// Stop for a compile. Not Ctrl+C: TeX answers an interrupt by dropping into its interactive
+	// prompt, nonstopmode or not, and the next compile's command line then went into that prompt
+	// as an answer. The shell stays; its foreground job and everything under it go.
+	ipcMain.handle('terminal:interrupt', async (_e, { id } = {} as { id?: string }) => {
+		const p = id != null ? ptys.get(id) : undefined;
+		if (!p) return false;
+		const jobs = await childPids(p.pid);
+		for (const pid of jobs) killTree(pid);
+		if (!jobs.length) p.write('\x03'); // nothing running under the shell: a plain interrupt is all there is
+		return jobs.length > 0;
 	});
 
 	ipcMain.on('terminal:kill', (_e, { id } = {} as { id?: string }) => {

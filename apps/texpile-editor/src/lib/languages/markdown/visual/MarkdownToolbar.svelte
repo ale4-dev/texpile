@@ -5,9 +5,6 @@
 	// switching apps; only the item set is markdown-shaped.
 	import { tip } from '$lib/components/tooltip.svelte';
 	import {
-		Search,
-		Undo,
-		Redo,
 		Bold,
 		Italic,
 		Strikethrough,
@@ -21,14 +18,13 @@
 		BoxSelect
 	} from '@lucide/svelte';
 	import { selectParentNode, toggleMark } from 'prosemirror-commands';
-	import { undo, redo } from 'prosemirror-history';
 	import { createWrapInListCommand } from 'prosemirror-flat-list';
 	import type { EditorState, Transaction } from 'prosemirror-state';
 	import { mdSchema } from './schema';
 	import MarkdownToolbarTable from './MarkdownToolbarTable.svelte';
 	import MdHeadingDropdown from './MdHeadingDropdown.svelte';
 	import { markIsActive, toggleLinkCommand } from '$lib/editor/visual/toolbar/markState';
-	import { displaySearchBarStore, editorViewStore, rawEditorActiveStore } from '$lib/stores/editorStore';
+	import { editorViewStore, rawEditorActiveStore } from '$lib/stores/editorStore';
 	import MathToolbar, { mathToolbarState } from '$lib/editor/visual/toolbar/MathToolbar.svelte';
 	import MathDropdown from '$lib/editor/visual/toolbar/MathDropdown.svelte';
 	import ToolbarOverflow from '$lib/editor/visual/toolbar/ToolbarOverflow.svelte';
@@ -118,33 +114,7 @@
 <div class="flex min-w-0 flex-1 items-center gap-3 sm:gap-4" data-keep-caret role="presentation" onmousedown={preventEditorFocusLoss}>
 	<div class="flex min-w-0 flex-1 items-center">
 		<!-- item gaps and divider padding use the same step per breakpoint, so the border sits centered in its gap -->
-		<div class="text-surface-800-200 flex min-h-9 min-w-0 flex-1 items-center gap-2 sm:gap-3 2xl:gap-4">
-			<ul class="border-surface-300-700 flex shrink-0 items-center gap-2 border-r pr-2 sm:gap-3 sm:pr-3 2xl:gap-4 2xl:pr-4">
-				<li class="toolbarButton hover:preset-tonal">
-					<button
-						onclick={() => {
-							displaySearchBarStore.current = !displaySearchBarStore.current;
-						}}
-						class="flex items-center p-1"
-					>
-						<Search class="h-5 w-5" />
-					</button>
-				</li>
-			</ul>
-
-			<ul class="border-surface-300-700 flex shrink-0 items-center gap-2 border-r pr-2 sm:gap-3 sm:pr-3 2xl:gap-4 2xl:pr-4">
-				<li class="toolbarButton hover:preset-tonal">
-					<button onclick={keepEditorFocus(undo)} class="flex items-center p-1" aria-label={m.toolbar_undo_aria()}>
-						<Undo class="h-5 w-5" />
-					</button>
-				</li>
-				<li class="toolbarButton hover:preset-tonal">
-					<button onclick={keepEditorFocus(redo)} class="flex items-center p-1" aria-label={m.toolbar_redo_aria()}>
-						<Redo class="h-5 w-5" />
-					</button>
-				</li>
-			</ul>
-
+		<div class="flex min-h-9 min-w-0 flex-1 items-center gap-2 sm:gap-3 2xl:gap-4">
 			{#if rawEditorActiveStore.current}
 				<!-- a raw CM island is focused: prose formatting doesn't apply -->
 				<div class="text-muted hidden min-h-9 min-w-0 items-center gap-2 text-sm whitespace-nowrap @sm:flex">
@@ -211,10 +181,10 @@
 					gapClass="gap-3 2xl:gap-4"
 					menuLabel={m.toolbar_more_actions_aria()}
 					items={[
-						{ id: 'heading', pinned: true, render: tb_heading },
-						{ id: 'bold', pinned: true, render: tb_bold },
-						{ id: 'italic', pinned: true, render: tb_italic },
-						{ id: 'strike', pinned: true, render: tb_strike },
+						{ id: 'heading', render: tb_heading },
+						{ id: 'bold', render: tb_bold },
+						{ id: 'italic', render: tb_italic },
+						{ id: 'strike', render: tb_strike },
 						{ id: 'codeMark', render: tb_codeMark },
 						{ id: 'link', render: tb_link },
 						{ id: 'bullet', render: tb_bullet },

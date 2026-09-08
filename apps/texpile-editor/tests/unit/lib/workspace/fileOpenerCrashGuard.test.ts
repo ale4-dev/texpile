@@ -37,7 +37,7 @@ describe('FileOpener after a visual build died', () => {
 				visual = false;
 				fallbackToSource();
 			},
-			resetHistory: () => {},
+			openHistory: () => {},
 			disableHistory: () => {},
 			clearPerFileViewState: () => {},
 			captureDiffSnapshot: () => {},

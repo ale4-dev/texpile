@@ -27,8 +27,8 @@ export const LW_MACROS: LwMacro[] = [
 	{ label: '[', snippet: '[${1}\\]', detail: 'display math \\[ ... \\]' },
 	// the builder prepends the backslash, so `\{` here becomes the escaped `\\{` in the template
 	{ label: '{', snippet: '\\{${1}\\\\}', detail: 'curly brackets \\{ ... \\}' },
-	{ label: 'textcite', snippet: 'textcite{${1}}', detail: 'reference', chain: true },
-	{ label: 'parencite', snippet: 'parencite{${1}}', detail: 'reference', chain: true },
+	{ label: 'textcite', snippet: 'textcite{${1}}', detail: '{reference}', chain: true },
+	{ label: 'parencite', snippet: 'parencite{${1}}', detail: '{reference}', chain: true },
 	{ label: 'citeyear', snippet: 'citeyear{${1}}', detail: '{}', chain: true },
 	{ label: 'shortcite', snippet: 'shortcite{${1}}', detail: '{}', chain: true },
 	{ label: 'textwidth' },

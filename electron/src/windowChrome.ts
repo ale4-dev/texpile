@@ -22,6 +22,8 @@ export type MenuState = {
 	/** the open file has a text buffer for Edit/Spelling (false for pdf/image/binary). Optional so
 	 *  a renderer predating the field falls back to !disabled. */
 	editable?: boolean;
+	/** the open file can be searched: a text buffer, or a PDF with its own find bar */
+	findable?: boolean;
 	/** the open file is a structured tex/md/typ document, so Insert/Format apply */
 	structured?: boolean;
 	/** which syntax Insert/Format write; hides the LaTeX-only items for md/typ */
@@ -211,7 +213,7 @@ function template(win: BrowserWindow, s: MenuState): MenuItemConstructorOptions[
 				{ role: 'paste', label: label(s, 'paste', 'Paste') },
 				{ role: 'selectAll', label: label(s, 'selectAll', 'Select All') },
 				{ type: 'separator' },
-				{ ...doc, label: label(s, 'find', 'Find'), accelerator: 'CmdOrCtrl+F', click: () => fire(win, 'edit:find') }
+				{ enabled: s.findable ?? doc.enabled, label: label(s, 'find', 'Find'), accelerator: 'CmdOrCtrl+F', click: () => fire(win, 'edit:find') }
 			]
 		},
 		{

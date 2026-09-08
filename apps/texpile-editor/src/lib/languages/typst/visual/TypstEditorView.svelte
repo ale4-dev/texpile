@@ -11,7 +11,7 @@
 	import { fixTables } from 'prosemirror-tables';
 	import { typSchema } from './schema';
 	import { typstEditorPlugins, typstNodeViews } from './typstEditorSetup';
-	import { swapParsedDoc, swapDocForNewFile } from '$lib/editor/visual/docSwap';
+	import { swapParsedDoc, swapDocForNewFile, docSwapKind } from '$lib/editor/visual/docSwap';
 	import { editorViewStore, referenceStore } from '$lib/stores/editorStore';
 	import { revealBuiltEditor, BUILDING_CLASS } from '$lib/editor/visual/revealBuiltEditor';
 	import type { BiblatexReference } from '$lib/languages/bib/biblatex';
@@ -142,19 +142,14 @@
 			mountedPath = path;
 			return;
 		}
-		if (next === mountedDoc || next === editorView.state.doc) {
-			mountedDoc = next;
-			mountedPath = path;
-			return;
-		}
-
-		const isAnotherFile = path !== mountedPath;
-		if (isAnotherFile) swapDocForNewFile(editorView, typSchema, next);
-		else swapParsedDoc(editorView, typSchema, next);
+		const kind = docSwapKind(next, editorView.state.doc, path, mountedPath);
 		mountedDoc = next;
 		mountedPath = path;
+		if (kind === 'none') return;
+		if (kind === 'newFile') swapDocForNewFile(editorView, typSchema, next);
+		else swapParsedDoc(editorView, typSchema, next);
 		docEpoch++;
-		if (isAnotherFile) onReady?.();
+		if (kind === 'newFile') onReady?.();
 	});
 
 	// after the swap effect, so the sync reads the newly-installed document

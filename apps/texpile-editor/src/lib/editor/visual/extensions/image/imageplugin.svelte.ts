@@ -6,7 +6,7 @@ import type { ImagePluginAction, ImagePluginSettings } from './types';
 import { imagePluginKey } from './imagepluginutils';
 import { mount } from 'svelte';
 import ImageOverlay from './ImageOverlay.svelte';
-import { joinPath, isRemoteSrc } from '$lib/workspace/fileSystem';
+import { joinPath, isRemoteSrc, relativeInside, pathOfPickedFile } from '$lib/workspace/fileSystem';
 import { editorFileUrl, editorWriteBinary, editorGraphicDirs } from '$lib/editor/visual/fileAccess';
 import { resolveGraphicUrl } from './graphicSrcResolve';
 import { pdfPageImageUrl } from './pdfImageSource';
@@ -144,6 +144,11 @@ async function uploadLocalImage(file: File, imageDir: string): Promise<string> {
 		dispatchEvent(new CustomEvent('toast', { detail: { message: 'Only PNG, JPEG, GIF and WebP images are supported.', timeout: 3000 } }));
 		throw new Error('Unsupported image type');
 	}
+	// an image the user picked from inside the folder is referenced where it already is: copying it
+	// would leave two identical files and swap the name they chose for a generated one. A pasted
+	// image has no path and still gets copied in, which is the only way it can be referenced at all
+	const already = relativeInside(imageDir, pathOfPickedFile(file));
+	if (already) return already;
 	const ext = (file.name.split('.').pop() || 'png').toLowerCase();
 	// short but collision-resistant filename, e.g. images/pasted-image-a1b2c3d4.png
 	const shortId = crypto.randomUUID().split('-')[0];

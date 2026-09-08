@@ -60,7 +60,7 @@ export class WorkspaceDoc {
 			getSource: () => this.doc.texSource,
 			setSource: (t) => (this.doc.texSource = t),
 			getDocMeta: () => this.doc.docMeta,
-			getLastParsedSource: () => this.parser.lastParsedSource,
+			getMountedSource: () => this.doc.lastDocSource,
 			getEncodingIssue: () => this.doc.encodingIssue,
 			rebuildVisual: () => this.rebuildVisualFromSource(),
 			captureDiffSnapshot: () => void this.diff.snapshot(),
@@ -96,7 +96,7 @@ export class WorkspaceDoc {
 			// would parse .tex as markdown (and vice versa)
 			parse: (text, format) => this.parser.parse(text, format),
 			fallbackToSource: (failure) => this.fallbackToSource(failure),
-			resetHistory: (text) => this.modes.history.reset(text),
+			openHistory: (path, text) => this.modes.history.open(path, text),
 			disableHistory: () => this.modes.history.disable(),
 			clearPerFileViewState: () => this.clearPerFileViewState(),
 			captureDiffSnapshot: () => void this.diff.snapshot(),
@@ -162,7 +162,7 @@ export class WorkspaceDoc {
 					this.projectMacros = macros;
 					// signatures changed: a doc parsed without them is stale, re-derive the open one
 					this.parser.lastParsedSource = '';
-					if (this.doc.path && this.doc.kind === 'tex' && this.modes.mode === 'visual') this.rebuildVisualFromSource();
+					if (this.doc.path && this.doc.kind === 'tex' && this.modes.mode === 'visual') this.rebuildVisualFromSource(true);
 				} catch {
 					this.projectMacros = '';
 				}
@@ -236,10 +236,17 @@ export class WorkspaceDoc {
 		}
 	}
 
-	rebuildVisualFromSource(): void {
+	/** `force` reparses even when the buffer still matches the mounted doc (new macro signatures) */
+	rebuildVisualFromSource(force = false): void {
 		if (this.doc.encodingIssue) return;
-		// fast path: source unchanged since the last successful parse, keep the mounted PM view
-		if (this.doc.texSource === this.parser.lastParsedSource && this.doc.visualDoc) return;
+		// fast path: the doc last in the view already serializes to this text, so it mounts again as
+		// is. the buffer, not the parser: a visual edit moves that doc on from the last parse without
+		// reparsing, so a disk reload back to the parse's text still rebuilds, and a remount after a
+		// mode switch shows the edited doc rather than the parse
+		if (!force && this.doc.texSource === this.doc.lastDocSource && this.doc.lastDoc) {
+			this.doc.visualDoc = this.doc.lastDoc;
+			return;
+		}
 
 		// the text being parsed, not doc.texSource on arrival, or the fast path above skips a rebuild
 		const source = this.doc.texSource;

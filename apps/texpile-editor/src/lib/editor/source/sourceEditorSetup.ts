@@ -37,6 +37,7 @@ import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next';
 import type * as Y from 'yjs';
 import { gutterTheme, yRemoteLayoutFix } from './sourceEditorThemes';
 import type { CollabBinding } from './sourceEditorTypes';
+import { tocCaretListener } from '$lib/editor/visual/extensions/tableofcontents/tocCaretListener';
 
 export type SourceSetupDeps = {
 	fileFor: string;
@@ -151,7 +152,8 @@ export function buildSourceExtensions(deps: SourceSetupDeps): Extension[] {
 		EditorView.contentAttributes.of({ spellcheck: 'false', 'data-gramm': 'false', 'data-enable-grammarly': 'false' }),
 		// scrolling produces no ViewUpdate at all, so the update listener below never sees it
 		EditorView.domEventHandlers({ scroll: () => deps.onScroll() }),
-		EditorView.updateListener.of(deps.updateListener)
+		EditorView.updateListener.of(deps.updateListener),
+		tocCaretListener
 	];
 }
 

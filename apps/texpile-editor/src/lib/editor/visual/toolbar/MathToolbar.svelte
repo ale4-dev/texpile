@@ -139,7 +139,7 @@
 			}}
 		>
 			<Icon class="h-5 w-5" />
-			<ChevronDown class="size-3 opacity-60" />
+			<ChevronDown class="size-3" />
 		</button>
 	</div>
 {/snippet}

@@ -89,10 +89,12 @@
 		if (b && status === 'ready') b.write(id, (onDone ? withSentinel(command, onDone) : command) + '\r');
 		else pending = { command, onDone };
 	}
-	/** sends Ctrl+C to the shell's foreground process. */
+	/** ends the shell's foreground job; Ctrl+C on a bridge that predates terminal:interrupt */
 	export function interrupt(): void {
 		const b = bridge();
-		if (b && status === 'ready') b.write(id, '\x03');
+		if (!b || status !== 'ready') return;
+		if (b.interrupt) void b.interrupt(id);
+		else b.write(id, '\x03');
 	}
 	export function focus(): void {
 		term?.focus();

@@ -111,6 +111,7 @@
 		/>
 	{/if}
 	<PreviewBody
+		docked
 		{guest}
 		{guestPdf}
 		{guestTypstOffered}

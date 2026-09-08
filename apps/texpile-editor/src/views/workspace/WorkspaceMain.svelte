@@ -302,10 +302,11 @@
 		     menu item, so a control here would only be a third copy. -->
 		<!-- eslint-disable-next-line svelte/valid-compile -->
 		<div class="bg-surface-200-800 relative z-20 h-px shrink-0" style="grid-row: 4; grid-column: {dockShrunk ? '1' : '1 / -1'}">
-			<!-- the grab zone overhangs the rule by 3px, and can only overhang upwards here: below it
-			     is the window's edge -->
+			<!-- the grab zone overhangs the rule by 3px, upwards only: below it is the window's edge,
+			     and 3px past that was scrollable overflow the editors' focus scroll could take up,
+			     shifting the whole workspace by that much -->
 			<div
-				class="hover:bg-primary-wash active:bg-primary-flood absolute inset-x-0 -inset-y-[3px] cursor-row-resize transition-colors"
+				class="hover:bg-primary-wash active:bg-primary-flood absolute inset-x-0 -top-[3px] bottom-0 cursor-row-resize transition-colors"
 				onmousedown={termDock.startResize}
 				onkeydown={termDock.resizeByKey}
 				role="separator"

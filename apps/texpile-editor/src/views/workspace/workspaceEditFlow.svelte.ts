@@ -59,7 +59,7 @@ export class WorkspaceEditFlow {
 			recordDiskStamp,
 			// the aborted save's content is still the live buffer, so check() sees dirty-and-different
 			// and raises its conflict modal; "keep mine" comes back through saveNow with force
-			raiseConflict: () => void this.external.check()
+			raiseConflict: (_path, deliberate) => void this.external.check(deliberate)
 		});
 		// on-disk change detection + conflict resolution live in lib/workspace/externalChange.svelte.ts
 		this.external = new ExternalChangeWatcher({
@@ -220,6 +220,8 @@ export class WorkspaceEditFlow {
 			if (this.pendingTabClose) return;
 		}
 		tabs.close(key);
+		// a comparison shares the file's tab; only the last real tab for a path ends its history
+		if (!tabs.list.some((t) => samePath(t.path, tab.path))) this.d.wsdoc.modes.history.forget(tab.path);
 	}
 
 	/** is this exact tab the focused one: same file AND the same version, or the lack of one */

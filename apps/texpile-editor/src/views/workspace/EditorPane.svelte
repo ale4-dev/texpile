@@ -251,7 +251,7 @@
 	{#if loadedPath && comparing && viewMode === 'visual' && structured}
 		<div class="bg-surface-100-900 text-muted border-surface-200-800 flex min-h-10 shrink-0 items-center gap-2 border-b px-3 text-xs">
 			<GitCompare class="size-3.5 shrink-0" />
-			<span class="font-medium">{m.wsview_diff_heading()}</span>
+			<span class="font-medium">{m.wsview_diff_since()}</span>
 			{#if compare}<span class="text-muted min-w-0 truncate" use:tip={compare.hash}>· {compare.subject}</span>{/if}
 			<!-- What it cannot show, said out loud: an unmarked document otherwise reads as "nothing
 			     changed". No count - the number would be of source runs, which nothing on screen shows. -->
@@ -283,10 +283,10 @@
 			<SearchBar />
 		{/if}
 		<!-- scroll-inset-r keeps this scrollbar clear of the lozenge on the preview divider. NOT in diff
-		     mode: DiffPane is a pane, not a document - it fills the height, scrolls inside itself and
-		     draws its own full-width bars, so the 3px showed up as a gap between every one of those
-		     bars and the divider. It wears the inset on its own scroller instead. -->
-		<div class="h-full w-full overflow-auto {comparing ? '' : 'scroll-inset-r'}">
+		     mode or for a .pdf: those are panes, not documents - each fills the height, scrolls inside
+		     itself and draws its own full-width bar, so the 3px showed up as a gap between that bar
+		     and the divider. Each wears the inset on its own scroller instead. -->
+		<div class="h-full w-full overflow-auto {comparing || kind === 'pdf' ? '' : 'scroll-inset-r'}">
 			{#if folderEmpty && !activeFilePath.current}
 				<div class="mx-auto mt-16 max-w-xl px-6">
 					<div class="text-center">
@@ -429,7 +429,7 @@
 			{:else if loadedPath && kind === 'pdf'}
 				<!-- a .pdf opened directly: its own src, independent of the compile-output pane -->
 				<div class="h-full w-full">
-					<PDFViewer src={fileUrl(loadedPath)} filename={basename(loadedPath)} />
+					<PDFViewer src={fileUrl(loadedPath)} filename={basename(loadedPath)} placement="file" />
 				</div>
 			{:else if loadedPath && kind === 'image'}
 				<div class="flex h-full items-center justify-center p-8">

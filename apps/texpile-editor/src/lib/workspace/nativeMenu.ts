@@ -45,6 +45,8 @@ export type MenuStateInput = {
 	disabled: boolean;
 	/** the open file has a text buffer for Edit/Spelling to act on (false for pdf/image/binary) */
 	editable: boolean;
+	/** the open file can be searched: a text buffer, or a PDF with its own find bar */
+	findable: boolean;
 	/** the open file is a structured tex/md/typ document, so Insert/Format apply */
 	structured: boolean;
 	/** which syntax Insert/Format write; decides the LaTeX-only items' visibility */

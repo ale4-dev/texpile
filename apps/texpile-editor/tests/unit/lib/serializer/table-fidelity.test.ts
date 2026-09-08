@@ -29,6 +29,18 @@ describe('table cells', () => {
 });
 
 describe('table floats', () => {
+	// a \label ahead of \caption binds to the last counter stepped instead of the table, so \ref
+	// resolves to a list item or a section with no undefined-reference warning to show for it
+	it('keeps \\label after \\caption when the source put the caption below the tabular', () => {
+		const out = rt('\\begin{table}\n\\begin{tabular}{l}\na \\\\\n\\end{tabular}\n\\caption{Cap}\n\\label{tab:x}\n\\end{table}\n\nedited');
+		expect(out.indexOf('\\label{tab:x}')).toBeGreaterThan(out.indexOf('\\caption{Cap}'));
+	});
+
+	it('keeps \\label after \\caption when the caption sits above the tabular', () => {
+		const out = rt('\\begin{table}\n\\caption{Cap}\n\\label{tab:y}\n\\begin{tabular}{l}\na \\\\\n\\end{tabular}\n\\end{table}');
+		expect(out.indexOf('\\label{tab:y}')).toBeGreaterThan(out.indexOf('\\caption{Cap}'));
+	});
+
 	it('a second tabular is not dropped (28)', () => {
 		const out = rt(
 			'\\begin{table}\n\\caption{Two}\n\\begin{tabular}{l}\na \\\\\n\\end{tabular}\n\\begin{tabular}{l}\nb \\\\\n\\end{tabular}\n\\end{table}'

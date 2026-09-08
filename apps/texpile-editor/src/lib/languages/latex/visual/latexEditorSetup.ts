@@ -8,6 +8,8 @@ import { keymap } from 'prosemirror-keymap';
 import { baseKeymap, toggleMark } from 'prosemirror-commands';
 import { undo as historyUndo, redo as historyRedo, history } from 'prosemirror-history';
 import { toggleBlockQuote, toggleHeading, cycleParagraphIndent } from '$lib/editor/visual/helperCommands';
+import { selectAllScoped } from '$lib/editor/visual/selectAllScoped';
+import { selectDocStart, selectDocEnd } from '$lib/editor/visual/selectDocBoundary';
 import { gapCursor } from 'prosemirror-gapcursor';
 import { createMathField } from '$lib/editor/visual/extensions/mathlivebridge/mlcommands';
 import { createCodeBlock } from '$lib/editor/visual/extensions/codemirrorbridge/cmcommands';
@@ -21,7 +23,7 @@ import { createCursorPlugin } from '$lib/editor/visual/extensions/cursor-plugin'
 import { remoteCursorsPlugin } from '$lib/editor/visual/extensions/remoteCursors';
 import { pasteUuidFixPlugin } from '$lib/editor/visual/extensions/paste-uuid-fix';
 import { latexClipboardPlugin } from '$lib/editor/visual/extensions/latexClipboard';
-import { createListPlugins, listInputRules, listKeymap } from 'prosemirror-flat-list';
+import { createListPlugins, listInputRules, listKeymap, createIndentListCommand, createDedentListCommand } from 'prosemirror-flat-list';
 import { inputRules, InputRule, smartQuotes, ellipsis, undoInputRule } from 'prosemirror-inputrules';
 import { placeholderPlugin } from '$lib/editor/visual/extensions/placeholderplugin';
 import { tablePlaceholderPlugin } from '$lib/editor/visual/extensions/table/tablePlaceholderPlugin';
@@ -97,6 +99,9 @@ export function latexEditorPlugins(setup: LatexEditorSetup): Plugin[] {
 			'Mod-y': (state, dispatch) => historyRedo(state, dispatch) || (onHistoryBoundary ? (onHistoryBoundary('redo'), true) : false),
 			'Mod-Shift-z': (state, dispatch) => historyRedo(state, dispatch) || (onHistoryBoundary ? (onHistoryBoundary('redo'), true) : false),
 			Backspace: undoInputRule,
+			'Mod-a': selectAllScoped,
+			'Mod-Home': selectDocStart,
+			'Mod-End': selectDocEnd,
 			'Mod-b': toggleMark(schema.marks.strong),
 			'Mod-i': toggleMark(schema.marks.em),
 			'Mod-`': toggleMark(schema.marks.code),
@@ -116,14 +121,18 @@ export function latexEditorPlugins(setup: LatexEditorSetup): Plugin[] {
 			...(isMac ? {} : { 'Mod-Shift-1': toggleHeading(1), 'Mod-Shift-2': toggleHeading(2), 'Mod-Shift-3': toggleHeading(3) }),
 			'Mod-m': createMathField(),
 			'Mod-Shift-m': createMathField(true),
+			// table cell, then list nesting (as markdown and typst do), and only outside both does Tab
+			// cycle the paragraph indent. Without the list step it wrote \indent into the \item
+			// instead of sinking it. always consume Tab so focus stays in the editor
 			Tab: (state: EditorState, dispatch?: (tr: Transaction) => void) => {
-				// table: next cell, otherwise cycle paragraph indent. always consume Tab so focus stays in the editor.
 				if (goToNextCell(1)(state, dispatch)) return true;
+				if (createIndentListCommand()(state, dispatch)) return true;
 				cycleParagraphIndent(1)(state, dispatch);
 				return true;
 			},
 			'Shift-Tab': (state: EditorState, dispatch?: (tr: Transaction) => void) => {
 				if (goToNextCell(-1)(state, dispatch)) return true;
+				if (createDedentListCommand()(state, dispatch)) return true;
 				cycleParagraphIndent(-1)(state, dispatch);
 				return true;
 			}

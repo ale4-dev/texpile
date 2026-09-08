@@ -63,3 +63,20 @@ describe('DocumentBuffer.onVisualChange while a re-parse is in flight', () => {
 		expect(scheduleSave).toHaveBeenCalledTimes(1);
 	});
 });
+
+// The visual fast path asks whether the mounted doc already serializes to the current source. It
+// used to ask the PARSER's last parsed source, which a visual edit never moves: an external revert
+// back to exactly that text then read as "nothing to rebuild", left the edited doc mounted, and the
+// next keystroke wrote it back over the version that had replaced it.
+describe('DocumentBuffer.lastDocSource follows the mounted doc, not the last parse', () => {
+	it('stops matching the source once the visual doc has been edited', () => {
+		const { buffer } = makeBuffer();
+		buffer.openTex('C:/ws/main.tex', 'ORIGINAL', '\n');
+		buffer.adoptParsed(parsedWith('as saved'), 'ORIGINAL');
+		expect(buffer.lastDocSource).toBe(buffer.texSource); // freshly parsed: nothing to rebuild
+
+		buffer.onVisualChange(parsedWith('edited').doc);
+		buffer.texSource = 'ORIGINAL'; // an external revert adopted over the edited buffer
+		expect(buffer.lastDocSource).not.toBe(buffer.texSource);
+	});
+});

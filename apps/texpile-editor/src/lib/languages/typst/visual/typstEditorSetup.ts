@@ -6,6 +6,8 @@ import { Fragment, Slice, type Node as PmNode } from 'prosemirror-model';
 import { typstToProseMirror } from './converter';
 import { typstCopyPlugin } from './clipboard';
 import { createSuggestPlugin } from '$lib/editor/visual/extensions/suggest/suggestPlugin';
+import { selectAllScoped } from '$lib/editor/visual/selectAllScoped';
+import { selectDocStart, selectDocEnd } from '$lib/editor/visual/selectDocBoundary';
 import { TypstBibliographyView, isTypstBibliography } from './extensions/typstBibliographyView.svelte';
 import { keymap } from 'prosemirror-keymap';
 import { baseKeymap, toggleMark } from 'prosemirror-commands';
@@ -33,7 +35,6 @@ import { TYP_BLOCK_INSERT_ITEMS } from './blockInsertItems';
 import { isMac } from '$lib/platform';
 import { toggleHeading } from '$lib/editor/visual/helperCommands';
 import { createMathField } from '$lib/editor/visual/extensions/mathlivebridge/mlcommands';
-import { typstMathSyncPlugin } from './mathSyncPlugin';
 import { imagePlugin } from '$lib/editor/visual/extensions/image';
 import { createTypstImageSettings } from './imageSettings.svelte';
 import { createCodeBlock } from '$lib/editor/visual/extensions/codemirrorbridge/cmcommands';
@@ -162,6 +163,9 @@ export function typstEditorPlugins(setup: TypstEditorSetup): Plugin[] {
 			'Mod-y': (state, dispatch) => historyRedo(state, dispatch) || (onHistoryBoundary ? (onHistoryBoundary('redo'), true) : false),
 			'Mod-Shift-z': (state, dispatch) => historyRedo(state, dispatch) || (onHistoryBoundary ? (onHistoryBoundary('redo'), true) : false),
 			Backspace: undoInputRule,
+			'Mod-a': selectAllScoped,
+			'Mod-Home': selectDocStart,
+			'Mod-End': selectDocEnd,
 			'Mod-b': toggleMark(typSchema.marks.strong),
 			'Mod-i': toggleMark(typSchema.marks.em),
 			'Mod-u': toggleMark(typSchema.marks.u),
@@ -182,7 +186,6 @@ export function typstEditorPlugins(setup: TypstEditorSetup): Plugin[] {
 		cmarrowHandlers,
 		mlarrowHandlers,
 		mathlivePlugin,
-		typstMathSyncPlugin,
 		keymap(baseKeymap),
 		imagePlugin(createTypstImageSettings(docDir)),
 		menuUpdatePlugin(),

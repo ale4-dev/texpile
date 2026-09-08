@@ -43,7 +43,7 @@ jobs:
               release/*.exe
               release/*.blockmap
               release/latest.yml
-          - os: macos-latest
+          - os: macos-15
             artifacts: |
               release/*.dmg
               release/*.zip

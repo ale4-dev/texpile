@@ -15,6 +15,8 @@ export type VisualAnchor = {
 export type SourceAnchor = {
 	scroll: number;
 	cursor: number | null;
+	/** a history step: caret into view, no flash, no viewport re-anchor */
+	caretOnly?: boolean;
 };
 
 function findScrollParent(el: HTMLElement | null): HTMLElement | null {
@@ -79,6 +81,17 @@ export function captureSourceAnchor(): SourceAnchor | null {
 	};
 }
 
+/** after a whole-buffer swap in source mode: the value-sync effect has replaced the doc by the
+ *  next frame, so the offset can only be clamped and applied once it exists */
+export function placeSourceCaret(offset: number): void {
+	requestAnimationFrame(() => {
+		const cm = sourceCmView.current;
+		if (!cm) return;
+		const pos = Math.max(0, Math.min(offset, cm.state.doc.length));
+		cm.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+	});
+}
+
 /**
  * Entering visual mode: restore the reading position and caret from a source anchor. Double rAF:
  * EditorView's doc-swap effect restores its saved scrollTop in a single rAF registered in this
@@ -104,22 +117,24 @@ export function resolveVisualAnchor(
 				const firstBlock = map.find((b) => b.srcStart != null) ?? map[0] ?? null;
 				// scroll: restore the reading position (the block that topped the source viewport)
 				const scrollHit = blockAtSource(map, anchor.scroll) ?? firstBlock;
-				if (scrollHit) {
+				if (scrollHit && !anchor.caretOnly) {
 					const dom = v.nodeDOM(scrollHit.pmPos);
 					if (dom instanceof HTMLElement) dom.scrollIntoView({ block: 'start' });
 				}
 				// caret: text-anchored inside the block containing the source cursor, falling back
-				// to the scroll block. no scrollIntoView on the tr: the scroll anchor owns the viewport.
+				// to the scroll block. no scrollIntoView on a switch: the scroll anchor owns the viewport.
 				const caretPos =
 					(anchor.cursor != null ? sourceOffsetToPmPos(doc, map, anchor.cursor, strip) : null) ?? (scrollHit ? scrollHit.pmPos + 1 : null);
 				if (caretPos == null) return; // an empty doc: nothing to place a caret in at all
-				v.dispatch(v.state.tr.setSelection(TextSelection.near(v.state.doc.resolve(caretPos))).setMeta('addToHistory', false));
+				const tr = v.state.tr.setSelection(TextSelection.near(v.state.doc.resolve(caretPos))).setMeta('addToHistory', false);
+				v.dispatch(anchor.caretOnly ? tr.scrollIntoView() : tr);
 				// reclaim DOM focus for PM: the mount-time selection can sit inside a CM-backed
 				// nodeview that focuses its inner CodeMirror; PM then never syncs the DOM caret
 				// and the next keystrokes would land in that nodeview instead of at the parked caret
 				v.focus();
 				// flash the caret's block, same amber as the SyncTeX flash. a node decoration
 				// (flash-plugin) because a bare classList.add doesn't survive PM redraws.
+				if (anchor.caretOnly) return;
 				const flashBlock = blockAtPm(map, caretPos);
 				if (flashBlock) flashNodeAt(v, flashBlock.pmPos);
 			} catch {

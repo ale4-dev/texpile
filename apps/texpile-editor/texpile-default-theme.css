@@ -344,23 +344,6 @@
 	--brand-blue: #0088f7;
 	--brand-gray: #d0d4e9;
 
-	/* the PDF pane's chrome: the light values its styles used to fall back to, and the dark
-	   ones app.css used to switch in */
-	--pdf-viewer-bg: light-dark(#f0f0f0, var(--color-surface-950));
-	--pdf-page-area-bg: light-dark(#f5f5f5, var(--color-surface-950));
-	--pdf-toolbar-bg: light-dark(#ffffff, var(--color-surface-900));
-	--pdf-toolbar-fg: light-dark(#333, var(--color-surface-100));
-	--pdf-toolbar-border: light-dark(#e0e0e0, var(--color-surface-700));
-	--pdf-toolbar-btn-bg: light-dark(#fafafa, var(--color-surface-800));
-	--pdf-toolbar-btn-border: light-dark(#e0e0e0, var(--color-surface-700));
-	--pdf-toolbar-btn-fg: light-dark(#555, var(--color-surface-200));
-	--pdf-toolbar-btn-hover-bg: light-dark(#f0f0f0, var(--color-surface-700));
-	--pdf-toolbar-btn-hover-border: light-dark(#d0d0d0, var(--color-surface-600));
-	--pdf-toolbar-btn-active-bg: light-dark(#e8e8e8, var(--color-surface-600));
-	--pdf-toolbar-input-bg: light-dark(#fff, var(--color-surface-800));
-	--pdf-toolbar-input-border: light-dark(#e0e0e0, var(--color-surface-700));
-	--pdf-toolbar-accent: light-dark(#0066cc, var(--color-primary-500));
-	--pdf-toolbar-accent-ring: light-dark(rgba(0, 102, 204, 0.15), color-mix(in srgb, var(--color-primary-500) 25%, transparent));
-	--pdf-toolbar-muted: light-dark(#888, var(--color-surface-400));
-	--pdf-toolbar-muted-strong: light-dark(#666, var(--color-surface-400));
+	/* the PDF pane's chrome lives in texpile-tokens.css. It used to be duplicated here too, and
+	   [data-theme] outranks that file's html block, so every edit there was silently overridden */
 }

@@ -79,7 +79,7 @@
 
 {#if tabs.length > 0}
 	<div
-		class="bg-surface-100-900 border-surface-200-800 relative z-20 flex h-9 shrink-0 items-stretch overflow-hidden border-b"
+		class="bg-surface-100-900 border-surface-200-800 relative z-20 flex h-9 shrink-0 items-stretch overflow-clip border-b"
 		role="tablist"
 		bind:clientWidth={stripWidth}
 	>
@@ -111,7 +111,7 @@
 				{#if tab.compare}
 					<GitCompare class="text-primary-ink size-3.5 shrink-0" />
 				{/if}
-				<span class="truncate leading-none" class:italic={previewKey === key}>{basename(tab.path)}</span>
+				<span class="truncate" class:italic={previewKey === key}>{basename(tab.path)}</span>
 				<!-- fixed-size trailing slot: dirty dot and close button share it, so neither ever
 				     changes the tab's width; hovering swaps the dot for the close button.
 				     ml-auto keeps it on the right edge when the name leaves slack -->

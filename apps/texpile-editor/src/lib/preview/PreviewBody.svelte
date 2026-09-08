@@ -4,9 +4,8 @@
 	// PreviewPane so the same component can render docked in the workspace grid or portalled into
 	// the popped-out preview window (PreviewPopout) - the pane chrome (splitter, divider chips)
 	// stays with the docked pane, which is the only place it means anything.
-	import { tip } from '$lib/components/tooltip.svelte';
-	import { PictureInPicture2 } from '@lucide/svelte';
 	import PDFViewer from './PDFViewer.svelte';
+	import PreviewHeader from './PreviewHeader.svelte';
 	import type DraftView from '$lib/draft/DraftView.svelte';
 	import type { DraftController } from '$lib/draft/draftController.svelte';
 	import type TypstPreview from '$lib/languages/typst/preview/TypstPreview.svelte';
@@ -69,6 +68,10 @@
 		paneDragging: boolean;
 		/** move the preview into its own OS window; null (the popped-out body) hides the button */
 		onPopout?: (() => void) | null;
+		/** the docked pane, sitting beside the editor column: its bar stands in for a tab strip and
+		 *  takes that band and height. The popped-out window has no column beside it, so its bar is
+		 *  an ordinary toolbar, like ProseMirror's and CodeMirror's. */
+		docked?: boolean;
 		/**
 		 * Callback refs rather than bindables: the popout mounts this component imperatively
 		 * (svelte's mount()), where bind: does not exist. The docked pane adapts them back onto its
@@ -94,12 +97,38 @@
 		onSaveTypstPdf,
 		paneDragging,
 		onPopout = null,
+		docked = false,
 		onPdfRef,
 		onPageClick,
 		onInverseSync,
 		onSettled,
 		onDiagnostics
 	}: Props = $props();
+
+	/** what this pane is showing. Derived ONCE: the header below is hidden for the bodies that
+	 *  carry their own bar, and a branch chain that disagreed with that test would either double the
+	 *  bar or drop the popout entirely. */
+	const body = $derived(
+		guest
+			? guestTypstOffered
+				? 'typst-remote'
+				: guestPdf
+					? 'pdf'
+					: 'waiting'
+			: mainUnset
+				? 'no-main'
+				: typstPreviewWanted
+					? 'typst'
+					: compileConfig.current.latex.liveMode
+						? 'draft'
+						: 'pdf'
+	);
+	/** what the bar calls this pane; live mode is a different thing from a compiled PDF */
+	const previewLabel = $derived(
+		!guest && compileConfig.current.latex.liveMode ? m.wsview_live_preview_label() : m.wsview_pdf_preview_label()
+	);
+	/** the PDF bar carries the label and the popout itself; Typst brings its own */
+	const ownsItsBar = $derived(body === 'pdf' || body === 'typst' || body === 'typst-remote' || body === 'draft');
 
 	// both PDF lanes (guest pushed, local compiled) are the same viewer; whichever is mounted
 	// is the one sync results scroll
@@ -119,49 +148,32 @@
 </script>
 
 <div class="relative flex h-full w-full flex-col">
-	{#if !(typstPreviewWanted && !guest) && !(guest && guestTypstOffered)}
-		<!-- h-9 matches the editor column's tab strip, so the two header borders draw one line -->
-		<div class="bg-surface-100-900 text-muted border-surface-200-800 flex h-9 shrink-0 items-center justify-between border-b px-3 text-xs">
-			<span class="font-medium">
-				{#if !guest && compileConfig.current.latex.liveMode}
-					{m.wsview_live_preview_label()}
-				{:else}
-					{m.wsview_pdf_preview_label()}
-				{/if}
-			</span>
-			<!-- no close button: docked, the divider's lozenge is the close (the control on the
-			     boundary it moves); popped out, the OS window's own close is right above -->
-			<div class="flex items-center gap-1">
-				{#if onPopout}
-					<button
-						class="btn-icon btn-icon-xs hover:preset-tonal"
-						onclick={onPopout}
-						use:tip={m.wsview_popout_preview()}
-						aria-label={m.wsview_popout_preview()}
-					>
-						<PictureInPicture2 class="size-4" />
-					</button>
-				{/if}
-			</div>
-		</div>
+	{#if !ownsItsBar}
+		<PreviewHeader label={previewLabel} {onPopout} asTabStrip={docked} />
 	{/if}
 	<div class="min-h-0 flex-1">
-		{#if guest}
+		{#if body === 'typst-remote'}
 			<!-- a streamed Typst preview outranks the pushed PDF for the same reason the local
 			     preview outranks the compiled file: same document, and it is ahead of it -->
-			{#if guestTypstOffered}
-				{#if TypstPreviewRemoteComp}
-					<TypstPreviewRemoteComp {paneDragging} {onPopout} />
-				{/if}
-			{:else if guestPdf}
-				<!-- the host pushes its compiled PDF over the session; no local compile/synctex -->
-				<PDFViewer bind:this={pdfViewer} src={guestPdf} filename={m.wsview_pdf_preview_label()} {onPageClick} />
-			{:else}
-				<div class="text-muted flex h-full items-center justify-center p-6 text-center text-sm">
-					{m.session_pdf_waiting()}
-				</div>
+			{#if TypstPreviewRemoteComp}
+				<TypstPreviewRemoteComp {paneDragging} {onPopout} asTabStrip={docked} />
 			{/if}
-		{:else if mainUnset}
+		{:else if body === 'pdf' && guest}
+			<!-- the host pushes its compiled PDF over the session; no local compile/synctex -->
+			<PDFViewer
+				bind:this={pdfViewer}
+				src={guestPdf ?? undefined}
+				filename={m.wsview_pdf_preview_label()}
+				label={m.wsview_pdf_preview_label()}
+				{onPopout}
+				{onPageClick}
+				placement={docked ? 'pane' : 'window'}
+			/>
+		{:else if body === 'waiting'}
+			<div class="text-muted flex h-full items-center justify-center p-6 text-center text-sm">
+				{m.session_pdf_waiting()}
+			</div>
+		{:else if body === 'no-main'}
 			<!-- No main file: EVERY body this pane could show is wrong - the Typst preview and the
 			     draft engine have no document (both are pinned to the main), and the PDF viewer
 			     would show whatever the last main compiled, which the user just walked away from.
@@ -174,17 +186,19 @@
 					</button>
 				</div>
 			</div>
-		{:else if typstPreviewWanted}
+		{:else if body === 'typst'}
 			<!-- tinymist's document stream, rendered in-pane. Takes precedence over the compiled PDF:
 			     it is the same document and it is ahead of it, since it needs no save. Rendered on
 			     `wanted` rather than on the host so the PDF never flashes up while it starts. -->
 			{#if TypstPreviewComp}
-				<TypstPreviewComp host={typstPreviewHost} {paneDragging} {onSaveTypstPdf} {onPopout} />
+				<TypstPreviewComp host={typstPreviewHost} {paneDragging} {onSaveTypstPdf} {onPopout} asTabStrip={docked} />
 			{/if}
-		{:else if compileConfig.current.latex.liveMode}
+		{:else if body === 'draft'}
 			{#if DraftViewComp}
 				<DraftViewComp
 					bind:this={draftView}
+					asTabStrip={docked}
+					{onPopout}
 					root={draft.root}
 					mainFile={draft.mainRel}
 					trigger={draft.trigger}
@@ -195,7 +209,14 @@
 				/>
 			{/if}
 		{:else}
-			<PDFViewer bind:this={pdfViewer} filename={pdfFilename} {onPageClick} />
+			<PDFViewer
+				bind:this={pdfViewer}
+				filename={pdfFilename}
+				label={previewLabel}
+				{onPopout}
+				{onPageClick}
+				placement={docked ? 'pane' : 'window'}
+			/>
 		{/if}
 	</div>
 </div>

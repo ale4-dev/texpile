@@ -5,7 +5,7 @@
 	// suggestion mode, the block-handle insert menu) is deliberately absent.
 	import { onDestroy, onMount } from 'svelte';
 	import { EditorState, type Transaction } from 'prosemirror-state';
-	import { swapParsedDoc, swapDocForNewFile } from '$lib/editor/visual/docSwap';
+	import { swapParsedDoc, swapDocForNewFile, docSwapKind } from '$lib/editor/visual/docSwap';
 	import { EditorView } from 'prosemirror-view';
 	import type { Node as PMNode } from 'prosemirror-model';
 	import { keymap } from 'prosemirror-keymap';
@@ -26,6 +26,8 @@
 	import { revealBuiltEditor, BUILDING_CLASS } from '$lib/editor/visual/revealBuiltEditor';
 	import { preferences } from '$lib/stores/preferencesStore.svelte';
 	import { toggleHeading, toggleBlockQuote } from '$lib/editor/visual/helperCommands';
+	import { selectAllScoped } from '$lib/editor/visual/selectAllScoped';
+	import { selectDocStart, selectDocEnd } from '$lib/editor/visual/selectDocBoundary';
 	import { createMathField } from '$lib/editor/visual/extensions/mathlivebridge/mlcommands';
 	import { createCodeBlock } from '$lib/editor/visual/extensions/codemirrorbridge/cmcommands';
 	import { cmarrowHandlers } from '$lib/editor/visual/extensions/codemirrorbridge/cmarrowhandler';
@@ -150,6 +152,9 @@
 				'Mod-y': (state, dispatch) => historyRedo(state, dispatch) || (onHistoryBoundary ? (onHistoryBoundary('redo'), true) : false),
 				'Mod-Shift-z': (state, dispatch) => historyRedo(state, dispatch) || (onHistoryBoundary ? (onHistoryBoundary('redo'), true) : false),
 				Backspace: undoInputRule,
+				'Mod-a': selectAllScoped,
+				'Mod-Home': selectDocStart,
+				'Mod-End': selectDocEnd,
 				'Mod-b': toggleMark(mdSchema.marks.strong),
 				'Mod-i': toggleMark(mdSchema.marks.em),
 				'Mod-`': toggleMark(mdSchema.marks.code),
@@ -245,19 +250,14 @@
 			mountedPath = path;
 			return;
 		}
-		if (next === mountedDoc || next === editorView.state.doc) {
-			mountedDoc = next;
-			mountedPath = path;
-			return;
-		}
-
-		const isAnotherFile = path !== mountedPath;
-		if (isAnotherFile) swapDocForNewFile(editorView, mdSchema, next);
-		else swapParsedDoc(editorView, mdSchema, next);
+		const kind = docSwapKind(next, editorView.state.doc, path, mountedPath);
 		mountedDoc = next;
 		mountedPath = path;
+		if (kind === 'none') return;
+		if (kind === 'newFile') swapDocForNewFile(editorView, mdSchema, next);
+		else swapParsedDoc(editorView, mdSchema, next);
 		docEpoch++;
-		if (isAnotherFile) onReady?.();
+		if (kind === 'newFile') onReady?.();
 	});
 
 	// after the swap effect, so the sync reads the newly-installed document

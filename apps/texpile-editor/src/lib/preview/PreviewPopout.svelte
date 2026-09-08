@@ -13,6 +13,7 @@
 	// back in, leaving the workspace) is what closes the window.
 	import { mount, unmount, onMount } from 'svelte';
 	import PreviewBody from './PreviewBody.svelte';
+	import TooltipHost from '$lib/components/TooltipHost.svelte';
 	import type { DraftController } from '$lib/draft/draftController.svelte';
 	import { workspaceRoot } from '$lib/workspace/workspaceStore';
 	import { basename } from '$lib/workspace/fileSystem';
@@ -167,6 +168,10 @@
 			}
 		});
 
+		// hover hints are drawn by a host per window; without one here the popup's tips painted in
+		// the main window, at coordinates measured in this one
+		const tips = mount(TooltipHost, { target: doc.body, props: { win: w } });
+
 		// The user closing the window is the popup's own "close preview" gesture. pagehide is the
 		// reliable close signal for an about:blank document (no navigations happen to it); the
 		// interval is the belt for the paths that skip it (the main process force-closing the
@@ -191,6 +196,7 @@
 			// the ref callbacks) runs while the component tree is intact; the document may already
 			// be dead when the user closed the window, and node removal there is beside the point
 			try {
+				unmount(tips);
 				unmount(app);
 			} catch (e) {
 				console.error('preview popout unmount:', e);

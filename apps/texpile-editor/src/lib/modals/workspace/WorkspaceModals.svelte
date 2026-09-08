@@ -60,7 +60,9 @@
 		askedUnsaved = p;
 		void promptAsk({
 			title: m.wsview_unsaved_title(),
-			message: m.wsview_confirm_save_before_switch({ name: p.name }),
+			// `resolve` marks the workspace-level shapes (folder switch, workspace close, window
+			// close). Nothing is being switched TO there, so the file-switch wording reads as a lie
+			message: p.resolve ? m.wsview_confirm_save_before_leave({ name: p.name }) : m.wsview_confirm_save_before_switch({ name: p.name }),
 			buttons: [
 				{ id: 'save', label: m.wsview_save_label(), primary: true },
 				{ id: 'discard', label: m.vcs_discard_changes() },

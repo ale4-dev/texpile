@@ -52,7 +52,7 @@
 >
 	<Popover.Trigger class="toolbarButton rounded-base p-1 hover:bg-surface-200-800">
 		<button aria-label={m.tbar_highlight_aria()} use:tip={m.tbar_highlight_aria()} class="relative flex items-center">
-			<Highlighter class="h-5 w-5 text-surface-800-200" />
+			<Highlighter class="h-5 w-5" />
 			<!-- active-color bar is absolute so it doesn't add height and lift the icon off center -->
 			<span
 				class="absolute inset-x-0 -bottom-1 h-[3px] rounded-full"

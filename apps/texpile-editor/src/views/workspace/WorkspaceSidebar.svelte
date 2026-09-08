@@ -1,6 +1,7 @@
 <script lang="ts">
 	// The left sidebar: folder header + explorer / source-control / find-in-files, with the file
 	// tree and (in explorer) a resizable table-of-contents. Presentational — logic stays in the view.
+	import { untrack } from 'svelte';
 	import { tip } from '$lib/components/tooltip.svelte';
 	import FileTree from '$lib/filetree/FileTree.svelte';
 	import GlobalSearch from '$lib/search/GlobalSearch.svelte';
@@ -18,6 +19,7 @@
 		gitHistoryError,
 		gitHistoryHasMore,
 		refreshGitHistory,
+		refreshGitStatus,
 		showMoreGitHistory
 	} from '$lib/workspace/gitStore';
 	import { basename, type TreeEntry } from '$lib/workspace/fileSystem';
@@ -128,6 +130,14 @@
 	$effect(() => {
 		if (view !== 'scm' || !isGitRepo.current) return;
 		void refreshGitHistory(workspaceRoot.current);
+	});
+
+	// the repo probe runs at open, so `git init` in a terminal afterwards left the panel saying the
+	// folder is not under source control until the next launch. Opening the panel asks again
+	$effect(() => {
+		if (view !== 'scm' || isGitRepo.current) return;
+		const root = untrack(() => workspaceRoot.current);
+		if (root) void refreshGitStatus(root);
 	});
 
 	// One list, rendered either as a header icon or as a menu row, so the two can never drift apart.

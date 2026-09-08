@@ -20,6 +20,7 @@
 	// constructs a new "socket", and that reattach starts over with a whole-document frame.
 	import { tip } from '$lib/components/tooltip.svelte';
 	import { ZoomIn, ZoomOut, Crosshair, PictureInPicture2 } from '@lucide/svelte';
+	import PreviewToolbar from '$lib/preview/PreviewToolbar.svelte';
 	import { resolvedMode, themeEpoch } from '$lib/theme';
 	import { collabGuest } from '$lib/collab/guestStore.svelte';
 	import { PreviewStream, type PreviewPayload } from '$lib/collab/protocol';
@@ -33,8 +34,10 @@
 		paneDragging: boolean;
 		/** move the preview into its own OS window; null (already popped out) hides the button */
 		onPopout?: (() => void) | null;
+		/** docked in the pane, where this row stands in for a tab strip; false in the popped-out window */
+		asTabStrip?: boolean;
 	};
-	let { paneDragging, onPopout = null }: Props = $props();
+	let { paneDragging, onPopout = null, asTabStrip = true }: Props = $props();
 
 	const CHANNEL = 'texpile-preview';
 	const NET = 'texpile-preview-net';
@@ -242,65 +245,53 @@
 </script>
 
 <div class="bg-surface-200-800 flex h-full w-full flex-col">
-	<!-- the local pane's header, minus what a guest cannot do: no Save as PDF (the exporter is the
+	<!-- the local pane's row, minus what a guest cannot do: no Save as PDF (the exporter is the
 	     host's tinymist). Zoom is local to this viewer; follow works (see the toggle below). -->
-	<div class="bg-surface-100-900 border-surface-200-800 text-muted flex h-9 shrink-0 items-center gap-1 border-b px-3 text-xs">
-		<span class="shrink-0 font-medium">{m.typst_preview_label()}</span>
-		<span class="bg-surface-300-700 mx-1 h-4 w-px shrink-0"></span>
+	{#snippet status()}
 		{#if error}
-			<span class="text-error-ink truncate" use:tip={error}>{error}</span>
+			<span class="text-error-ink truncate text-sm" use:tip={error}>{error}</span>
 		{:else}
-			<span class="text-surface-700-200 truncate">{frameUrl ? m.typst_preview_live() : m.typst_preview_connecting()}</span>
+			<span class="truncate text-sm">{frameUrl ? m.typst_preview_live() : m.typst_preview_connecting()}</span>
 		{/if}
-		<div class="flex-1"></div>
-		<button
-			class="btn-icon btn-icon-xs hover:preset-tonal disabled:opacity-40"
-			onclick={() => stepZoom(-1)}
-			disabled={!frameUrl}
-			use:tip={m.draft_toolbar_zoom_out()}
-			aria-label={m.draft_toolbar_zoom_out()}
-		>
-			<ZoomOut class="size-4" />
+	{/snippet}
+	{#snippet zoomGroup()}
+		<button onclick={() => stepZoom(-1)} disabled={!frameUrl} use:tip={m.draft_toolbar_zoom_out()} aria-label={m.draft_toolbar_zoom_out()}>
+			<ZoomOut size={16} />
 		</button>
-		<span class="min-w-11 text-center tabular-nums">{zoom !== null ? `${zoom}%` : '—'}</span>
-		<button
-			class="btn-icon btn-icon-xs hover:preset-tonal disabled:opacity-40"
-			onclick={() => stepZoom(1)}
-			disabled={!frameUrl}
-			use:tip={m.draft_toolbar_zoom_in()}
-			aria-label={m.draft_toolbar_zoom_in()}
-		>
-			<ZoomIn class="size-4" />
+		<span class="preview-toolbar-readout">{zoom !== null ? `${zoom}%` : '—'}</span>
+		<button onclick={() => stepZoom(1)} disabled={!frameUrl} use:tip={m.draft_toolbar_zoom_in()} aria-label={m.draft_toolbar_zoom_in()}>
+			<ZoomIn size={16} />
 		</button>
-		<span class="bg-surface-300-700 mx-1 h-4 w-px shrink-0"></span>
-		<!-- follow works for guests too: the caret position travels to the host, tinymist resolves
-		     it, and the relay hands the resulting jump to only this viewer -->
+	{/snippet}
+	<!-- follow works for guests too: the caret position travels to the host, tinymist resolves
+	     it, and the relay hands the resulting jump to only this viewer -->
+	{#snippet follow()}
 		<button
-			class="btn-icon btn-icon-xs hover:preset-tonal disabled:opacity-40"
-			class:preset-tonal={settings.current.typstPreviewFollow === true}
-			class:text-primary-ink={settings.current.typstPreviewFollow === true}
+			aria-pressed={settings.current.typstPreviewFollow === true}
 			onclick={() => updateSettings({ typstPreviewFollow: settings.current.typstPreviewFollow !== true })}
 			disabled={!frameUrl}
 			use:tip={settings.current.typstPreviewFollow === true ? m.typst_preview_follow_on() : m.typst_preview_follow_off()}
 			aria-label={m.typst_preview_follow_aria()}
-			aria-pressed={settings.current.typstPreviewFollow === true}
 		>
-			<Crosshair class="size-4" />
+			<Crosshair size={16} />
 		</button>
-		<!-- no close button, exactly as the host pane: the divider's lozenge (docked) or the OS
-		     window's close (popped out) is the way off -->
-		{#if onPopout}
-			<span class="bg-surface-300-700 mx-1 h-4 w-px shrink-0"></span>
-			<button
-				class="btn-icon btn-icon-xs hover:preset-tonal shrink-0"
-				onclick={onPopout}
-				use:tip={m.wsview_popout_preview()}
-				aria-label={m.wsview_popout_preview()}
-			>
-				<PictureInPicture2 class="size-4" />
-			</button>
-		{/if}
-	</div>
+	{/snippet}
+	<!-- no close button, exactly as the host pane: the divider's lozenge (docked) or the OS
+	     window's close (popped out) is the way off -->
+	{#snippet popout()}
+		<button onclick={() => onPopout?.()} use:tip={m.wsview_popout_preview()} aria-label={m.wsview_popout_preview()}>
+			<PictureInPicture2 size={16} />
+		</button>
+	{/snippet}
+	<PreviewToolbar
+		leading={status}
+		trailing={onPopout ? popout : undefined}
+		{asTabStrip}
+		groups={[
+			{ id: 'zoom', render: zoomGroup },
+			{ id: 'follow', render: follow }
+		]}
+	/>
 
 	<div bind:this={frameBox} class="relative min-h-0 flex-1 overflow-hidden">
 		{#if frameUrl}

@@ -39,7 +39,9 @@
 						checked={!!choice && samePath(choice, f.path)}
 						onchange={() => (choice = f.path)}
 					/>
-					<span class="truncate">{f.relPath}</span>
+					<!-- forward slashes: the rest of the app writes paths that way, and the scan hands back
+					     the platform separator -->
+					<span class="truncate">{f.relPath.split('\\').join('/')}</span>
 					{#if detected && samePath(f.path, detected)}
 						<span class="badge preset-tonal-primary ml-auto shrink-0 text-[10px]">{m.wsview_badge_detected()}</span>
 					{:else if docRoots.has(f.path)}

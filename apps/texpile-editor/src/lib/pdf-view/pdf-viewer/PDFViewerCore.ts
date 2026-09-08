@@ -59,6 +59,8 @@ export class PDFViewerCore {
 	private pages: PDFPageView[] = [];
 	private currentScale: number;
 	private currentRotation: number;
+	/** 0-based page last reported as current; a page still fully on screen keeps that title */
+	private reportedPage = 0;
 	private scrollAbortController: AbortController | null = null;
 	private renderingQueue: Set<number> = new Set();
 	private isRendering = false;
@@ -223,10 +225,39 @@ export class PDFViewerCore {
 		};
 	}
 
+	// The page to call "current": the one with the largest share of itself on screen, as pdf.js
+	// does. The top-most visible page was the old answer, and a short document's last page can
+	// never be that: with nothing below it to scroll it up to the top, the counter stopped one
+	// short. A page still fully on screen stays current, so a zoomed-out view showing several
+	// whole pages does not flip between them on every scroll tick.
+	private mostVisiblePage(): number {
+		const viewTop = this.container.scrollTop;
+		const viewBottom = viewTop + this.container.clientHeight;
+		let best = 0;
+		let bestShare = -1;
+		let top = CONTAINER_PAD;
+		for (let i = 0; i < this.pages.length; i++) {
+			const h = Math.floor(this.pages[i].height);
+			const bottom = top + h;
+			const shown = Math.min(bottom, viewBottom) - Math.max(top, viewTop);
+			if (shown > 0 && h > 0) {
+				if (i === this.reportedPage && shown >= h) return i;
+				const share = shown / h;
+				if (share > bestShare) {
+					best = i;
+					bestShare = share;
+				}
+			}
+			top = bottom + PAGE_GAP;
+		}
+		return best;
+	}
+
 	private updateVisiblePages(): void {
 		if (!this.pdfDocument || this.pages.length === 0) return;
 
 		const visible = this.getVisiblePages();
+		this.reportedPage = this.mostVisiblePage();
 
 		const startPage = Math.max(0, visible.first - PAGES_TO_PRERENDER);
 		const endPage = Math.min(this.pages.length - 1, visible.last + PAGES_TO_PRERENDER);
@@ -243,7 +274,7 @@ export class PDFViewerCore {
 
 		this.eventBus.dispatch('updateviewarea', {
 			location: {
-				pageNumber: visible.first + 1,
+				pageNumber: this.reportedPage + 1,
 				scale: this.currentScale,
 				rotation: this.currentRotation
 			}
@@ -348,6 +379,19 @@ export class PDFViewerCore {
 		this.scale = this.currentScale * (avail / page.width);
 	}
 
+	/** scale so the top-visible page fits both ways, and land on its top: fit page means see it whole */
+	fitPage(): void {
+		if (!this.pages.length) return;
+		const anchor = this.getScrollAnchor();
+		const pageNo = anchor ? anchor.page : 1;
+		const page = this.pages[pageNo - 1] ?? this.pages[0];
+		const availW = this.container.clientWidth - 2 * CONTAINER_PAD;
+		const availH = this.container.clientHeight - 2 * CONTAINER_PAD;
+		if (!page.width || !page.height || availW <= 0 || availH <= 0) return;
+		this.scale = this.currentScale * Math.min(availW / page.width, availH / page.height);
+		this.restoreScrollAnchor({ page: pageNo, fraction: 0 });
+	}
+
 	rotateClockwise(): void {
 		this.rotation = this.currentRotation + 90;
 	}
@@ -360,6 +404,8 @@ export class PDFViewerCore {
 		if (pageNumber < 1 || pageNumber > this.pages.length) return;
 
 		const pageView = this.pages[pageNumber - 1];
+		// asked for by name, so it is current from here even if a neighbour shows more of itself
+		this.reportedPage = pageNumber - 1;
 		pageView.div.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
 		this.eventBus.dispatch('pagechanged', { pageNumber });
@@ -420,8 +466,7 @@ export class PDFViewerCore {
 	}
 
 	get currentPageNumber(): number {
-		const visible = this.getVisiblePages();
-		return visible.first + 1;
+		return this.mostVisiblePage() + 1;
 	}
 
 	getPageView(pageIndex: number): PDFPageView | undefined {

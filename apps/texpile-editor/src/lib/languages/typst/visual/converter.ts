@@ -219,7 +219,8 @@ export function convertMarkup(kids: SyntaxNode[], src: string): Seg[] {
 				const labelNode = kids[j]?.name === 'Label' ? kids[j] : null;
 				const after = labelNode ? j + 1 : i + 1;
 				if (isDisplayEquation(k) && buf.length === 0 && restOnlySpace(kids, after)) {
-					const latex = typstMathToLatex(k, src);
+					const inner = equationInner(k, src).trim();
+					const latex = typstMathToLatex(inner);
 					const to = (labelNode ?? k).to;
 					if (latex != null) {
 						segs.push({
@@ -231,7 +232,7 @@ export function convertMarkup(kids: SyntaxNode[], src: string): Seg[] {
 										numbered: false,
 										environment: null,
 										lineLabels: [],
-										typst: equationInner(k, src).trim(),
+										typst: inner,
 										latexOrig: latex
 									},
 									textNodes(latex)

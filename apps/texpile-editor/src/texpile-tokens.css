@@ -214,17 +214,29 @@ html {
 	/* the PDF pane's chrome */
 	--pdf-viewer-bg: light-dark(var(--color-surface-100), var(--color-surface-950));
 	--pdf-page-area-bg: light-dark(var(--color-surface-100), var(--color-surface-950));
-	--pdf-toolbar-bg: light-dark(var(--color-surface-50), var(--color-surface-900));
-	--pdf-toolbar-fg: light-dark(var(--color-surface-800), var(--color-surface-100));
+	/* the bar sits in the editor column's tab-strip row, so it wears the tab strip's band and the
+	   app's own text colour: at that height the thing beside it is the tab strip, not the toolbar */
+	--pdf-toolbar-bg: light-dark(var(--color-surface-100), var(--color-surface-900));
+	--pdf-toolbar-fg: light-dark(var(--color-surface-950), var(--color-surface-50));
 	--pdf-toolbar-border: light-dark(var(--color-surface-200), var(--color-surface-700));
-	--pdf-toolbar-btn-bg: light-dark(var(--color-surface-100), var(--color-surface-800));
-	--pdf-toolbar-btn-border: light-dark(var(--color-surface-200), var(--color-surface-700));
-	--pdf-toolbar-btn-fg: light-dark(var(--color-surface-600), var(--color-surface-200));
+	/* between control groups, the editor toolbar's border-surface-300-700 */
+	--pdf-toolbar-divider: light-dark(var(--color-surface-300), var(--color-surface-700));
+	--pdf-toolbar-btn-bg: transparent;
+	--pdf-toolbar-btn-border: transparent;
+	--pdf-toolbar-btn-fg: light-dark(var(--color-surface-950), var(--color-surface-50));
 	--pdf-toolbar-btn-hover-bg: light-dark(var(--color-surface-200), var(--color-surface-700));
 	--pdf-toolbar-btn-hover-border: light-dark(var(--color-surface-300), var(--color-surface-600));
 	--pdf-toolbar-btn-active-bg: light-dark(var(--color-surface-300), var(--color-surface-600));
-	--pdf-toolbar-input-bg: light-dark(var(--color-surface-50), var(--color-surface-800));
-	--pdf-toolbar-input-border: light-dark(var(--color-surface-200), var(--color-surface-700));
+	/* a tint of the bar rather than a filled block: beside bare icon buttons a solid field was the
+	   heaviest thing on the row */
+	--pdf-toolbar-input-bg: light-dark(
+		color-mix(in oklab, var(--color-surface-950) 6%, transparent),
+		color-mix(in oklab, var(--color-surface-50) 8%, transparent)
+	);
+	--pdf-toolbar-input-border: light-dark(
+		color-mix(in oklab, var(--color-surface-950) 12%, transparent),
+		color-mix(in oklab, var(--color-surface-50) 14%, transparent)
+	);
 	--pdf-toolbar-accent: var(--color-primary-500);
 	--pdf-toolbar-accent-ring: color-mix(in srgb, var(--color-primary-500) 25%, transparent);
 	--pdf-toolbar-muted: color-mix(in oklab, var(--pdf-toolbar-fg) 60%, transparent);

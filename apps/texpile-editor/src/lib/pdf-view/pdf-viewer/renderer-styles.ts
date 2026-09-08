@@ -37,6 +37,8 @@ export const rendererStyles = `
 	overflow: auto;
 	position: relative;
 	background-color: var(--pdf-background-color);
+	/* a transparent border, not padding: moves the scrollbar in and leaves the ground reaching the edge */
+	border-right: var(--pdf-scroll-inset-right, 0) solid transparent;
 }
 
 /* Scrollbar: native unless the host passes any scrollbar-* prop (.pdf-custom-scrollbar), so an

@@ -304,7 +304,10 @@ export class TreeOps {
 		const active = activeFilePath.current;
 		const sep = path.includes('\\') ? '\\' : '/';
 		// the open file is gone if it IS this entry, or lives inside this folder
-		if (!!active && (samePath(active, path) || active.startsWith(path + sep))) {
+		const losingOpenFile = !!active && (samePath(active, path) || active.startsWith(path + sep));
+		// where its tab sat, so a neighbour can take over once the closing has renumbered the list
+		const at = losingOpenFile ? tabs.list.findIndex((t) => samePath(t.path, active)) : -1;
+		if (losingOpenFile) {
 			this.deps.discardPendingSave(); // don't let a queued autosave write the file back after we delete it
 			openFile(null); // clears the editor buffers via the load effect
 		}
@@ -315,6 +318,9 @@ export class TreeOps {
 		tabs.closeUnder(path);
 		docPositions.forget(path);
 		visualDocCache.forget(path);
+		// deleting what you were reading lands on the next open file, the way closing its tab does.
+		// Leaving the pane empty with the other tabs still sitting above it reads as a glitch
+		if (losingOpenFile && tabs.list.length) openFile(tabs.list[Math.min(Math.max(at, 0), tabs.list.length - 1)].path);
 	}
 
 	/** a path moved: carry the pending save, tab, caret and open-file pointer across with it. */

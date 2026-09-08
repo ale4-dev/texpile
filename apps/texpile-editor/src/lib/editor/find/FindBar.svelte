@@ -19,6 +19,8 @@
 		total: number;
 		/** false where nothing may be written back: a comparison, a read-only file */
 		canReplace?: boolean;
+		/** false where the search has no options to offer (a PDF text layer) */
+		canToggle?: boolean;
 		onQueryChange: (value: string) => void;
 		onReplaceTextChange: (value: string) => void;
 		onToggleOption: (key: keyof FindOptions) => void;
@@ -36,6 +38,7 @@
 		current,
 		total,
 		canReplace = true,
+		canToggle = true,
 		onQueryChange,
 		onReplaceTextChange,
 		onToggleOption,
@@ -107,7 +110,7 @@
 					placeholder={m.find_placeholder()}
 					aria-label={m.find_placeholder()}
 				/>
-				<FindToggles {options} onToggle={onToggleOption} />
+				{#if canToggle}<FindToggles {options} onToggle={onToggleOption} />{/if}
 			</div>
 			<span class="find-status shrink-0 truncate" aria-live="polite">{status}</span>
 			<button

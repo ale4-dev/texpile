@@ -54,7 +54,7 @@
 	<Popover.Trigger class="toolbarButton rounded-base p-1 hover:bg-surface-200-800">
 		<button aria-label={m.tbar_text_color_aria()} use:tip={m.tbar_text_color_aria()} class="relative flex items-center">
 			<!-- nudged down 1.5px, lucide's A glyph rides high; matches the underline correction -->
-			<Baseline class="h-5 w-5 translate-y-[1.5px] text-surface-800-200" />
+			<Baseline class="h-5 w-5 translate-y-[1.5px]" />
 			<!-- active-color bar is absolute so it doesn't add height and lift the icon off center -->
 			<span
 				class="absolute inset-x-0 -bottom-1 h-[3px] rounded-full"

@@ -7,6 +7,7 @@
 	import type { Node as PMNode } from 'prosemirror-model';
 	import type { Dialect } from '$lib/editor/visual/dialect';
 	import { sanitizeLabel } from '$lib/editor/visual/label';
+	import { DEFAULT_FIGURE_FRACTION } from './figureDefaults';
 	import { labelTaken } from '$lib/editor/visual/labelTaken';
 	import { repointRefs } from '$lib/editor/visual/repointRefs';
 	import { templateFeaturesStore } from '$lib/stores/editorStore';
@@ -81,7 +82,7 @@
 		const opt = String(node.attrs.options ?? '');
 		const m = opt.match(/width\s*=\s*([0-9]*\.?[0-9]+)\s*\\(?:text|line|column)width/);
 		if (m) return Math.min(1, Math.max(0.05, parseFloat(m[1])));
-		return 1;
+		return DEFAULT_FIGURE_FRACTION;
 	}
 
 	// typst sizing: the `options` attr is the verbatim extra-args slice of image(...); this field

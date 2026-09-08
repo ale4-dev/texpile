@@ -27,8 +27,9 @@ export type SaveDeps = {
 	diskChanged(path: string): Promise<boolean>;
 	/** stamp the path as freshly synchronized after our own successful write */
 	recordDiskStamp(path: string): Promise<void>;
-	/** an external write was detected where we were about to save: hand off to the conflict flow */
-	raiseConflict(path: string): void;
+	/** an external write was detected where we were about to save: hand off to the conflict flow.
+	 * `deliberate` = the user pressed Save, so a conflict they postponed has to be asked again */
+	raiseConflict(path: string, deliberate: boolean): void;
 };
 
 export class SavePipeline {
@@ -164,7 +165,9 @@ export class SavePipeline {
 			// conflict modal instead; the user's edit is still in the buffer and still dirty, so
 			// nothing of THEIRS is lost either.
 			if (!force && (await this.deps.diskChanged(path))) {
-				this.deps.raiseConflict(path);
+				// `notify` is only ever set by a manual Ctrl+S / Save, which is exactly the difference
+				// between "autosave tripped over this again" and "the user is asking to write it now"
+				this.deps.raiseConflict(path, notify);
 				return false;
 			}
 			await this.deps.writeText(path, fromLf(content, eol)); // re-apply the file's CRLF/LF on disk

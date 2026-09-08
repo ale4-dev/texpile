@@ -7,6 +7,10 @@ import { activeFilePath, activeCompare } from '$lib/workspace/workspaceStore';
 import { tabs, tabKey, type Tab } from '$lib/workspace/tabs.svelte';
 import { settings, updateSettings } from '$lib/settings';
 import { nativeBridge } from '$lib/workspace/fileSystem';
+import { pdfFindToggle } from '$lib/stores/editorStore';
+
+/** where a keystroke is typing, not a command */
+export const TYPING_HOSTS = 'input, textarea, [contenteditable="true"], .xterm';
 
 const UI_ZOOM_MIN = 0.5;
 const UI_ZOOM_MAX = 2.5;
@@ -70,6 +74,13 @@ export function createKeydownHandler(deps: ShortcutDeps): (e: KeyboardEvent) => 
 		} else if (mod && e.shiftKey && e.key.toLowerCase() === 'f') {
 			e.preventDefault();
 			deps.toggleGlobalSearch();
+		} else if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f' && pdfFindToggle.current) {
+			// a .pdf tab: the editors bind Ctrl+F themselves, and on Windows and Linux there is no native
+			// menu to carry the accelerator, so the tab's find bar is opened from here. Not while typing
+			// somewhere else: the terminal, a rename box, the sidebar search and the bar itself keep the key
+			if (e.target instanceof Element && e.target.closest(TYPING_HOSTS)) return;
+			e.preventDefault();
+			pdfFindToggle.current();
 		} else if (mod && (e.key === '=' || e.key === '+')) {
 			e.preventDefault(); // '=' is the unshifted '+' key, so this is Ctrl/Cmd+Plus
 			uiZoomIn();

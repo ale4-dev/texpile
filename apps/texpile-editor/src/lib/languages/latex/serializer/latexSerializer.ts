@@ -10,6 +10,8 @@ import { serializeTable } from './tableSerializer';
 import { FIG_IMG_SLOT, FIG_CAP_SLOT, FIG_LAB_SLOT } from '../parser/converter';
 import { createBlockAssembly, type DocSerializeResult } from '$lib/serializer/blockAssembly';
 import type { Ctx, NodeHandler } from '$lib/serializer/types';
+// direct, not through the image barrel: that one pulls in svelte and the DOM
+import { DEFAULT_FIGURE_FRACTION } from '$lib/editor/visual/extensions/image/figureDefaults';
 import { esc, applyMarks, markableMarks, marksKey } from './textEscapes';
 import { blockMath, alignEnvironment } from './mathBlocks';
 export { esc, sanitizeText, type EscMode } from './textEscapes';
@@ -184,7 +186,7 @@ function buildIncludegraphics(node: Node): string {
 	}
 	if (options === '') return `\\includegraphics{${src}}`;
 	if (typeof options === 'string') return `\\includegraphics[${options}]{${src}}`;
-	return `\\includegraphics[width=0.5\\textwidth]{${src}}`;
+	return `\\includegraphics[width=${DEFAULT_FIGURE_FRACTION}\\textwidth]{${src}}`;
 }
 
 // doc assembly (verbatim `orig` substitution + per-block memo) is format-neutral and shared

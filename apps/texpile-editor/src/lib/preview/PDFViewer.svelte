@@ -2,7 +2,13 @@
 	// controlled: pass src (a texfile:// URL or bytes); uncontrolled: omit src and it follows pdfStore
 	import { PdfViewer, PdfToolbar, PdfRenderer, type PdfSource, type PdfViewerActions } from '$lib/pdf-view';
 	import PdfActionsBridge from './PdfActionsBridge.svelte';
+	import PreviewHeader from './PreviewHeader.svelte';
+	import PdfSearchBar from '$lib/pdf-view/PdfSearchBar.svelte';
 	import { pdfStore } from '$lib/stores/pdfStore';
+	import { pdfFindToggle } from '$lib/stores/editorStore';
+	import { PictureInPicture2 } from '@lucide/svelte';
+	import { tip } from '$lib/components/tooltip.svelte';
+	import { m } from '$lib/paraglide/messages';
 	import { savePdfBytes } from '$lib/workspace/fileSystem';
 	import { resolvedMode } from '$lib/theme';
 	import { layout } from '$lib/storage/layout';
@@ -13,8 +19,18 @@
 		src?: string | ArrayBuffer;
 		/** SyncTeX inverse search: double-click reports page + position (PDF points) plus the clicked word for anchoring. */
 		onPageClick?: (page: number, x: number, y: number, selectText?: string) => void;
+		/** what the pane is called while there is no document to show; a PDF on screen needs no caption */
+		label?: string;
+		/** move the preview into its own window; null in the popped-out body, which needs no button */
+		onPopout?: (() => void) | null;
+		/** where this viewer sits: the docked preview pane (its bar is the pane's only row and stands
+		 *  in for a tab strip), a .pdf opened as a file in the editor column (under the tabs, beside the
+		 *  preview divider), or the popped-out window */
+		placement?: 'pane' | 'file' | 'window';
 	};
-	let { filename, src, onPageClick }: Props = $props();
+	let { filename, src, onPageClick, label, onPopout, placement = 'window' }: Props = $props();
+	const asTabStrip = $derived(placement === 'pane');
+	const inEditor = $derived(placement === 'file');
 
 	let actions: PdfViewerActions | null = null;
 	/** SyncTeX forward search: scroll to and flash a box. (x, y) is the box origin in PDF points, top-left, y down. */
@@ -23,6 +39,13 @@
 	}
 
 	let pdfSource = $state<PdfSource | null>(null);
+	let findOpen = $state(false);
+	// as a tab, this viewer is what Ctrl+F means; the pane and the window are never the active tab
+	$effect(() => {
+		if (!inEditor) return;
+		pdfFindToggle.current = () => (findOpen = !findOpen);
+		return () => (pdfFindToggle.current = null);
+	});
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 	let lastUrl = '';
@@ -96,32 +119,66 @@
 	});
 </script>
 
-{#if loading && !pdfSource}
-	<div class="text-muted flex h-full w-full items-center justify-center text-sm">Loading PDF…</div>
-{:else if error}
-	<div class="text-error-ink flex h-full w-full items-center justify-center p-4 text-center text-sm">{error}</div>
-{:else if pdfSource}
+<!-- the bar stands in for a tab strip, so it carries the file name the way the tabs carry theirs; under
+     a real tab strip (the editor column) the tab already says it -->
+{#snippet leading()}
+	<span class="truncate text-sm">{filename}</span>
+{/snippet}
+
+<!-- pinned outside the collapsing groups: the one control that is not a viewer setting must not
+     disappear into the "..." when the pane narrows -->
+{#snippet popout()}
+	<button onclick={() => onPopout?.()} use:tip={m.wsview_popout_preview()} aria-label={m.wsview_popout_preview()}>
+		<PictureInPicture2 size={16} />
+	</button>
+{/snippet}
+
+{#if pdfSource && !error}
 	{@const dark = resolvedMode.current === 'dark'}
 	<div class="flex h-full w-full flex-col">
 		<!-- the viewer holds the bytes but not the native bridge, so the save dialog is injected here -->
 		<PdfViewer src={pdfSource} documentKey={docKey} downloadFilename={filename} onSavePdf={savePdfBytes}>
-			<PdfToolbar />
+			<PdfToolbar
+				leading={filename && !inEditor ? leading : undefined}
+				trailing={onPopout ? popout : undefined}
+				{asTabStrip}
+				dividers={!inEditor}
+				{inEditor}
+				inPopout={placement === 'window'}
+				{findOpen}
+				onToggleFind={() => (findOpen = !findOpen)}
+			/>
 			<PdfActionsBridge onActions={(a) => (actions = a)} />
 			<!-- darkMode inverts the page canvases; the chrome always follows the app theme via `dark`.
 			     Scrollbar matches the app's scrollers: native in light mode, the [data-mode='dark']
 			     pill in dark (that global rule can't reach into the shadow DOM). -->
-			<PdfRenderer
-				{onPageClick}
-				darkMode={dark && layout.current.pdfDarkPages}
-				backgroundColor="var(--pdf-page-area-bg)"
-				pageShadow={dark ? '0 2px 8px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4)' : undefined}
-				scrollbarThumbColor={dark ? 'var(--color-surface-700, #4a4a52)' : undefined}
-				scrollbarTrackColor={dark ? 'transparent' : undefined}
-				scrollbarThumbHoverColor={dark ? 'var(--color-surface-600, #5e5e68)' : undefined}
-				scrollbarWidth={dark ? '10px' : undefined}
-			/>
+			<!-- the find bar drops over the pages, under the toolbar -->
+			<div class="relative flex min-h-0 flex-1 flex-col">
+				<PdfSearchBar open={findOpen} onClose={() => (findOpen = false)} />
+				<PdfRenderer
+					{onPageClick}
+					darkMode={dark && layout.current.pdfDarkPages}
+					backgroundColor="var(--pdf-page-area-bg)"
+					pageShadow={dark ? '0 2px 8px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4)' : undefined}
+					scrollbarThumbColor={dark ? 'var(--color-surface-700, #4a4a52)' : undefined}
+					scrollbarTrackColor={dark ? 'transparent' : undefined}
+					scrollbarThumbHoverColor={dark ? 'var(--color-surface-600, #5e5e68)' : undefined}
+					scrollbarWidth={dark ? '10px' : undefined}
+					scrollInsetRight={inEditor ? '3px' : undefined}
+				/>
+			</div>
 		</PdfViewer>
 	</div>
 {:else}
-	<div class="text-muted flex h-full w-full items-center justify-center p-4 text-center text-sm">Compile to preview the PDF.</div>
+	<!-- the bar is the viewer's; until there is a document the pane still needs its label and popout -->
+	<div class="flex h-full w-full flex-col">
+		{#if label}<PreviewHeader {label} {onPopout} {asTabStrip} />{/if}
+		{#if loading && !pdfSource}
+			<div class="text-muted flex min-h-0 flex-1 items-center justify-center text-sm">Loading PDF…</div>
+		{:else if error}
+			<div class="text-error-ink flex min-h-0 flex-1 items-center justify-center p-4 text-center text-sm">{error}</div>
+		{:else}
+			<div class="text-muted flex min-h-0 flex-1 items-center justify-center p-4 text-center text-sm">Compile to preview the PDF.</div>
+		{/if}
+	</div>
 {/if}

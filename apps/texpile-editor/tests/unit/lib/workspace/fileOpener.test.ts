@@ -35,7 +35,7 @@ function makeOpener(parse: FileOpenerDeps['parse']) {
 		beforeOpen: async () => {},
 		parse,
 		fallbackToSource: () => {},
-		resetHistory: () => {},
+		openHistory: () => {},
 		disableHistory: () => {},
 		clearPerFileViewState: () => {},
 		captureDiffSnapshot: () => {},

@@ -1,7 +1,7 @@
 // Which folders are open and which rows are selected, plus the click grammar that drives
 // both (plain / ctrl / shift, VSCode-style).
-import type { TreeEntry } from '$lib/workspace/fileSystem';
-import { isInside } from './treePaths';
+import { samePath, type TreeEntry } from '$lib/workspace/fileSystem';
+import { isInside, sepOf } from './treePaths';
 
 type StateHooks = {
 	tree: () => TreeEntry[];
@@ -39,6 +39,28 @@ export class FileTreeState {
 	selectedEntries(): TreeEntry[] {
 		const paths = this.selected.filter((p) => !this.selected.some((other) => other !== p && isInside(p, other)));
 		return paths.map((p) => this.findEntry(p)).filter((e): e is TreeEntry => !!e);
+	}
+
+	/** open every folder above `path`; false when the tree holds no such entry yet */
+	reveal(path: string): boolean {
+		const opened: string[] = [];
+		function under(dir: string): boolean {
+			const sep = path[dir.length];
+			return (sep === '/' || sep === sepOf(path)) && samePath(path.slice(0, dir.length), dir);
+		}
+		function walk(entries: TreeEntry[]): boolean {
+			for (const e of entries) {
+				if (samePath(e.path, path)) return true;
+				if (e.type === 'dir' && under(e.path) && walk(e.children ?? [])) {
+					opened.push(e.path);
+					return true;
+				}
+			}
+			return false;
+		}
+		if (!walk(this.hooks.tree())) return false;
+		for (const dir of opened) this.expanded[dir] = true;
+		return true;
 	}
 
 	/** collapse the selection onto this row unless it is already part of it */

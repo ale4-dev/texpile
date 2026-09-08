@@ -1,213 +1,62 @@
-// Typst math -> LaTeX, over the CST the converter already holds. STRICTLY conservative: the
-// translation exists so MathLive (which speaks LaTeX) can edit the equation, and a wrong
-// translation would round-trip wrong bytes into the document - so anything not provably
-// translatable returns null and the equation stays a raw island. The return trip (LaTeX ->
-// Typst) is MathLive's own atom-to-typst serializer, not ours (see latexToTypst.ts).
-import type { SyntaxNode } from '@lezer/common';
+// Typst math -> LaTeX, so MathLive (which speaks LaTeX only) can edit the equation.
+//
+// The translation is accepted ONLY when converting it straight back reproduces the equation we
+// started from. tex2typst owns both directions and is not exact - `norm(v)` comes back as `v`, its
+// bars gone - so the round trip, not the library, is what decides. Whatever fails it stays a raw
+// island, byte-exact, as an unprovable equation always has.
+import { typst2tex } from 'tex2typst';
+import { latexToTypst } from './latexToTypst';
 
-/** multi-letter typst math identifiers with an exact LaTeX counterpart. Additive-only. */
-const IDENTS: Record<string, string> = {
-	alpha: '\\alpha',
-	beta: '\\beta',
-	gamma: '\\gamma',
-	delta: '\\delta',
-	epsilon: '\\varepsilon',
-	zeta: '\\zeta',
-	eta: '\\eta',
-	theta: '\\theta',
-	iota: '\\iota',
-	kappa: '\\kappa',
-	lambda: '\\lambda',
-	mu: '\\mu',
-	nu: '\\nu',
-	xi: '\\xi',
-	pi: '\\pi',
-	rho: '\\rho',
-	sigma: '\\sigma',
-	tau: '\\tau',
-	upsilon: '\\upsilon',
-	phi: '\\varphi',
-	chi: '\\chi',
-	psi: '\\psi',
-	omega: '\\omega',
-	Gamma: '\\Gamma',
-	Delta: '\\Delta',
-	Theta: '\\Theta',
-	Lambda: '\\Lambda',
-	Xi: '\\Xi',
-	Pi: '\\Pi',
-	Sigma: '\\Sigma',
-	Phi: '\\Phi',
-	Psi: '\\Psi',
-	Omega: '\\Omega',
-	sum: '\\sum',
-	product: '\\prod',
-	integral: '\\int',
-	oo: '\\infty',
-	infinity: '\\infty',
-	infty: '\\infty',
-	times: '\\times',
-	div: '\\div',
-	pm: '\\pm',
-	mp: '\\mp',
-	dot: '\\cdot',
-	approx: '\\approx',
-	equiv: '\\equiv',
-	prop: '\\propto',
-	subset: '\\subset',
-	supset: '\\supset',
-	union: '\\cup',
-	sect: '\\cap',
-	forall: '\\forall',
-	exists: '\\exists',
-	nabla: '\\nabla',
-	partial: '\\partial',
-	emptyset: '\\emptyset',
-	RR: '\\mathbb{R}',
-	NN: '\\mathbb{N}',
-	ZZ: '\\mathbb{Z}',
-	QQ: '\\mathbb{Q}',
-	CC: '\\mathbb{C}',
-	sin: '\\sin',
-	cos: '\\cos',
-	tan: '\\tan',
-	log: '\\log',
-	ln: '\\ln',
-	exp: '\\exp',
-	lim: '\\lim',
-	max: '\\max',
-	min: '\\min',
-	// typst's differential; \mathrm{d} is what MathLive's typst serializer maps back to `dif`
-	dif: '\\mathrm{d}'
-};
+/**
+ * Spellings tex2typst prefers that typst renders identically to what the user wrote. Folded before
+ * the comparison so a re-spelled round trip still counts as equal: the bar is to look the same,
+ * not to be byte-equal. `lr(` is pure grouping; `dif` is `upright(d)`.
+ */
+const SAME_LOOK: [RegExp, string][] = [
+	[/\bbb\(([A-Z])\)/g, '$1$1'],
+	[/\bmacron\(/g, 'bar('],
+	[/\bdot\.op\b/g, 'dot'],
+	[/\btilde\.op\b/g, '~'],
+	[/\bdif\b/g, 'upright(d)'],
+	[/\bvec\(/g, 'mat('],
+	[/\blr\(/g, '(']
+];
 
-/** the `.alt` glyph variants; the plain names above hold the other member of each pair. */
-const ALT_IDENTS: Record<string, string> = {
-	'theta.alt': '\\vartheta',
-	'epsilon.alt': '\\epsilon',
-	'phi.alt': '\\phi',
-	'pi.alt': '\\varpi',
-	'rho.alt': '\\varrho',
-	'sigma.alt': '\\varsigma'
-};
-
-/** typst math shorthands (own CST kind) with an exact LaTeX counterpart. */
-const SHORTHANDS: Record<string, string> = {
-	'<=': '\\le',
-	'>=': '\\ge',
-	'!=': '\\ne',
-	'->': '\\to',
-	'=>': '\\Rightarrow',
-	'<-': '\\leftarrow',
-	'...': '\\ldots'
-};
-
-/** MathText that can pass through as-is: no LaTeX-special characters. */
-const SAFE_TEXT = /^[A-Za-z0-9+\-=(),.!?:;|'\s/<>*]*$/;
-
-function kids(node: SyntaxNode): SyntaxNode[] {
-	const out: SyntaxNode[] = [];
-	for (let c = node.firstChild; c; c = c.nextSibling) out.push(c);
-	return out;
+/**
+ * The equation as a token list: names, numbers and operator characters, in order. Whitespace,
+ * parentheses and the comma/semicolon separators drop out, since tex2typst re-groups freely
+ * (`sigma^2 / n` comes back `(sigma^2)/n`, `vec(1, 2)` as `mat(1; 2)`) while a symbol it lost
+ * (`norm`) still shows as a missing token. `a b` stays two tokens and `ab` one: fusing them would
+ * be a different equation.
+ */
+function shape(s: string): string {
+	let t = s;
+	for (const [re, to] of SAME_LOOK) t = t.replace(re, to);
+	return (t.match(/[A-Za-z][\w.]*|\d+(?:\.\d+)?|[^\s(),;]/g) ?? []).join(' ');
 }
 
 /**
- * An attach/frac operand. `_(k=1)` and `(a+b)/2` group with parens typst HIDES - the CST wraps
- * them as Math [LeftParen ... RightParen] - so the LaTeX braces must replace them, not show them.
+ * A typst math function tex2typst has no mapping for comes out as a bare `\name`, which MathLive
+ * then cannot parse - the equation would render as an error rather than a formula. The round trip
+ * cannot see this: tex2typst reads its own output back happily and MathLive is not party to it.
+ *
+ * Swept from typst's math module rather than collected by hand; mathTranslate.test.ts re-runs that
+ * sweep against mathlive's validateLatex (its SSR build, node only) so the list cannot go stale.
  */
-function operand(n: SyntaxNode, src: string): string | null {
-	const dk = kids(n);
-	if (n.name === 'Math' && dk.length >= 2 && dk[0].name === 'LeftParen' && dk[dk.length - 1].name === 'RightParen') {
-		const parts: string[] = [];
-		for (const inner of dk.slice(1, -1)) {
-			const t = translate(inner, src);
-			if (t == null) return null;
-			parts.push(t);
-		}
-		return parts.join('');
-	}
-	return translate(n, src);
-}
+const MATHLIVE_CANNOT_PARSE = /\\(?:abs|accent|attach|harpoon|ol|overbracket|primes|round|script|scripts|serif|sscript|ul|underbracket)\b/;
 
-function translate(node: SyntaxNode, src: string): string | null {
-	const slice = src.slice(node.from, node.to);
-	switch (node.name) {
-		case 'Math': {
-			const parts: string[] = [];
-			for (const k of kids(node)) {
-				const t = translate(k, src);
-				if (t == null) return null;
-				parts.push(t);
-			}
-			return parts.join('');
-		}
-		case 'MathText':
-			return SAFE_TEXT.test(slice) ? slice : null;
-		case 'Space':
-			return ' ';
-		case 'MathIdent':
-			if (slice.length === 1) return slice;
-			return IDENTS[slice] ?? null;
-		case 'MathShorthand':
-			return SHORTHANDS[slice] ?? null;
-		case 'MathAttach': {
-			// base then any of (_ sub) / (^ sup), in source order; whitespace is layout, not content
-			const parts = kids(node).filter((k) => k.name !== 'Space');
-			if (parts.length === 0) return null;
-			const base = translate(parts[0], src);
-			if (base == null) return null;
-			let out = base;
-			for (let i = 1; i < parts.length; i += 2) {
-				const op = parts[i]?.name;
-				const arg = parts[i + 1] ? operand(parts[i + 1], src) : null;
-				if (arg == null) return null;
-				if (op === 'Underscore') out += `_{${arg}}`;
-				else if (op === 'Hat') out += `^{${arg}}`;
-				else return null;
-			}
-			return out;
-		}
-		case 'MathFrac': {
-			// `x / y` carries Space nodes around the slash; they are layout, not content
-			const parts = kids(node).filter((k) => k.name !== 'Slash' && k.name !== 'Space');
-			if (parts.length !== 2) return null;
-			const a = operand(parts[0], src);
-			const b = operand(parts[1], src);
-			return a != null && b != null ? `\\frac{${a}}{${b}}` : null;
-		}
-		case 'MathDelimited': {
-			const parts: string[] = [];
-			for (const k of kids(node)) {
-				const t = translate(k, src);
-				if (t == null) return null;
-				parts.push(t);
-			}
-			return parts.join('');
-		}
-		case 'MathPrimes':
-			return /^'+$/.test(slice) ? slice : null;
-		case 'MathFieldAccess':
-			return ALT_IDENTS[slice] ?? null;
-		default:
-			// FuncCall (mat, cases, sqrt via juxtaposition), roots, alignment points, strings,
-			// code: no faithful mapping - the equation stays raw
-			return null;
+/** the LaTeX for an equation's inner source, or null when it does not survive the round trip */
+export function typstMathToLatex(inner: string): string | null {
+	if (!inner.trim()) return null;
+	let latex: string;
+	try {
+		latex = typst2tex(inner);
+	} catch {
+		return null; // typst2tex throws on what it cannot read
 	}
-}
-
-/**
- * The LaTeX for a whole `Equation` CST node, or null when any part lacks an exact mapping.
- * `sqrt(...)`-style juxtaposed calls are rejected as a WHOLE equation: the call shows up as a
- * translatable MathIdent next to a MathDelimited, which would silently drop the function.
- */
-export function typstMathToLatex(equation: SyntaxNode, src: string): string | null {
-	const math = kids(equation).find((k) => k.name === 'Math');
-	if (!math) return null;
-	// reject ident-followed-by-delimited anywhere: f(x) is fine for single letters (MathLive
-	// reads it back the same), but sqrt(x)/vec(x) would translate to a bare name
-	for (let c: SyntaxNode | null = math.firstChild; c; c = c.nextSibling) {
-		if (c.name === 'MathIdent' && src.slice(c.from, c.to).length > 1 && c.nextSibling?.name === 'MathDelimited') return null;
-	}
-	const out = translate(math, src);
-	return out?.trim() ? out.trim() : null;
+	if (typeof latex !== 'string' || !latex.trim()) return null;
+	if (MATHLIVE_CANNOT_PARSE.test(latex)) return null;
+	const back = latexToTypst(latex);
+	if (back == null || shape(back) !== shape(inner)) return null;
+	return latex.trim();
 }

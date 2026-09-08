@@ -1,6 +1,12 @@
 <script lang="ts">
 	import { tip } from '$lib/components/tooltip.svelte';
-	import { tocStore, sourceTocStore, type TocItem } from '$lib/editor/visual/extensions/tableofcontents/tocStore';
+	import {
+		tocStore,
+		sourceTocStore,
+		tocCaretStore,
+		activeTocIndex,
+		type TocItem
+	} from '$lib/editor/visual/extensions/tableofcontents/tocStore';
 	import { editorViewStore, sourceCmView } from '$lib/stores/editorStore';
 	import { TextSelection } from 'prosemirror-state';
 	import { EditorView } from '@codemirror/view';
@@ -10,6 +16,11 @@
 	// onOpenFile routes clicks on entries merged in from other files (source-mode project outline).
 	let { mode = 'visual', onOpenFile }: { mode?: 'visual' | 'source'; onOpenFile?: (file: string, line: number) => void } = $props();
 	const items = $derived(mode === 'source' ? sourceTocStore.current : tocStore.current);
+	const active = $derived(activeTocIndex(items, tocCaretStore.current));
+	let rows = $state<HTMLButtonElement[]>([]);
+	$effect(() => {
+		rows[active]?.scrollIntoView?.({ block: 'nearest' });
+	});
 
 	function goTo(item: TocItem) {
 		if (item.file && onOpenFile) {
@@ -49,9 +60,12 @@
 			{#each items as item, i (i)}
 				<button
 					type="button"
-					class="text-muted hover:text-primary-ink block w-full max-w-full truncate rounded-base px-1 py-0.5 text-left transition-colors {item.kind
+					class="hover:bg-surface-200-800 block w-full max-w-full truncate rounded-base px-1 py-0.5 text-left transition-colors {item.kind
 						? 'opacity-80'
 						: ''}"
+					class:bg-primary-tint={i === active}
+					class:font-medium={i === active}
+					bind:this={rows[i]}
 					style="padding-left: {(Math.max(1, item.level) - 1) * 0.7 + 0.25}rem"
 					use:tip={item.text}
 					onclick={() => goTo(item)}

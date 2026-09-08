@@ -1,6 +1,6 @@
 import { Plugin } from 'prosemirror-state';
 import type { Node } from 'prosemirror-model';
-import { tocStore, type TocItem } from './tocStore';
+import { tocStore, tocCaretStore, type TocItem } from './tocStore';
 import { trailingDebounce } from '$lib/trailingDebounce';
 
 function collectHeadings(doc: Node): TocItem[] {
@@ -28,7 +28,19 @@ export function createTocPlugin() {
 				return null;
 			}
 		},
-		// a timer outliving this editor would overwrite the NEXT document's TOC
-		view: () => ({ destroy: () => deferredCollect.cancel() })
+		view: (view) => {
+			tocCaretStore.current = view.state.selection.head;
+			return {
+				update: (v) => {
+					const head = v.state.selection.head;
+					if (tocCaretStore.current !== head) tocCaretStore.current = head;
+				},
+				// a timer outliving this editor would overwrite the NEXT document's TOC
+				destroy: () => {
+					deferredCollect.cancel();
+					tocCaretStore.current = null;
+				}
+			};
+		}
 	});
 }

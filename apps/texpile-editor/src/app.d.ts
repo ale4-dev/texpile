@@ -17,6 +17,8 @@ declare global {
 		write(id: string, input: string): void;
 		resize(id: string, cols: number, rows: number): void;
 		kill(id: string): void;
+		/** End the shell's foreground job and everything under it; resolves true when there was one. */
+		interrupt?(id: string): Promise<boolean>;
 		/** Subscribe to output; returns an unsubscribe fn. */
 		// eslint-disable-next-line id-denylist -- `data` is the preload message's field name
 		onData(cb: (msg: { id: string; data: string }) => void): () => void;

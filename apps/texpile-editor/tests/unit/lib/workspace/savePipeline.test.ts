@@ -40,7 +40,14 @@ describe('SavePipeline external-write guard', () => {
 		const { pipeline, writes } = makePipeline({ diskChanged: async () => true, raiseConflict });
 		await pipeline.enqueue('/ws/main.tex', 'mine', false);
 		expect(writes).toEqual([]); // the external edit survived
-		expect(raiseConflict).toHaveBeenCalledWith('/ws/main.tex');
+		expect(raiseConflict).toHaveBeenCalledWith('/ws/main.tex', false);
+	});
+
+	it('tells the conflict flow a manual save asked, so a postponed question reopens', async () => {
+		const raiseConflict = vi.fn();
+		const { pipeline } = makePipeline({ diskChanged: async () => true, raiseConflict });
+		await pipeline.enqueue('/ws/main.tex', 'mine', true); // notify = manual Ctrl+S
+		expect(raiseConflict).toHaveBeenCalledWith('/ws/main.tex', true);
 	});
 
 	it('force writes through the guard (the conflict modal\'s "keep mine")', async () => {

@@ -14,15 +14,16 @@
 	import ThemePicker from './ThemePicker.svelte';
 	import { preferencesTab } from '$lib/stores/dialogStore';
 	import McpSetupModal from './McpSetupModal.svelte';
-	// dark wordmark for light backgrounds, white one for dark mode - the pair StartView uses
 	import logoOnLight from '$branding/Logo-dark.svg';
 	import logoOnDark from '$branding/Logo-light.svg';
+	import { LogoSpin } from './logoSpin.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	// autosave is forced on (shown disabled) while live mode or a hosted session is active
 	const autosaveForced = $derived(compileConfig.current.latex.liveMode || collabHost.active);
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
+	const logoSpin = new LogoSpin();
 
 	// MCP
 	type McpStatus = {
@@ -158,8 +159,16 @@
 				     spare. Height matched to the category rows so it reads as a heading over them
 				     rather than a banner. -->
 		<div class="mb-2 px-3 pt-2 pb-3">
-			<img src={logoOnLight} alt="Texpile" class="h-6 w-auto dark:hidden" />
-			<img src={logoOnDark} alt="Texpile" class="hidden h-6 w-auto dark:block" />
+			<button
+				type="button"
+				class="block h-6 cursor-default"
+				style:transform="rotate({logoSpin.angle}deg)"
+				onclick={logoSpin.kick}
+				aria-label="Texpile"
+			>
+				<img src={logoOnLight} alt="" class="h-6 w-auto dark:hidden" />
+				<img src={logoOnDark} alt="" class="hidden h-6 w-auto dark:block" />
+			</button>
 		</div>
 		{#each categories as c (c.id)}
 			<button

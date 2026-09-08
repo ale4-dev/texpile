@@ -50,6 +50,7 @@ export type ActionSurfaceDeps = {
 	guest: () => boolean;
 	visualCollab: () => { publishCursor(): void } | null;
 	setDockView: (v: 'terminal' | 'problems' | 'comments') => void;
+	getDockView: () => 'terminal' | 'problems' | 'comments';
 	setShareModalOpen: (open: boolean) => void;
 	setTutorialModalOpen: (open: boolean) => void;
 	openGlobalSearch: () => void;
@@ -70,6 +71,16 @@ export async function toastAfter(title: string, work: () => unknown): Promise<vo
 }
 
 /** the callback surface WorkspaceMain hands down to the topbar / editor / preview / dock */
+function toggleDockPanel(d: ActionSurfaceDeps, view: 'problems' | 'comments') {
+	const dock = d.termDock();
+	if (dock.visible && d.getDockView() === view) {
+		dock.hide();
+		return;
+	}
+	dock.show();
+	d.setDockView(view);
+}
+
 export function makeMainActions(d: ActionSurfaceDeps) {
 	return {
 		// "Comment" on a selection: reveal the dock's Comments tab with a composer for it. The thread
@@ -129,14 +140,9 @@ export function makeMainActions(d: ActionSurfaceDeps) {
 			toaster.info({ title: m.session_compile_requested(), duration: 2500 });
 		},
 		openCompileModal: () => d.fmt.openCompileModal(),
-		showProblems: () => {
-			d.termDock().show();
-			d.setDockView('problems');
-		},
-		showComments: () => {
-			d.termDock().show();
-			d.setDockView('comments');
-		},
+		// the badges toggle: a second click on the panel already showing closes the dock
+		showProblems: () => toggleDockPanel(d, 'problems'),
+		showComments: () => toggleDockPanel(d, 'comments'),
 		insertZoteroCitation: () => d.integrations.insertZoteroCitation(),
 		save: () => d.wsdoc.save(),
 		activateTab: (t: Tab) => d.editFlow().activateTab(t),

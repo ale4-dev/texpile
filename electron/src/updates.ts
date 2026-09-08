@@ -71,14 +71,10 @@ export async function check(manual: boolean): Promise<CheckResult> {
 	wire();
 	autoUpdater.requestHeaders = {
 		'x-texpile-version': app.getVersion(),
-		// electron-updater attaches x-user-staging-id (a persistent random uuid) We dont need this and we dont track it
-		'x-user-staging-id': '',
 		...(manual ? { 'x-texpile-check': 'manual' } : {})
 	};
 	try {
 		const res = await autoUpdater.checkForUpdates();
-		// isUpdateAvailable is the library's own semver compare (prerelease-safe) + staged-rollout
-		// + minimum-system-version gate; a hand-rolled numeric compare here broke prereleases
 		if (!res || !res.isUpdateAvailable || !res.updateInfo) return { status: 'none' };
 		const found = res.updateInfo;
 		return {

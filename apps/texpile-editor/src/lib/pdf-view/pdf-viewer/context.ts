@@ -35,6 +35,8 @@ export type PdfViewerActions = {
 	zoomOut: () => void;
 	/** scale so the current page fills the available width. */
 	fitWidth: () => void;
+	/** scale so the current page shows whole, then scroll to its top. */
+	fitPage: () => void;
 	setScale: (scale: number) => void;
 	rotateClockwise: () => void;
 	rotateCounterClockwise: () => void;

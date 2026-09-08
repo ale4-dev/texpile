@@ -153,6 +153,17 @@ describe('a postponed conflict', () => {
 		expect(w.conflict?.disk).toBe('theirs, edited again');
 	});
 
+	// pressing Save used to do nothing at all here: the write aborted on the guard and the postponed
+	// conflict swallowed the prompt, so the keystroke had no visible effect
+	it('asks again when a manual save runs into the postponed conflict', async () => {
+		const w = makeWatcher({ readText: async () => 'theirs', getBuffer: () => 'mine' });
+		await w.check();
+		w.resolve('defer');
+
+		await w.check(true);
+		expect(w.conflict?.disk).toBe('theirs');
+	});
+
 	it('stops being postponed once the next question is answered', async () => {
 		let disk = 'theirs';
 		const w = makeWatcher({ readText: async () => disk, getBuffer: () => 'mine' });

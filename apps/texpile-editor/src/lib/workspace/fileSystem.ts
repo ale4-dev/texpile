@@ -139,6 +139,8 @@ type TexpileNative = {
 	fsProbe?: (path: string) => Promise<{ size: number; binary: boolean }>;
 	fsWrite: (path: string, content: string) => Promise<{ ok: boolean }>;
 	fsWriteBinary: (path: string, bytes: ArrayBuffer) => Promise<{ ok: boolean }>;
+	// optional: an older preload predates it
+	filePathOf?: (file: File) => string;
 	fsTree: (root: string) => Promise<{ root: string; children: TreeEntry[] }>;
 	fsTreeScan: (root: string, exts?: string) => Promise<{ root: string; children: TreeEntry[]; files: TexFile[] }>;
 	fsOp: (body: Record<string, unknown>) => Promise<{ ok: boolean }>;
@@ -420,6 +422,21 @@ export function dirname(path: string): string {
 /** Path equality that ignores separator style and case (Windows paths reach us both ways). */
 export function samePath(a: string, b: string) {
 	return a.replace(/\\/g, '/').toLowerCase() === b.replace(/\\/g, '/').toLowerCase();
+}
+
+/** `abs` written relative to `root` with forward slashes, or null when it is not under it */
+export function relativeInside(root: string, abs: string): string | null {
+	if (!root || !abs) return null;
+	const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '');
+	const r = norm(root);
+	const a = norm(abs);
+	if (!a.toLowerCase().startsWith(r.toLowerCase() + '/')) return null;
+	return a.slice(r.length + 1);
+}
+
+/** where a File the user picked lives on disk; '' outside the desktop bridge */
+export function pathOfPickedFile(file: File): string {
+	return nativeBridge()?.filePathOf?.(file) ?? '';
 }
 
 // joins dir + rel using the dir's own separator so results match the native paths the scan/tree

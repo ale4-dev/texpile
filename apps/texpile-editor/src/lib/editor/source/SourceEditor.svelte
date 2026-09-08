@@ -314,10 +314,12 @@
 		font-size: 0.875rem;
 		position: relative; /* anchor the floating top-right search panel */
 	}
-	/* position only: FindBar brings the card, and .cm-panels paints one behind it */
+	/* position only: FindBar brings the card, and .cm-panels paints one behind it. !important on top:
+	   CodeMirror writes top: 0 inline on the container it creates, which beat this rule and left the
+	   panel hugging the editor edge while the visual and PDF bars sit 12px down */
 	.source-editor :global(.cm-panels.cm-panels-top) {
 		position: absolute;
-		top: calc(var(--spacing) * 3);
+		top: calc(var(--spacing) * 3) !important;
 		right: calc(var(--spacing) * 3);
 		left: auto;
 		width: max-content;

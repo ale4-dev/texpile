@@ -17,6 +17,8 @@
 		scrollbarThumbColor?: string;
 		scrollbarThumbHoverColor?: string;
 		scrollbarWidth?: string;
+		/** keeps the scrollbar this far in from the right edge, for a host control that overhangs there */
+		scrollInsetRight?: string;
 		/** Dark mode: darkens the viewer chrome and renders the pages themselves dark by inverting the
 		 *  page canvases (invert + hue-rotate, so colors stay recognizable). Reactive. */
 		darkMode?: boolean;
@@ -33,6 +35,7 @@
 		scrollbarThumbColor,
 		scrollbarThumbHoverColor,
 		scrollbarWidth,
+		scrollInsetRight,
 		darkMode = false,
 		onPageClick
 	}: Props = $props();
@@ -249,6 +252,7 @@
 		zoomIn: () => viewer?.zoomIn(),
 		zoomOut: () => viewer?.zoomOut(),
 		fitWidth: () => viewer?.fitWidth(),
+		fitPage: () => viewer?.fitPage(),
 		setScale: (scale: number) => {
 			if (viewer) viewer.scale = scale;
 		},
@@ -328,6 +332,7 @@
 		setOrRemove('--pdf-scrollbar-thumb-color', scrollbarThumbColor);
 		setOrRemove('--pdf-scrollbar-thumb-hover-color', scrollbarThumbHoverColor);
 		setOrRemove('--pdf-scrollbar-width', scrollbarWidth);
+		setOrRemove('--pdf-scroll-inset-right', scrollInsetRight);
 		container.classList.toggle(
 			'pdf-custom-scrollbar',
 			!!(scrollbarTrackColor || scrollbarThumbColor || scrollbarThumbHoverColor || scrollbarWidth)

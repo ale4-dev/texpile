@@ -41,3 +41,18 @@ export function swapDocForNewFile(editorView: EditorView, schema: Schema, next: 
 	editorView.updateState(stateForDoc(editorView, schema, next));
 	if (scroller) scroller.scrollTop = 0;
 }
+
+/**
+ * What an arriving `localValue` means for a mounted view: nothing, the same file again, or another
+ * one.
+ *
+ * The VIEW's own document answers the first question, never the last node the host installed.
+ * Typing moves the view on without touching that node, so a reload landing the very same one -
+ * a visual-doc cache hit, which is exactly what discarding an edit produces - still has to swap.
+ * Reading it off the installed node instead left the thrown-away edits on screen, and the next
+ * save wrote them back.
+ */
+export function docSwapKind(next: PmNode, viewDoc: PmNode, path: string | null, mountedPath: string | null): 'none' | 'reload' | 'newFile' {
+	if (next === viewDoc) return 'none';
+	return path === mountedPath ? 'reload' : 'newFile';
+}

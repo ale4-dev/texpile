@@ -41,6 +41,18 @@ function countEnvironmentLines(latex: string): number {
 	return matches ? matches.length + 1 : 1;
 }
 
+/**
+ * How many numbers align/gather actually print. Not the label count: a row carries a number
+ * whether or not anyone gave it a \label, so counting labels showed one "(1)" beside an
+ * unlabelled two-row align that the PDF numbered twice.
+ */
+export function numberedLineCount(latex: string): number {
+	const body = latex.replace(/^[\s\S]*?\\begin\{[^}]*\}/, '').replace(/\\end\{[^}]*\}[\s\S]*$/, '');
+	const rows = body.split(/\\\\/);
+	if (rows.length > 1 && !rows[rows.length - 1].trim()) rows.pop(); // a trailing \\ ends the last row
+	return Math.max(1, rows.filter((r) => !/\\(?:nonumber|notag)\b/.test(r)).length);
+}
+
 /** rewrites align <-> align* (and friends) in the latex source. */
 export function toggleEnvironmentStar(latex: string, addStar: boolean): string {
 	for (const env of MULTILINE_ENVIRONMENTS) {

@@ -7,7 +7,7 @@
 	import { schema } from '$lib/languages/latex/schema/latexPMSchema';
 	import { latexEditorPlugins, latexNodeViews } from './latexEditorSetup';
 	import { isLargeDocument } from './largeDocument';
-	import { swapParsedDoc, swapDocForNewFile } from '$lib/editor/visual/docSwap';
+	import { swapParsedDoc, swapDocForNewFile, docSwapKind } from '$lib/editor/visual/docSwap';
 	import { editorViewStore, referenceStore } from '$lib/stores/editorStore';
 	import { revealBuiltEditor, BUILDING_CLASS } from '$lib/editor/visual/revealBuiltEditor';
 	import { preferences } from '$lib/stores/preferencesStore.svelte';
@@ -175,21 +175,14 @@
 			mountedPath = path;
 			return;
 		}
-		if (next === mountedDoc) return;
-		if (next === editorView.state.doc) {
-			// a collab patch installed this exact doc on the view already; just adopt it
-			mountedDoc = next;
-			mountedPath = path;
-			return;
-		}
-
-		const isAnotherFile = path !== mountedPath;
-		if (isAnotherFile) swapDocForNewFile(editorView, schema, next);
-		else swapParsedDoc(editorView, schema, next);
+		const kind = docSwapKind(next, editorView.state.doc, path, mountedPath);
 		mountedDoc = next;
 		mountedPath = path;
+		if (kind === 'none') return;
+		if (kind === 'newFile') swapDocForNewFile(editorView, schema, next);
+		else swapParsedDoc(editorView, schema, next);
 		docEpoch++;
-		if (isAnotherFile) onReady?.();
+		if (kind === 'newFile') onReady?.();
 	});
 
 	// Declared AFTER the swap effect on purpose: effects run in declaration order, so by the time

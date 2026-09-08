@@ -102,6 +102,7 @@
 	const editable = $derived(!disabled && (hasVisualMode(fileKind) || isRawTextKind(fileKind)));
 	/** there is a structured (tex/md/typ) document for Insert/Format to act on */
 	const structured = $derived(!disabled && hasVisualMode(fileKind));
+	const findable = $derived(editable || (!disabled && fileKind === 'pdf'));
 	/** which syntax Insert/Format write; only meaningful while `structured` */
 	const dialect = $derived(formatOf(fileKind));
 
@@ -209,6 +210,7 @@
 		publishMenuState({
 			disabled,
 			editable,
+			findable,
 			structured,
 			dialect,
 			cursorInCm: cursorInCm.current,
@@ -288,6 +290,7 @@
 			index={1}
 			select={(v) => (v === 'palette' ? commandPalette.show() : v === 'goToFile' ? commandPalette.show('files') : editSelect(v))}
 			{editable}
+			{findable}
 		/>
 	{/if}
 	<!-- zoom is webContents.setZoomFactor, and View holds nothing else; the browser has its own -->

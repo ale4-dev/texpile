@@ -10,6 +10,7 @@
 	// what lets the zoom control below drive a viewer we cannot otherwise touch.
 	import { tip } from '$lib/components/tooltip.svelte';
 	import { ZoomIn, ZoomOut, Crosshair, FileDown, Loader2, PictureInPicture2 } from '@lucide/svelte';
+	import PreviewToolbar from '$lib/preview/PreviewToolbar.svelte';
 	import { resolvedMode, themeEpoch } from '$lib/theme';
 	import { settings, updateSettings } from '$lib/settings';
 	import { followScrollTick, guestJumpFreezeTick } from './followSignal';
@@ -25,8 +26,10 @@
 		onSaveTypstPdf: () => Promise<void>;
 		/** move the preview into its own OS window; null (already popped out) hides the button */
 		onPopout?: (() => void) | null;
+		/** docked in the pane, where this row stands in for a tab strip; false in the popped-out window */
+		asTabStrip?: boolean;
 	};
-	let { host, paneDragging, onSaveTypstPdf, onPopout = null }: Props = $props();
+	let { host, paneDragging, onSaveTypstPdf, onPopout = null, asTabStrip = true }: Props = $props();
 
 	/** an export is in flight; the button shows it and refuses a second one */
 	let savingPdf = $state(false);
@@ -214,86 +217,70 @@
 </script>
 
 <div class="bg-surface-200-800 flex h-full w-full flex-col">
-	<!-- ONE row: pane title, status, controls and close together. The preview owns its whole header
-	     rather than sitting under the pane's, which otherwise left two near-empty strips stacked.
-	     Zoom is the only control here: tinymist's viewer ships no toolbar and its users scroll, so
-	     zoom is the one thing with no keyboard-free equivalent. -->
-	<!-- border-surface-200-800, not 300-700: this header, the editor's tab strip and the channel
-	     between them draw one line, and a darker step here made the preview's stretch of it stand out -->
-	<div class="bg-surface-100-900 border-surface-200-800 text-muted flex h-9 shrink-0 items-center gap-1 border-b px-3 text-xs">
-		<span class="shrink-0 font-medium">{m.typst_preview_label()}</span>
-		<span class="bg-surface-300-700 mx-1 h-4 w-px shrink-0"></span>
+	{#snippet status()}
 		{#if error}
-			<span class="text-error-ink truncate" use:tip={error}>{error}</span>
+			<span class="text-error-ink truncate text-sm" use:tip={error}>{error}</span>
 		{:else if stall && !noDocument}
 			<!-- the no-document stall is NOT repeated here: the frame overlay below already says it -->
-
-			<span class="text-warning-ink truncate" use:tip={`${stall}\n${stallDetail}`}>{stall}</span>
+			<span class="text-warning-ink truncate text-sm" use:tip={`${stall}\n${stallDetail}`}>{stall}</span>
 			<span class="text-muted truncate font-mono text-[10px]">{stallDetail}</span>
 		{:else}
-			<span class="text-surface-700-200 truncate">{frameUrl ? m.typst_preview_live() : m.typst_preview_connecting()}</span>
+			<span class="truncate text-sm">{frameUrl ? m.typst_preview_live() : m.typst_preview_connecting()}</span>
 		{/if}
-		<div class="flex-1"></div>
-		<button
-			class="btn-icon btn-icon-xs hover:preset-tonal disabled:opacity-40"
-			onclick={() => stepZoom(-1)}
-			disabled={!frameUrl}
-			use:tip={m.draft_toolbar_zoom_out()}
-			aria-label={m.draft_toolbar_zoom_out()}
-		>
-			<ZoomOut class="size-4" />
+	{/snippet}
+	<!-- zoom is the only viewer control: tinymist's viewer ships no toolbar and its users scroll, so
+	     zoom is the one thing with no keyboard-free equivalent -->
+	{#snippet zoomGroup()}
+		<button onclick={() => stepZoom(-1)} disabled={!frameUrl} use:tip={m.draft_toolbar_zoom_out()} aria-label={m.draft_toolbar_zoom_out()}>
+			<ZoomOut size={16} />
 		</button>
-		<span class="min-w-11 text-center tabular-nums">{zoom !== null ? `${zoom}%` : '—'}</span>
-		<button
-			class="btn-icon btn-icon-xs hover:preset-tonal disabled:opacity-40"
-			onclick={() => stepZoom(1)}
-			disabled={!frameUrl}
-			use:tip={m.draft_toolbar_zoom_in()}
-			aria-label={m.draft_toolbar_zoom_in()}
-		>
-			<ZoomIn class="size-4" />
+		<span class="preview-toolbar-readout">{zoom !== null ? `${zoom}%` : '—'}</span>
+		<button onclick={() => stepZoom(1)} disabled={!frameUrl} use:tip={m.draft_toolbar_zoom_in()} aria-label={m.draft_toolbar_zoom_in()}>
+			<ZoomIn size={16} />
 		</button>
-		<span class="bg-surface-300-700 mx-1 h-4 w-px shrink-0"></span>
-		<!-- follow-always lives here; its one-shot sibling rides the pane splitter (PreviewPane) -->
+	{/snippet}
+	<!-- follow-always lives here; its one-shot sibling rides the pane splitter (PreviewPane) -->
+	{#snippet follow()}
 		<button
-			class="btn-icon btn-icon-xs hover:preset-tonal disabled:opacity-40"
-			class:preset-tonal={settings.current.typstPreviewFollow === true}
-			class:text-primary-ink={settings.current.typstPreviewFollow === true}
+			aria-pressed={settings.current.typstPreviewFollow === true}
 			onclick={() => updateSettings({ typstPreviewFollow: settings.current.typstPreviewFollow !== true })}
 			disabled={!frameUrl}
 			use:tip={settings.current.typstPreviewFollow === true ? m.typst_preview_follow_on() : m.typst_preview_follow_off()}
 			aria-label={m.typst_preview_follow_aria()}
-			aria-pressed={settings.current.typstPreviewFollow === true}
 		>
-			<Crosshair class="size-4" />
+			<Crosshair size={16} />
 		</button>
-		<span class="bg-surface-300-700 mx-1 h-4 w-px shrink-0"></span>
-		<!-- the preview never writes a file; this is tinymist.exportPdf, the same command the VS Code
-		     extension's Export PDF runs. Disabled until the preview is live: same server, same
-		     document, so "previewable" and "exportable" are the same condition. -->
+	{/snippet}
+	<!-- the preview never writes a file; this is tinymist.exportPdf, the same command the VS Code
+	     extension's Export PDF runs. Disabled until the preview is live: same server, same
+	     document, so "previewable" and "exportable" are the same condition. -->
+	{#snippet exportPdf()}
 		<button
-			class="btn-icon btn-icon-xs hover:preset-tonal disabled:opacity-40"
 			onclick={saveAsPdf}
 			disabled={!frameUrl || savingPdf}
 			use:tip={m.typst_preview_save_pdf()}
 			aria-label={m.typst_preview_save_pdf()}
 		>
-			{#if savingPdf}<Loader2 class="size-3.5 animate-spin" />{:else}<FileDown class="size-3.5" />{/if}
+			{#if savingPdf}<Loader2 size={16} class="animate-spin" />{:else}<FileDown size={16} />{/if}
 		</button>
-		<!-- no close button: docked, the divider's lozenge closes the pane; popped out, the OS
-		     window's own close does. The green Live button in the topbar is the third way off. -->
-		{#if onPopout}
-			<span class="bg-surface-300-700 mx-1 h-4 w-px shrink-0"></span>
-			<button
-				class="btn-icon btn-icon-xs hover:preset-tonal shrink-0"
-				onclick={onPopout}
-				use:tip={m.wsview_popout_preview()}
-				aria-label={m.wsview_popout_preview()}
-			>
-				<PictureInPicture2 class="size-4" />
-			</button>
-		{/if}
-	</div>
+	{/snippet}
+	<!-- no close button: docked, the divider's lozenge closes the pane; popped out, the OS
+	     window's own close does. The green Live button in the topbar is the third way off. -->
+	{#snippet popout()}
+		<button onclick={() => onPopout?.()} use:tip={m.wsview_popout_preview()} aria-label={m.wsview_popout_preview()}>
+			<PictureInPicture2 size={16} />
+		</button>
+	{/snippet}
+	<PreviewToolbar
+		leading={status}
+		trailing={onPopout ? popout : undefined}
+		{asTabStrip}
+		groups={[
+			{ id: 'zoom', render: zoomGroup },
+			{ id: 'follow', render: follow },
+			{ id: 'export', render: exportPdf }
+		]}
+	/>
 
 	<div bind:this={frameBox} class="relative min-h-0 flex-1 overflow-hidden">
 		{#if frameUrl}

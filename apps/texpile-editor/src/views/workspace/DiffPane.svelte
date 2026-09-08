@@ -40,6 +40,10 @@
 		onToggleLayout,
 		onRefresh
 	}: Props = $props();
+
+	// null compareRef means the last saved version, and it still has to be named: the heading no
+	// longer says which version this is measured against
+	const versionLabel = $derived(compareRef?.subject ?? m.vcs_last_version());
 </script>
 
 <div class="flex h-full flex-col">
@@ -47,10 +51,12 @@
 	     level with the PDF toolbar across the split instead of a few pixels short of it -->
 	<div class="bg-surface-100-900 text-muted border-surface-200-800 flex min-h-10 shrink-0 items-center gap-2 border-b px-3 text-xs">
 		<GitCompare class="size-3.5 shrink-0" />
-		<span class="font-medium">{m.wsview_diff_heading()}</span>
+		<span class="font-medium">{m.wsview_diff_since()}</span>
 		<!-- naming the version matters more than the word "diff" once this can point at any of them -->
 		{#if compareRef}
-			<span class="text-muted min-w-0 truncate" use:tip={compareRef.hash}>· {compareRef.subject}</span>
+			<span class="text-muted min-w-0 truncate" use:tip={compareRef.hash}>· {versionLabel}</span>
+		{:else}
+			<span class="text-muted min-w-0 truncate">· {versionLabel}</span>
 		{/if}
 		{#if fileDeleted}<span class="text-muted">· {m.wsview_diff_file_deleted()}</span>
 			<!-- a git read of a local file is usually well under the threshold, and announcing it only

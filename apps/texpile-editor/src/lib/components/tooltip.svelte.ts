@@ -5,7 +5,8 @@
 // hundreds of hinted buttons on screen at once, and only one of them can ever be hovered.
 import { box } from '$lib/runes/box.svelte';
 
-export type ShownTip = { text: string; rect: DOMRect };
+/** `win` is the trigger's window: a TooltipHost draws only the tips raised in its own */
+export type ShownTip = { text: string; rect: DOMRect; win: Window };
 
 export const shownTip = box<ShownTip | null>(null);
 
@@ -27,10 +28,14 @@ export function hideTip(): void {
 	owner = null;
 }
 
+function tipFor(node: HTMLElement, text: string): ShownTip {
+	return { text, rect: node.getBoundingClientRect(), win: node.ownerDocument.defaultView ?? window };
+}
+
 function show(node: HTMLElement, text: string): void {
 	armed = null;
 	owner = node;
-	shownTip.current = { text, rect: node.getBoundingClientRect() };
+	shownTip.current = tipFor(node, text);
 }
 
 export function tip(node: HTMLElement, text: string | null | undefined) {
@@ -84,7 +89,7 @@ export function tip(node: HTMLElement, text: string | null | undefined) {
 			current = next ?? '';
 			mark(current);
 			if (owner !== node) return;
-			if (current) shownTip.current = { text: current, rect: node.getBoundingClientRect() };
+			if (current) shownTip.current = tipFor(node, current);
 			else hideTip();
 		},
 		destroy() {

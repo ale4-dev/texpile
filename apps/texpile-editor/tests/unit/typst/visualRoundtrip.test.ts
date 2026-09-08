@@ -52,7 +52,7 @@ export const CORPUS: Record<string, string> = {
 	hr: 'above\n\n#line(length: 100%)\n\nbelow\n\n#line(length: 50%)\n',
 	// the #set line is not decoration: typst refuses to reference an equation that is not numbered,
 	// so without it this fixture is source no compiler would accept
-	eqLabels: '#set math.equation(numbering: "(1)")\n\n$ E = m c^2 $ <eq:mass>\n\nSee @eq:mass.\n\n$ mat(1, 0; 0, 1) $ <eq:id>\n',
+	eqLabels: '#set math.equation(numbering: "(1)")\n\n$ E = m c^2 $ <eq:mass>\n\nSee @eq:mass.\n\n$ #calc.pow(2, 3) $ <eq:id>\n',
 	figures:
 		'#figure(image("plots/a.png"), caption: [A *bold* caption]) <fig:a>\n\n#figure(image("b.png", width: 70%))\n\n#image("c.svg")\n\n#figure(rect(), caption: [not an image])\n',
 	realWorld:
@@ -284,10 +284,10 @@ describe('converted document shape', () => {
 		para.forEach((n) => {
 			if (n.type.name === 'inline_math') maths.push(`${n.attrs.typst}=>${n.textContent}`);
 		});
-		expect(maths).toEqual(['x^2=>x^{2}', 'sum_(k=1)^n k=>\\sum_{k=1}^{n} k']);
+		expect(maths).toEqual(['x^2=>x^2', 'sum_(k=1)^n k=>\\sum_{k = 1}^n k']);
 		const block = doc.child(1);
 		expect(block.type.name).toBe('block_math');
-		expect(block.textContent).toBe('\\int_{0}^{1} f(x) \\mathrm{d} x');
+		expect(block.textContent).toBe('\\int_0^1 f(x) \\mathrm{d} x');
 		expect(block.attrs.typst).toBe('integral_0^1 f(x) dif x');
 	});
 
@@ -299,7 +299,9 @@ describe('converted document shape', () => {
 	});
 
 	it('untranslatable equations stay raw islands', () => {
-		const doc = docOf('has $mat(1, 0; 0, 1)$ and $sqrt(x)$ and $arrow.r$ inline\n\n$ f = cases(1, 0) $\n');
+		// what cannot be proved, in rising order of durability: a conversion that silently drops
+		// content (norm loses its bars), one MathLive could not render, and typst CODE in math
+		const doc = docOf('has $norm(v)$ and $abs(x)$ and $arrow.r$ inline\n\n$ #calc.pow(2, 3) $\n');
 		const para = doc.child(0);
 		let chips = 0;
 		para.forEach((n) => {
@@ -391,9 +393,10 @@ describe('converted document shape', () => {
 		doc.forEach((n) => blocks.push(n));
 		const math = blocks.find((n) => n.type.name === 'block_math')!;
 		expect(math.attrs.label).toBe('eq:mass');
-		// the raw island absorbs the label bytes so nothing is lost
-		const island = blocks.find((n) => n.type.name === 'raw_latex' && n.textContent.startsWith('$ mat'))!;
-		expect(island.textContent).toBe('$ mat(1, 0; 0, 1) $ <eq:id>');
+		// the raw island absorbs the label bytes so nothing is lost. Typst CODE in math is the
+		// durable example of untranslatable: no math converter should ever render #calc.pow
+		const island = blocks.find((n) => n.type.name === 'raw_latex' && n.textContent.startsWith('$ #calc'))!;
+		expect(island.textContent).toBe('$ #calc.pow(2, 3) $ <eq:id>');
 		// serializer re-emits the label after the closing dollar (stored typst, latex untouched)
 		const out = serializeToTypst(typSchema.nodes.doc.create(null, [math.type.create({ ...math.attrs, orig: null }, math.content)]));
 		expect(out).toBe('$ E = m c^2 $ <eq:mass>');

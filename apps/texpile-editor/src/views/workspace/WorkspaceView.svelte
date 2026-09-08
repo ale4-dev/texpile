@@ -246,6 +246,7 @@
 		guest: () => guest,
 		visualCollab: () => visualCollab,
 		setDockView: (v) => (dockView = v),
+		getDockView: () => dockView,
 		setShareModalOpen: (open) => (shareModalOpen = open),
 		setTutorialModalOpen: (open) => (tutorialModalOpen = open),
 		openGlobalSearch: () => void openSearchPanel(searchDeps),
@@ -287,7 +288,10 @@
 	></svelte:head
 >
 
-<div class="flex h-screen flex-col overflow-hidden">
+<!-- clip, not hidden: hidden is still a scroll container, and the editors' scrollIntoView walks
+     every ancestor with a scroll range. A few px of overflow anywhere in the shell let it scroll the
+     whole app up by that much, once, with nothing to scroll it back -->
+<div class="flex h-screen flex-col overflow-clip">
 	<WorkspaceChrome
 		bind:layout
 		{modes}

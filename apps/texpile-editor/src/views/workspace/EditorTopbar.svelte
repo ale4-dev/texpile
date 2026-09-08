@@ -9,6 +9,7 @@
 	import { isDirty } from '$lib/workspace/workspaceStore';
 	import { compileLog } from '$lib/stores/compileLogStore';
 	import WordCount from './WordCount.svelte';
+	import { hideIfCramped } from '$lib/components/hideIfCramped';
 	import CompileButton, { COMPILE_TONE } from '$lib/preview/CompileButton.svelte';
 	import type { ComponentProps } from 'svelte';
 	import type { FileKind } from '$lib/workspace/documentBuffer.svelte';
@@ -174,13 +175,14 @@
 	<!-- the sidebar and preview toggles used to bracket this row. Both moved onto the divider of the
 	     pane they open (WorkspaceChrome / PreviewPane), where the control sits on the boundary it
 	     moves - so this row is only about the document -->
-	<div class="flex min-w-0 items-center gap-2">
+	<div class="flex min-w-0 flex-1 items-center gap-2 overflow-clip">
 		{#if !loadedPath}
 			<FileText class="text-faint size-4 shrink-0" />
 			<span class="truncate text-sm font-medium">{m.wsview_no_file()}</span>
 		{/if}
 		{#if loadedPath && (kind === 'tex' || kind === 'md' || kind === 'typ') && (viewMode === 'visual' || viewMode === 'source')}
-			<span class="shrink-0"><WordCount /></span>
+			<!-- hidden, not truncated, once it no longer fits beside the buttons -->
+			<span class="shrink-0" use:hideIfCramped><WordCount /></span>
 		{/if}
 	</div>
 	<div class="flex items-center gap-2">

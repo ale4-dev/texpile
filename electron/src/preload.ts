@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 /** unwraps the { ok, value | error } results from main.ts handleFs back into throw semantics. */
 async function invokeFs(channel: string, ...args: unknown[]): Promise<unknown> {
@@ -168,6 +168,15 @@ contextBridge.exposeInMainWorld('texpileNative', {
 	fsWrite: (path: string, content: string) => invokeFs('fs:write', path, content),
 	/** write raw bytes, creating parent dirs -> { ok }. */
 	fsWriteBinary: (path: string, data: ArrayBuffer) => invokeFs('fs:writeBinary', path, data),
+	/** where a File the user picked actually lives. Electron 32 dropped File.path, and without a
+	 *  path an image already inside the folder cannot be told apart from one dragged in. */
+	filePathOf: (file: File) => {
+		try {
+			return webUtils.getPathForFile(file);
+		} catch {
+			return '';
+		}
+	},
 	/** nested file/folder tree -> { root, children }. */
 	fsTree: (root: string) => invokeFs('fs:tree', root),
 	/** tree + flat file scan (CSV exts, default 'tex') in ONE walk -> { root, children, files }. */
@@ -348,6 +357,8 @@ contextBridge.exposeInMainWorld('texpileTerminal', {
 	write: (id: string, data: string) => ipcRenderer.send('terminal:input', { id, data }),
 	resize: (id: string, cols: number, rows: number) => ipcRenderer.send('terminal:resize', { id, cols, rows }),
 	kill: (id: string) => ipcRenderer.send('terminal:kill', { id }),
+	/** end the shell's foreground job and its children; resolves true when there was one. */
+	interrupt: (id: string) => ipcRenderer.invoke('terminal:interrupt', { id }) as Promise<boolean>,
 	/** subscribe to output; cb gets { id, data }. Returns an unsubscribe fn. */
 	onData: (cb: (msg: { id: string; data: string }) => void) => {
 		function h(_e: unknown, msg: { id: string; data: string }) {

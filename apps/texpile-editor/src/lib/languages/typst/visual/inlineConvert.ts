@@ -313,9 +313,10 @@ export function convertInline(nodes: SyntaxNode[], src: string, marks: PmMark[])
 			case 'Equation': {
 				// fully-translatable equations become MathLive-editable math nodes carrying their
 				// original typst; anything the translator can't prove stays a raw chip
-				const latex = typstMathToLatex(k, src);
+				const inner = equationInner(k, src);
+				const latex = typstMathToLatex(inner);
 				if (latex != null) {
-					out.push(withMarks(buildNode('inline_math', { typst: equationInner(k, src), latexOrig: latex }, textNodes(latex)), marks));
+					out.push(withMarks(buildNode('inline_math', { typst: inner, latexOrig: latex }, textNodes(latex)), marks));
 				} else {
 					out.push(...chip(slice, marks));
 				}

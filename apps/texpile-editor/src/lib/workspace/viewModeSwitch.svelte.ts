@@ -17,11 +17,14 @@ import { editorViewStore, viewMode as viewModeStore } from '$lib/stores/editorSt
 import {
 	captureVisualAnchor as captureVisualAnchorAt,
 	captureSourceAnchor,
-	resolveVisualAnchor
+	resolveVisualAnchor,
+	placeSourceCaret,
+	type SourceAnchor
 } from '$lib/editor/visual/modeSwitchAnchors';
 import { bodyOffsetOf, type ParsedLatexFile } from '$lib/workspace/latexRoundtrip';
 import { stripFor } from '$lib/editor/visual/stripFor';
 import { createSourceHistory } from '$lib/workspace/sourceHistory';
+import { caretAfterChange } from '$lib/workspace/changeCaret';
 
 /** what callers may ASK for. 'diff' is a command - it opens a comparison tab - not a state. */
 export type ViewMode = 'visual' | 'source' | 'diff';
@@ -35,8 +38,8 @@ export type ViewModeDeps = {
 	getSource(): string;
 	setSource(text: string): void;
 	getDocMeta(): DocMeta;
-	/** the text the current visual doc was parsed from; null while a parse is in flight */
-	getLastParsedSource(): string | null;
+	/** the text the doc handed to the editor serializes to; behind getSource() while a parse is in flight */
+	getMountedSource(): string | null;
 	getEncodingIssue(): string | null;
 	rebuildVisual(): void;
 	/** open a comparison of the open file against the last saved version. */
@@ -51,7 +54,7 @@ export class ViewModeSwitch {
 	/** consumed by SourceEditor at mount */
 	sourceScrollAnchor = $state<{ scroll: number | null; cursor: number | null } | null>(null);
 	/** $state so the consuming effect re-fires when a new anchor is captured */
-	pendingVisualAnchor = $state<{ scroll: number; cursor: number | null } | null>(null);
+	pendingVisualAnchor = $state<SourceAnchor | null>(null);
 
 	/** cross-mode undo/redo; native undo/redo runs first and the editors only call step() when
 	 * their own history is exhausted */
@@ -78,7 +81,7 @@ export class ViewModeSwitch {
 		const v = editorViewStore.current;
 		const anchor = this.pendingVisualAnchor;
 		if (!v || anchor == null || this.mode !== 'visual') return;
-		if (this.deps.getSource() !== this.deps.getLastParsedSource()) return; // parse in flight
+		if (this.deps.getSource() !== this.deps.getMountedSource()) return; // parse in flight
 		this.pendingVisualAnchor = null;
 		resolveVisualAnchor(v, anchor, this.bodyOffset(), stripFor(this.deps.getKind()));
 	}
@@ -122,13 +125,22 @@ export class ViewModeSwitch {
 		const path = d.getLoadedPath();
 		const kind = d.getKind();
 		if ((kind !== 'tex' && kind !== 'md' && kind !== 'typ') || !path) return false;
-		const target = this.history.step(dir, d.getSource());
+		const before = d.getSource();
+		const target = this.history.step(dir, before);
 		if (target == null) return false;
 		d.setSource(target);
 		isDirty.current = true;
 		d.scheduleSave(path, target);
+		// the native histories move the selection themselves; this one swaps the whole buffer, so
+		// without this the caret stays wherever it was and the change happens off screen
+		const caret = caretAfterChange(before, target);
 		// source mode: the editor's value-sync effect replaces the doc. visual mode: re-parse.
-		if (this.mode === 'visual') d.rebuildVisual();
+		if (this.mode === 'visual') {
+			if (caret != null) this.pendingVisualAnchor = { scroll: caret, cursor: caret, caretOnly: true };
+			d.rebuildVisual();
+		} else if (caret != null) {
+			placeSourceCaret(caret);
+		}
 		return true;
 	}
 }

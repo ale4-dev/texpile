@@ -6,8 +6,12 @@ import { dirname, resolve, relative, join, isAbsolute } from 'node:path';
 // once git is confirmed missing (ENOENT), stop retrying
 let gitBinaryMissing = false;
 
-// repo membership doesn't change while a folder is open, except git init, which clears this
-const repoRootCache = new Map<string, string | null>();
+// A repo root stays a repo root, so a hit is cached for good. A MISS is not: `git init` in a
+// terminal made a folder a repo and the cached "no" kept the panel saying it was not under source
+// control for the rest of the session. Short enough to self-heal, long enough that the status
+// polling does not spawn a checkIsRepo every time.
+const MISS_TTL_MS = 5000;
+const repoRootCache = new Map<string, { root: string | null; at: number }>();
 
 export type GitStatusEntry = {
 	/** absolute path, built to match the file-tree's own path strings (fsService join()). */
@@ -79,18 +83,17 @@ async function resolveRepoRoot(dir: string): Promise<{ root: string | null; reas
 	const abs = resolve(dir);
 	const key = process.platform === 'win32' || process.platform === 'darwin' ? abs.toLowerCase() : abs;
 	const cached = repoRootCache.get(key);
-	if (cached !== undefined) {
-		return cached ? { root: cached } : { root: null, reason: 'not-a-repo' };
-	}
+	if (cached?.root) return { root: cached.root };
+	if (cached && Date.now() - cached.at < MISS_TTL_MS) return { root: null, reason: 'not-a-repo' };
 	try {
 		const g = git(dir);
 		// checkIsRepo returns false for a non-repo; it throws ENOENT if git is absent
 		if (!(await g.checkIsRepo())) {
-			repoRootCache.set(key, null);
+			repoRootCache.set(key, { root: null, at: Date.now() });
 			return { root: null, reason: 'not-a-repo' };
 		}
 		const root = (await g.revparse(['--show-toplevel'])).trim();
-		repoRootCache.set(key, root);
+		repoRootCache.set(key, { root, at: Date.now() });
 		return { root };
 	} catch (e) {
 		if (isMissingGit(e)) {

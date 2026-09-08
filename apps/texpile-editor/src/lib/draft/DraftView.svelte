@@ -10,7 +10,8 @@
 	import { tip } from '$lib/components/tooltip.svelte';
 	import { untrack } from 'svelte';
 	import { fade } from 'svelte/transition';
-	import { ZoomIn, ZoomOut, MoveHorizontal, ChevronUp, ChevronDown, Crosshair, Download } from '@lucide/svelte';
+	import { ZoomIn, ZoomOut, MoveHorizontal, ChevronUp, ChevronDown, Crosshair, Download, PictureInPicture2 } from '@lucide/svelte';
+	import PreviewToolbar from '$lib/preview/PreviewToolbar.svelte';
 	import { DraftSession } from './draftSession.svelte';
 	import type { PatchReq } from './patch/patch.types';
 	import { m } from '$lib/paraglide/messages';
@@ -29,8 +30,22 @@
 		onSettled?: () => void;
 		/** a compile landed: its log is at this path, for the Problems panel to parse. */
 		onDiagnostics?: (logPath: string) => void;
+		/** docked in the pane, where this row stands in for a tab strip; false in the popped-out window */
+		asTabStrip?: boolean;
+		/** move the preview into its own window; null in the popped-out body, which needs no button */
+		onPopout?: (() => void) | null;
 	};
-	let { root, mainFile, trigger, quietTrigger = 0, onInverseSync, onSettled, onDiagnostics }: Props = $props();
+	let {
+		root,
+		mainFile,
+		trigger,
+		quietTrigger = 0,
+		onInverseSync,
+		onSettled,
+		onDiagnostics,
+		asTabStrip = true,
+		onPopout = null
+	}: Props = $props();
 
 	const ctrl = new DraftSession({
 		root: () => root,
@@ -99,94 +114,113 @@
 </script>
 
 <div class="bg-surface-200-800 flex h-full w-full flex-col">
-	<!-- one toolbar row: status on the left, zoom + page-nav on the right ("Draft preview"
-	     already labels the pane header above) -->
-	<div class="border-surface-300-700 text-muted flex min-h-10 shrink-0 items-center gap-1 border-b px-2 text-xs">
-		{#if compiler.error}<span class="text-error-ink shrink-0">{m.draft_preview_error_label()}</span>{:else}<span
-				class="text-surface-700-200 truncate">{compiler.status}</span
-			>{/if}
-		<div class="flex-1"></div>
+	{#snippet status()}
+		{#if compiler.error}
+			<span class="text-error-ink shrink-0 text-sm">{m.draft_preview_error_label()}</span>
+		{:else}
+			<span class="truncate text-sm">{compiler.status}</span>
+		{/if}
+	{/snippet}
+	{#snippet pages()}
+		<input
+			type="number"
+			class="page-input"
+			value={vp.curPage}
+			min="1"
+			max={ctrl.pages.length}
+			onchange={(e) => {
+				const n = parseInt(e.currentTarget.value, 10);
+				if (n >= 1 && n <= ctrl.pages.length) vp.goToPage(n);
+			}}
+			aria-label={m.draft_toolbar_page_aria()}
+			style:--digits={String(ctrl.pages.length).length}
+		/>
+		<span class="page-info">/ {ctrl.pages.length}</span>
 		<button
-			class="btn-icon btn-icon-xs hover:preset-tonal disabled:opacity-40"
-			onclick={() => ctrl.savePdf()}
-			disabled={!ctrl.pages.length || ctrl.savingPdf}
-			use:tip={m.draft_toolbar_save_pdf()}
-			aria-label={m.draft_toolbar_save_pdf()}
+			onclick={() => vp.goToPage(vp.curPage - 1)}
+			disabled={vp.curPage <= 1}
+			use:tip={m.draft_toolbar_prev_page()}
+			aria-label={m.draft_toolbar_prev_page()}
 		>
-			<Download class="size-4" />
+			<ChevronUp size={16} />
 		</button>
-		<span class="bg-surface-300-700 mx-1 h-4 w-px shrink-0"></span>
 		<button
-			class="btn-icon btn-icon-xs hover:preset-tonal disabled:opacity-40"
+			onclick={() => vp.goToPage(vp.curPage + 1)}
+			disabled={vp.curPage >= ctrl.pages.length}
+			use:tip={m.draft_toolbar_next_page()}
+			aria-label={m.draft_toolbar_next_page()}
+		>
+			<ChevronDown size={16} />
+		</button>
+	{/snippet}
+	{#snippet zoom()}
+		<button
 			onclick={() => vp.zoomOut()}
 			disabled={!ctrl.pages.length}
 			use:tip={m.draft_toolbar_zoom_out()}
 			aria-label={m.draft_toolbar_zoom_out()}
 		>
-			<ZoomOut class="size-4" />
+			<ZoomOut size={16} />
 		</button>
-		<button
-			class="btn btn-xs hover:preset-tonal min-w-11 tabular-nums"
-			onclick={() => vp.actualSize()}
-			disabled={!ctrl.pages.length}
-			use:tip={m.draft_toolbar_actual_size()}
-		>
+		<button class="wide" onclick={() => vp.actualSize()} disabled={!ctrl.pages.length} use:tip={m.draft_toolbar_actual_size()}>
 			{Math.round(vp.zoom * 100)}%
 		</button>
 		<button
-			class="btn-icon btn-icon-xs hover:preset-tonal disabled:opacity-40"
 			onclick={() => vp.zoomIn()}
 			disabled={!ctrl.pages.length}
 			use:tip={m.draft_toolbar_zoom_in()}
 			aria-label={m.draft_toolbar_zoom_in()}
 		>
-			<ZoomIn class="size-4" />
+			<ZoomIn size={16} />
 		</button>
 		<button
-			class="btn-icon btn-icon-xs hover:preset-tonal disabled:opacity-40"
-			class:preset-tonal={vp.fitMode}
+			aria-pressed={vp.fitMode}
 			onclick={() => vp.fitWidthBtn()}
 			disabled={!ctrl.pages.length}
 			use:tip={m.draft_toolbar_fit_width()}
 			aria-label={m.draft_toolbar_fit_width()}
 		>
-			<MoveHorizontal class="size-4" />
+			<MoveHorizontal size={16} />
 		</button>
+	{/snippet}
+	{#snippet follow()}
 		<button
-			class="btn-icon btn-icon-xs hover:preset-tonal disabled:opacity-40"
-			class:preset-tonal={vp.followEdits}
-			class:text-primary-ink={vp.followEdits}
+			aria-pressed={vp.followEdits}
 			onclick={() => (vp.followEdits = !vp.followEdits)}
 			disabled={!ctrl.pages.length}
 			use:tip={vp.followEdits ? m.draft_toolbar_follow_edits_on() : m.draft_toolbar_follow_edits_off()}
 			aria-label={m.draft_toolbar_follow_edits_aria()}
-			aria-pressed={vp.followEdits}
 		>
-			<Crosshair class="size-4" />
+			<Crosshair size={16} />
 		</button>
-		{#if ctrl.pages.length}
-			<span class="bg-surface-300-700 mx-1 h-4 w-px shrink-0"></span>
-			<button
-				class="btn-icon btn-icon-xs hover:preset-tonal disabled:opacity-40"
-				onclick={() => vp.goToPage(vp.curPage - 1)}
-				disabled={vp.curPage <= 1}
-				use:tip={m.draft_toolbar_prev_page()}
-				aria-label={m.draft_toolbar_prev_page()}
-			>
-				<ChevronUp class="size-4" />
-			</button>
-			<span class="shrink-0 tabular-nums">{vp.curPage} / {ctrl.pages.length}</span>
-			<button
-				class="btn-icon btn-icon-xs hover:preset-tonal disabled:opacity-40"
-				onclick={() => vp.goToPage(vp.curPage + 1)}
-				disabled={vp.curPage >= ctrl.pages.length}
-				use:tip={m.draft_toolbar_next_page()}
-				aria-label={m.draft_toolbar_next_page()}
-			>
-				<ChevronDown class="size-4" />
-			</button>
-		{/if}
-	</div>
+	{/snippet}
+	{#snippet save()}
+		<button
+			onclick={() => ctrl.savePdf()}
+			disabled={!ctrl.pages.length || ctrl.savingPdf}
+			use:tip={m.draft_toolbar_save_pdf()}
+			aria-label={m.draft_toolbar_save_pdf()}
+		>
+			<Download size={16} />
+		</button>
+	{/snippet}
+	{#snippet popout()}
+		<button onclick={() => onPopout?.()} use:tip={m.wsview_popout_preview()} aria-label={m.wsview_popout_preview()}>
+			<PictureInPicture2 size={16} />
+		</button>
+	{/snippet}
+	<!-- the same row as the PDF viewer's, with the engine status where the file name would be -->
+	<PreviewToolbar
+		leading={status}
+		trailing={onPopout ? popout : undefined}
+		{asTabStrip}
+		groups={[
+			...(ctrl.pages.length ? [{ id: 'pages', render: pages }] : []),
+			{ id: 'zoom', render: zoom },
+			{ id: 'follow', render: follow },
+			{ id: 'save', render: save }
+		]}
+	/>
 	{#if compiler.busyElsewhere}
 		<div
 			class="border-surface-300-700 bg-surface-50-950 m-3 flex shrink-0 items-center justify-between gap-3 rounded-container border p-3 text-sm"

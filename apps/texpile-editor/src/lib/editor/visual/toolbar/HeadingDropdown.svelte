@@ -39,11 +39,9 @@
 	positioning={{ placement: 'bottom-start', offset: { mainAxis: 2 } }}
 	autoFocus={false}
 >
-	<Popover.Trigger
-		class="flex h-7 items-center gap-1 rounded-base px-2 text-sm font-medium text-surface-800-200 transition-colors hover:bg-surface-200-800"
-	>
+	<Popover.Trigger class="flex h-7 items-center gap-1 rounded-base px-2 text-sm font-medium transition-colors hover:bg-surface-200-800">
 		<span class="min-w-[5.5rem] text-left">{triggerLabel}</span>
-		<ChevronDown class="text-muted size-4 shrink-0" />
+		<ChevronDown class="size-4 shrink-0" />
 	</Popover.Trigger>
 
 	<Portal>

@@ -35,16 +35,14 @@
 	autoFocus={false}
 >
 	<Popover.Trigger
-		class="text-surface-800-200 flex h-7 items-center gap-0.5 rounded-base px-1.5 transition-colors {anyActive
-			? 'preset-tonal-primary'
-			: 'hover:preset-tonal'}"
+		class="flex h-7 items-center gap-0.5 rounded-base px-1.5 transition-colors {anyActive ? 'preset-tonal-primary' : 'hover:preset-tonal'}"
 		aria-label={m.tbar_supsub_aria()}
 	>
 		{#snippet element(attrs)}
 			<button {...attrs} use:tip={m.tbar_supsub_title()}>
 				<!-- same box + stroke as every other toolbar icon so it doesn't read bigger/bolder -->
 				<Superscript class="h-5 w-5" />
-				<ChevronDown class="text-muted size-3 shrink-0" />
+				<ChevronDown class="size-3 shrink-0" />
 			</button>
 		{/snippet}
 	</Popover.Trigger>

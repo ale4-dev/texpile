@@ -10,6 +10,7 @@ import MathSettings from './MathSettings.svelte';
 import { configureMathVirtualKeyboard } from './virtualKeyboardConfig';
 import { installSuggestionPopoverFlashFix } from './suggestionPopoverFlashFix';
 import { syncBlockMathAttrs, isMathLatexEmpty } from './mathEnvironments';
+import { mathLatexEquivalent } from './mlEquivalent';
 import { renderEquationNumbers } from './equationNumbers';
 import { MathFieldExit, applyMathOutline } from './mathFieldExit';
 import { buildMathField, releaseMathField, type FieldListeners } from './mathFieldFactory';
@@ -277,7 +278,10 @@ export class MathLiveView implements NodeView {
 
 		const currentContent = this.node.textContent || '';
 		const newValue = field.getValue('latex-expanded');
-		if (currentContent !== newValue) {
+		// mathlive re-prints rather than preserving bytes, so a formula that was only clicked into
+		// comes back respelled. Keeping the source's spelling when the two typeset the same is what
+		// stops a stray click from rewriting the line in the .tex
+		if (!mathLatexEquivalent(currentContent, newValue)) {
 			const startPos = this.getPos();
 			const endPos = startPos + this.node.nodeSize;
 
@@ -334,7 +338,9 @@ export class MathLiveView implements NodeView {
 			// compare expanded latex, same as forwardupdate()
 			const currentText = this.mathField.getValue('latex-expanded');
 
-			if (newText != currentText) {
+			// a respelling mathlive itself produced is not a change to push back into the field: the
+			// re-render would fire another input event and start the same round trip again
+			if (!mathLatexEquivalent(newText, currentText)) {
 				this.updating = true;
 				this.mathField.setValue(newText, {
 					format: 'latex-expanded'
