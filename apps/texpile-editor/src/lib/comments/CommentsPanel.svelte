@@ -1,15 +1,13 @@
 <script lang="ts">
 	// The Comments tab in the bottom dock: every review thread in the workspace, newest activity
 	// first, with replies inline.
-	//
-	// This is the "overview" half of a review panel - the flat list you scan and jump from. The
-	// in-context half is the gutter dot and the highlight in the editor. Splitting them that way is
-	// what lets comments exist at all in a layout that already spends its width on the preview: a
-	// list wants horizontal room, which the dock has and a 230px rail beside the editor does not.
 	import { tip } from '$lib/components/tooltip.svelte';
-	import { MessageSquare, Check, Trash2, Unlink, EyeOff, FileX } from '@lucide/svelte';
+	import { MessageSquare, Check, Unlink, EyeOff, FileX } from '@lucide/svelte';
 	import CommentThreadConversation from './CommentThreadConversation.svelte';
+	import { oneLine } from './quoteLabel';
 	import type { CommentMessage, CommentThread } from '$lib/comments/log';
+	import { isSuggestion, shownWords } from '$lib/comments/suggest';
+	import { suggestionLabel } from '$lib/comments/suggestionLabel';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -20,15 +18,13 @@
 		notVisible = new Set<string>(),
 		filesPresent = null,
 		selected = null,
-		pending = null,
 		onOpen,
 		onReply,
 		onResolve,
-		onDelete,
 		onEditMessage = () => {},
 		onDeleteMessage = () => {},
-		onSubmitPending = () => {},
-		onCancelPending = () => {}
+		beside = new Set<string>(),
+		onAttach
 	}: {
 		threads: CommentThread[];
 		/** workspace-relative path of the open file, for the "this file only" filter */
@@ -46,24 +42,19 @@
 		 * has to say the file is gone rather than present a dead link. */
 		filesPresent?: Set<string> | null;
 		selected?: string | null;
-		/** a selection waiting for its first message; not a thread until one is written */
-		pending?: { quote: string } | null;
 		onOpen: (thread: CommentThread) => void;
-		onReply: (thread: CommentThread, body: string) => void;
+		onReply: (thread: CommentThread, body: string) => Promise<string | null> | void;
 		onResolve: (thread: CommentThread, resolved: boolean) => void;
-		onDelete: (thread: CommentThread) => void;
 		/** one message rather than the whole thread */
 		onEditMessage?: (message: CommentMessage, body: string) => void;
 		onDeleteMessage?: (thread: CommentThread, message: CommentMessage) => void;
-		onSubmitPending?: (body: string) => void;
-		onCancelPending?: () => void;
+		beside?: Set<string>;
+		onAttach?: (thread: CommentThread) => void;
 	} = $props();
 
 	let thisFileOnly = $state(false);
 	let showResolved = $state(false);
 	let expanded = $state<string | null>(null);
-	let newDraft = $state('');
-	let composer = $state<HTMLTextAreaElement | null>(null);
 	let list = $state<HTMLDivElement | null>(null);
 
 	/**
@@ -78,15 +69,13 @@
 		if (id === lastSelected) return;
 		lastSelected = id;
 		if (!id) return;
-		expanded = id;
+		expanded = beside.has(id) ? null : id;
 		// after the row has expanded, or it scrolls to where the row used to end
 		requestAnimationFrame(() => list?.querySelector(`[data-thread="${id}"]`)?.scrollIntoView({ block: 'nearest' }));
 	});
 
-	// the reader asked for this from the editor, so the caret should already be here; nothing else
-	// in the dock takes focus on its own
 	$effect(() => {
-		if (pending) composer?.focus();
+		if (expanded && beside.has(expanded)) expanded = null;
 	});
 
 	const shown = $derived(
@@ -101,79 +90,37 @@
 		return t.messages.at(-1)?.at;
 	}
 
-	/**
-	 * A quote is a raw slice of source, so it arrives with its newlines and indentation intact and
-	 * renders as a ragged multi-line block. Collapsed to one line it reads as a label, which is all
-	 * it is here - the document is where you go to see it in context.
-	 */
-	function oneLine(s: string, max = 90) {
-		const flat = s.replace(/\s+/g, ' ').trim();
-		return flat.length > max ? flat.slice(0, max - 1) + '…' : flat;
+	function summary(t: CommentThread): string {
+		const body = t.messages[0]?.body ?? '';
+		if (body || !isSuggestion(t)) return body;
+		return suggestionLabel(t.file, t.anchor.quote, t.restore ?? '');
 	}
 
 	function toggle(thread: CommentThread) {
+		if (beside.has(thread.id)) {
+			expanded = null;
+			onOpen(thread);
+			return;
+		}
 		expanded = expanded === thread.id ? null : thread.id;
 		onOpen(thread);
 	}
 </script>
 
-<div class="flex h-full min-h-0 flex-col text-xs">
-	<div class="border-surface-200-800 flex h-7 shrink-0 items-center gap-3 border-b px-2">
-		<span class="text-muted">{m.comments_open_count({ count: openCount })}</span>
-		<label class="text-muted ml-auto flex cursor-pointer items-center gap-1.5">
+<div class="@container flex h-full min-h-0 flex-col text-xs">
+	<div class="border-surface-200-800 flex min-h-7 shrink-0 flex-wrap items-center gap-x-3 gap-y-0.5 border-b px-2 py-0.5">
+		<span class="text-muted whitespace-nowrap">{m.comments_open_count({ count: openCount })}</span>
+		<label class="text-muted ml-auto flex cursor-pointer items-center gap-1.5 whitespace-nowrap @max-[36rem]:ml-0">
 			<input type="checkbox" class="checkbox scale-75" bind:checked={thisFileOnly} />
 			{m.comments_this_file()}
 		</label>
-		<label class="text-muted flex cursor-pointer items-center gap-1.5">
+		<label class="text-muted flex cursor-pointer items-center gap-1.5 whitespace-nowrap">
 			<input type="checkbox" class="checkbox scale-75" bind:checked={showResolved} />
 			{m.comments_show_resolved()}
 		</label>
 	</div>
-	<div bind:this={list} class="min-h-0 flex-1 overflow-y-auto">
-		{#if pending}
-			<div class="border-surface-200-800 bg-surface-scrim max-w-2xl space-y-2 border-b p-2">
-				<span class="text-muted block truncate font-mono" use:tip={pending.quote}>{oneLine(pending.quote)}</span>
-				<textarea
-					bind:this={composer}
-					class="textarea min-h-8 w-full text-xs rounded-container"
-					rows="2"
-					placeholder={m.comments_reply_placeholder()}
-					bind:value={newDraft}
-					onkeydown={(e) => {
-						if (e.key === 'Escape') {
-							newDraft = '';
-							onCancelPending();
-						} else if (e.key === 'Enter' && !e.shiftKey) {
-							e.preventDefault();
-							if (!newDraft.trim()) return;
-							onSubmitPending(newDraft.trim());
-							newDraft = '';
-						}
-					}}></textarea>
-				<div class="flex items-center gap-1">
-					<button
-						class="btn btn-xs preset-filled-primary-500"
-						disabled={!newDraft.trim()}
-						onclick={() => {
-							onSubmitPending(newDraft.trim());
-							newDraft = '';
-						}}
-					>
-						{m.comments_add()}
-					</button>
-					<button
-						class="btn btn-xs hover:preset-tonal"
-						onclick={() => {
-							newDraft = '';
-							onCancelPending();
-						}}
-					>
-						{m.comments_cancel()}
-					</button>
-				</div>
-			</div>
-		{/if}
-		{#if shown.length === 0 && !pending}
+	<div bind:this={list} class="min-h-0 flex-1 [scrollbar-gutter:stable] overflow-y-auto">
+		{#if shown.length === 0}
 			<div class="text-muted flex flex-1 items-center gap-2 p-4">
 				<MessageSquare class="size-4 shrink-0" />
 				{threads.length === 0 ? m.comments_empty() : m.comments_empty_file()}
@@ -185,6 +132,13 @@
 				{@const lost = !fileGone && orphaned.has(thread.id)}
 				{@const hidden = !fileGone && !lost && notVisible.has(thread.id)}
 				{@const unsure = !fileGone && !lost && !hidden && weak.has(thread.id)}
+				{@const action = !isSuggestion(thread)
+					? thread.resolved
+						? m.comments_reopen()
+						: m.comments_resolve()
+					: !thread.resolved && (lost || fileGone)
+						? m.comments_suggest_dismiss()
+						: null}
 				<div data-thread={thread.id} class="border-surface-wash border-b last:border-b-0 {selected === thread.id ? 'bg-surface-tint' : ''}">
 					<!-- the summary and the thread actions are SIBLINGS: a button cannot contain a button,
 					     and Resolve/Delete belong on the header rather than under the reply box, where
@@ -209,12 +163,14 @@
 							<span class="min-w-0 flex-1">
 								<!-- the quote first: it is what tells you which comment this is, faster than the
 								     body does, and it is the only part that ties the row to the document -->
-								<span class="text-muted block truncate font-mono" use:tip={thread.anchor.quote}>{oneLine(thread.anchor.quote)}</span>
+								<span class="text-muted block truncate font-mono" use:tip={thread.anchor.quote || thread.restore}
+									>{oneLine(shownWords(thread.anchor.quote || (thread.restore ?? '')))}</span
+								>
 								<!-- the body preview goes when the thread opens: the messages below start with
 								     this same text, and showing both made every thread look like it had a
 								     duplicate first reply -->
 								{#if !isOpen}
-									<span class="block truncate" use:tip={thread.messages[0]?.body}>{thread.messages[0]?.body}</span>
+									<span class="block truncate" use:tip={summary(thread)}>{summary(thread)}</span>
 								{/if}
 							</span>
 							<!-- one centred cluster: the row is items-start (the quote block can be two lines),
@@ -238,29 +194,31 @@
 								<span class="text-muted font-mono">{thread.file}</span>
 							</span>
 						</button>
-						<!-- icon-only, and only on hover or while open: Resolve and Delete are one click from
-						     destroying somebody's thread, so they should not sit lit up on every row -->
-						<div class="flex shrink-0 items-center gap-0.5 py-1.5 pr-2 {isOpen ? '' : 'opacity-0 group-hover:opacity-100'}">
-							<button
-								class="btn-icon btn-icon-xs hover:preset-tonal"
-								use:tip={thread.resolved ? m.comments_reopen() : m.comments_resolve()}
-								aria-label={thread.resolved ? m.comments_reopen() : m.comments_resolve()}
-								onclick={() => onResolve(thread, !thread.resolved)}
-							>
-								<Check class="size-3.5" />
-							</button>
-							<button
-								class="btn-icon btn-icon-xs hover:preset-tonal hover:text-error-ink"
-								use:tip={m.comments_delete()}
-								aria-label={m.comments_delete()}
-								onclick={() => onDelete(thread)}
-							>
-								<Trash2 class="size-3.5" />
-							</button>
-						</div>
+						{#if action}
+							<div class="flex shrink-0 items-center gap-0.5 py-1.5 pr-2 {isOpen ? '' : 'opacity-0 group-hover:opacity-100'}">
+								<button
+									class="btn-icon btn-icon-xs hover:preset-tonal"
+									use:tip={action}
+									aria-label={action}
+									onclick={() => onResolve(thread, !thread.resolved)}
+								>
+									<Check class="size-3.5" />
+								</button>
+							</div>
+						{/if}
 					</div>
 					{#if isOpen}
-						<CommentThreadConversation {thread} {fileGone} {lost} {hidden} {unsure} {onReply} {onEditMessage} {onDeleteMessage} />
+						<CommentThreadConversation
+							{thread}
+							{fileGone}
+							{lost}
+							{hidden}
+							{unsure}
+							{onReply}
+							{onEditMessage}
+							{onDeleteMessage}
+							{onAttach}
+						/>
 					{/if}
 				</div>
 			{/each}

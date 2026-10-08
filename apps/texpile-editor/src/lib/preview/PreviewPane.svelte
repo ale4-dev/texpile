@@ -4,6 +4,7 @@
 	// with the popped-out preview window (PreviewPopout), which is why none of it lives here.
 	// Renders two grid siblings, so it must sit in a display:contents wrapper on the editor grid.
 	import { ArrowRight, ChevronRight } from '@lucide/svelte';
+	import { slide } from 'svelte/transition';
 	import PaneHandle from '$lib/components/PaneHandle.svelte';
 	import PaneSplitter from '$lib/components/PaneSplitter.svelte';
 	import PreviewBody from './PreviewBody.svelte';
@@ -33,8 +34,6 @@
 		 * preview is being prepared - that flash is jarring and looks like a bug.
 		 */
 		typstPreviewWanted: boolean;
-		/** compile the previewed document to a PDF on disk (the preview itself never writes one) */
-		onSaveTypstPdf: () => Promise<void>;
 		/** one-shot jump of the preview to the editor caret; null hides the floating sync button */
 		onSyncToCursor?: (() => void) | null;
 		/** move the preview into its own OS window; undefined hides the chip */
@@ -50,6 +49,8 @@
 		onSettled: () => void;
 		/** the finished compile's log path, for the Problems panel */
 		onDiagnostics: (logPath: string) => void;
+		/** it opens or shuts on its own, not at a click (PaneLayout.pdfSlides), so it slides to be seen */
+		slides?: boolean;
 	};
 	let {
 		width,
@@ -63,7 +64,6 @@
 		draft,
 		typstPreviewHost,
 		typstPreviewWanted,
-		onSaveTypstPdf,
 		onSyncToCursor = null,
 		onPopout = null,
 		paneDragging,
@@ -75,7 +75,8 @@
 		onPageClick,
 		onInverseSync,
 		onSettled,
-		onDiagnostics
+		onDiagnostics,
+		slides = false
 	}: Props = $props();
 </script>
 
@@ -85,11 +86,15 @@
 	{onStartResize}
 	{onResizeByKey}
 	toggle={{ icon: ChevronRight, onclick: onClose, title: m.wsview_toggle_pdf_preview(), ariaLabel: m.wsview_toggle_pdf_preview() }}
-	class="z-20"
+	class="z-30"
 	style="grid-column: 2; grid-row: {dockShrunk ? '2 / -1' : '2'}"
 />
 <!-- no border-l: the splitter's own 1px IS the rule now, and a border beside it read as two -->
-<aside class="relative flex shrink-0 flex-col" style="width: {width}px; grid-column: 3; grid-row: {dockShrunk ? '2 / -1' : '2'}">
+<aside
+	class="relative flex shrink-0 flex-col"
+	style="width: {width}px; grid-column: 3; grid-row: {dockShrunk ? '2 / -1' : '2'}"
+	transition:slide|global={{ axis: 'x', duration: slides ? 200 : 0 }}
+>
 	{#if onSyncToCursor && !mainUnset}
 		<!-- forward sync rides the same divider, high and clear of the collapse lozenge. -12.5px
 		     centres a 24px chip on the rule, matching the lozenge below it. This one is wider than
@@ -121,7 +126,6 @@
 		{draft}
 		{typstPreviewHost}
 		{typstPreviewWanted}
-		{onSaveTypstPdf}
 		{paneDragging}
 		{onPopout}
 		onPdfRef={(r) => (pdfPaneRef = r)}

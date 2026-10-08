@@ -43,6 +43,15 @@ describe('markdown lists', () => {
 		expect(markdownToProseMirror('- \\[x\\] literal\n').doc.child(0).attrs.kind).toBe('bullet');
 	});
 
+	it('keep a task item with nothing in it a task item', () => {
+		const empty = mdSchema.nodes.list.create({ kind: 'task', checked: false }, mdSchema.nodes.paragraph.create());
+		const out = serializeToMarkdown(docOf(empty, item({ kind: 'task', checked: true }, 'done')));
+		const items: string[] = [];
+		markdownToProseMirror(out).doc.forEach((n) => items.push(`${n.attrs.kind} ${n.attrs.checked} ${JSON.stringify(n.textContent)}`));
+		expect(items).toEqual(['task false ""', 'task true "done"']);
+		expect(gen('- [ ]\n- [x]\n')).toBe('- [ ]\n- [x]');
+	});
+
 	// M20
 	it('do not grow the gap after a list on each edit of the next block', () => {
 		let src = '- a\n- b\n\npara\n';
@@ -50,6 +59,14 @@ describe('markdown lists', () => {
 			src = editBlock(src, 2, `EDIT${i}`);
 			expect(src).toBe(`- a\n- b\n\nEDIT${i}\n`);
 		}
+	});
+
+	// indenting a list's first item wraps it in an item of its own kind with nothing to tick
+	it('write no task box on an item that opens with a nested list', () => {
+		const nested = mdSchema.nodes.list.create({ kind: 'task', checked: false }, item({ kind: 'task', checked: false }, 'a'));
+		const out = serializeToMarkdown(docOf(nested));
+		expect(out).toBe('- - [ ] a');
+		expect(gen(out)).toBe(out);
 	});
 
 	it('coalesce editor-made items with the list around them', () => {

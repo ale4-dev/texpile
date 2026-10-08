@@ -3,12 +3,14 @@
 	import { navigate, route } from '$lib/router.svelte';
 	import { nativeBridge, openNewWindow } from '$lib/workspace/fileSystem';
 	import { openFileInWindow, openFolderInWindow } from '$lib/workspace/openWorkspace';
+	import { warnMissingFolder } from '$lib/workspace/missingFolder';
 	import { settings, loadSettings } from '$lib/settings';
 	import { checkForUpdate, updateModalOpen } from '$lib/updates';
 	import UpdateAvailableModal from '$lib/modals/window/UpdateAvailableModal.svelte';
 	import WhatsNewModal from '$lib/modals/window/WhatsNewModal.svelte';
 	import { entriesToShow, whatsNewOpen } from '$lib/whatsNew';
 	import { codeFromJoinLink, nameFromJoinLink, pendingJoinCode, pendingJoinName } from '$lib/collab/joinLink.svelte';
+	import { watchForNewDeploy } from '$lib/collab/webDeployNotice';
 
 	// every released CHANGELOG.md entry, injected at build (vite.config)
 	const whatsNew = __WHATS_NEW__;
@@ -71,7 +73,7 @@
 	// not during the launch itself: this is a DNS lookup, a TLS handshake and an HTTP round trip,
 	// and nothing about it is worth putting in front of the document opening
 	onMount(() => {
-		if (__WEB__) return; // a web page updates by reloading; there is no installer to offer
+		if (__WEB__) return watchForNewDeploy(); // a web page updates by reloading; there is no installer to offer
 		const t = setTimeout(async () => {
 			const s = await loadSettings();
 			// once per app SESSION, not per window: without this every new window would re-check
@@ -119,7 +121,8 @@
 		if (!n?.onOpenFolder) return;
 		return n.onOpenFolder((root) => {
 			loadWorkspace(); // stream the workspace chunk while the folder scans
-			void openFolderInWindow(root);
+			// the start screen's native Open Recent lands here: a deleted entry must not do nothing
+			void openFolderInWindow(root).then((r) => (r === 'missing' ? warnMissingFolder(root) : undefined));
 		});
 	});
 
@@ -133,11 +136,13 @@
 	}
 
 	import { Toast } from '@skeletonlabs/skeleton-svelte';
-	import { CircleAlert, CircleCheck, Info, TriangleAlert } from '@lucide/svelte';
+	import { CircleAlert, CircleCheck, Info, LoaderCircle, TriangleAlert } from '@lucide/svelte';
 	import { toaster } from '$lib/modals/toaster-svelte';
 	import ConfirmHost from '$lib/modals/ConfirmHost.svelte';
 	import TooltipHost from '$lib/components/TooltipHost.svelte';
 	import ContextMenuHost from '$lib/menus/ContextMenuHost.svelte';
+	import RefineCard from '$lib/ai/RefineCard.svelte';
+	import MissingProgramDialog from '$lib/modals/window/missingProgram/MissingProgramDialog.svelte';
 </script>
 
 <svelte:window onkeydown={onKeydown} />
@@ -152,6 +157,7 @@
 					{#if toast.type === 'success'}<CircleCheck class="text-success-ink mt-0.5 size-4 shrink-0" />
 					{:else if toast.type === 'warning'}<TriangleAlert class="text-warning-ink mt-0.5 size-4 shrink-0" />
 					{:else if toast.type === 'error'}<CircleAlert class="text-error-ink mt-0.5 size-4 shrink-0" />
+					{:else if toast.type === 'loading'}<LoaderCircle class="text-muted mt-0.5 size-4 shrink-0 animate-spin" />
 					{:else}<Info class="text-primary-ink mt-0.5 size-4 shrink-0" />{/if}
 					<div class="min-w-0">
 						<Toast.Title>{toast.title}</Toast.Title>
@@ -162,13 +168,16 @@
 			{#if toast.action}
 				<Toast.ActionTrigger>{toast.action.label}</Toast.ActionTrigger>
 			{/if}
-			<Toast.CloseTrigger />
+			<!-- a toast for work under way ends with it, or with its own action; closing it would only hide the work -->
+			{#if toast.type !== 'loading'}<Toast.CloseTrigger />{/if}
 		</Toast>
 	{/snippet}
 </Toast.Group>
 
 <ConfirmHost />
 <TooltipHost />
+<RefineCard />
+<MissingProgramDialog />
 <ContextMenuHost />
 
 {#if __WEB__}

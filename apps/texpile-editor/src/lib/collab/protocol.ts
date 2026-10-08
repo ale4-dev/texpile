@@ -4,7 +4,7 @@
 
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
-import type { CommentEvent } from '$lib/comments/log';
+import { isCommentEvent, type CommentEvent } from '$lib/comments/log';
 
 export const BROADCAST = 0;
 
@@ -23,6 +23,10 @@ export type HelloPayload = {
 	name: string;
 	color: string;
 	role: 'host' | 'guest';
+	version?: string;
+	oldest?: string;
+	/** a host's own version, when version and oldest are the range of everyone in its session */
+	hostVersion?: string;
 };
 
 export type BlobChunkPayload = {
@@ -74,16 +78,7 @@ export type ControlPayload =
 	// host -> guests, unsolicited: tinymist's live diagnostics. Measured to be published for files
 	// the host does not have open, so this is a straight relay rather than the host having to hold
 	// every guest's file open on their behalf.
-	| { kind: 'lsp-notify'; method: string; params?: unknown }
-	/**
-	 * One review-comment event, in both directions: a guest asking the host to append it, and the
-	 * host telling everyone it happened.
-	 *
-	 * The log is already an append-only event stream, so the thing on the wire is the thing on
-	 * disk - there is no second representation to keep in step. The whole log at join time is too
-	 * big for a control frame and goes over the blob channel instead (blob name 'comments').
-	 */
-	| { kind: 'comment-event'; event: CommentEvent };
+	| { kind: 'lsp-notify'; method: string; params?: unknown };
 
 /**
  * One hop of the Typst preview relay.
@@ -114,6 +109,12 @@ const PREVIEW_EVS = ['open', 'data', 'text', 'close'] as const;
 export function isSafeRel(rel: string): boolean {
 	if (!rel || rel.includes('\\') || rel.startsWith('/') || /^[a-z]:/i.test(rel)) return false;
 	return rel.split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..');
+}
+
+export function isSafeCommentEvent(event: unknown): event is CommentEvent {
+	if (!isCommentEvent(event)) return false;
+	const paths = event.t === 'open' ? [event.file] : event.t === 'move' ? [event.from, event.to] : event.t === 'anchor' ? [event.file] : [];
+	return paths.every((p) => p === undefined || isSafeRel(p));
 }
 
 export type Frame =

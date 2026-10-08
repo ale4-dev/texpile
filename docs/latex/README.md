@@ -1,34 +1,28 @@
 ---
 nav: LaTeX
-description: LaTeX in Texpile: the format the rest of the docs describe, with links to the pages about live preview, compiling, intellisense, and the visual editor's LaTeX details.
-blurb: The format the rest of these docs describe, and where its own pages are.
+description: Write LaTeX in the visual or the source editor and compile it to a PDF.
+blurb: Edit visually or as source, compile, and preview as you type.
 icon: sigma
-order: 11
-section: Formats
+order: 20
+section: LaTeX
 ---
 
 # LaTeX
 
-LaTeX is the format the rest of these docs describe. Where a page says nothing about formats, it is about a .tex file. Compiling and the live preview run on the TeX distribution installed on your computer.
+Write LaTeX in the visual editor or as source, and compile it to a PDF.
 
-| Where to find it | Path                                  | Note                                                       |
-| ---------------- | ------------------------------------- | ---------------------------------------------------------- |
-| In the editor    | Open any .tex file                    | The main file is picked automatically, or set it yourself. |
-| Toolbar          | The Compile or Preview button         | Top right of the editor. Preview once live mode is on.     |
-| Setting          | Terminal › Configure compile command… | The command, the engine, and the Live mode switch.         |
+![A LaTeX project in Texpile: the file tree, the visual editor, the Compile button, and the compiled PDF](../../landing/src/lib/assets/showcase/docs/latex/overview.png)
 
-## Its own pages
+1. **Main file.** The star marks the file Texpile compiles.
+2. **Visual / Source.** Switch editors at any time. Both edit the same file.
+3. **Compile.** Builds the PDF.
+4. **PDF.** The compiled PDF. The bar on the right edge of the editor shows and hides it.
+5. **Jump to PDF.** Shows the cursor's place in the PDF. Double-click the PDF to jump back.
 
-These pages are about LaTeX:
+## The main file
 
-- [Live preview](live-preview.md)
-- [Compiling](compiling.md)
-- [Intellisense](intellisense.md)
+The main file is the one with `\documentclass` and `\begin{document}`. In a folder with several `.tex` files, Texpile asks once which one it is. To change it, right-click a file and choose **Set as Main File**.
 
-The [Visual editing](../visual-editing/README.md) pages apply to every format. Equations, images, tables, and citations each say what differs in Typst and Markdown.
+## Folders Texpile adds
 
-## What it needs
-
-A TeX distribution: TeX Live, MacTeX, or MiKTeX. Editing works without one. Compiling and the live preview do not.
-
-[Installing a TeX distribution](../installation/latex/README.md)
+The PDF and the build files go in an `output` folder. Your comments and compile settings are in `.texpile`: keep it with the project.

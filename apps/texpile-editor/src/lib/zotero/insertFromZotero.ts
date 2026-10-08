@@ -11,7 +11,8 @@ import { mainFile } from '$lib/workspace/workspaceStore';
 import { readTextFile, writeTextFile, statFile, scanFiles, joinPath, dirname, basename, samePath } from '$lib/workspace/fileSystem';
 import { toaster } from '$lib/modals/toaster-svelte';
 import { m } from '$lib/paraglide/messages';
-import { bibPathFromSource, translatorForSource, appendBibEntries, citationTextFor } from './bibTarget';
+import { bibPathsFromSource, translatorForSource, appendBibEntries, citationTextFor } from './bibTarget';
+import { typstBibliographyPaths } from '$lib/languages/typst/bibliographyPaths';
 import { zoteroPicker } from './pickerState.svelte';
 
 /** the bridge exists (desktop app); says nothing about Zotero itself being up */
@@ -50,27 +51,9 @@ export async function applyPickedCitations(keys: string[], deps: ZoteroInsertDep
 	const main = mainFile.current;
 	if (!bridge || !main || !keys.length) return;
 	try {
-		// the main file as the user sees it: the open buffer when the main IS the open file
-		const open = deps.openDoc();
-		const mainText = open.path && samePath(open.path, main) ? open.text : await readTextFile(main);
-
-		const declaredRel = bibPathFromSource(mainText, deps.kind);
-		let bibPath: string;
-		let undeclared = false;
-		if (declaredRel) {
-			// resolved against the main file's folder: latexmk compiles with -cd, and Typst
-			// resolves #bibliography against the file that calls it
-			bibPath = joinPath(dirname(main), declaredRel);
-		} else {
-			const found = (await scanFiles(deps.root, ['bib'])).files;
-			const preferred = found.find((f) => basename(f.path).toLowerCase() === 'references.bib') ?? found[0];
-			if (preferred) {
-				bibPath = preferred.path;
-			} else {
-				bibPath = joinPath(dirname(main), 'references.bib');
-				undeclared = true;
-			}
-		}
+		const mainText = await mainTextOf(main, deps);
+		const target = await targetBib(main, mainText, deps);
+		const bibPath = target.path;
 
 		const exported = await bridge.exportBib(keys, translatorForSource(mainText, deps.kind));
 		if (!exported.ok || typeof exported.bib !== 'string') {
@@ -80,7 +63,11 @@ export async function applyPickedCitations(keys: string[], deps: ZoteroInsertDep
 
 		const existing = (await statFile(bibPath)).exists ? await readTextFile(bibPath) : '';
 		const merged = appendBibEntries(existing, exported.bib);
-		if (merged.added.length) await writeTextFile(bibPath, merged.text);
+		if (merged.added.length) {
+			await writeTextFile(bibPath, merged.text);
+			// our own write: refresh the references now, so the citation below resolves at once
+			dispatchEvent(new CustomEvent('texpile:fs-changed'));
+		}
 
 		insertCitation(keys, deps.kind);
 
@@ -93,17 +80,70 @@ export async function applyPickedCitations(keys: string[], deps: ZoteroInsertDep
 		} else {
 			toaster.info({ title: m.zotero_none_new_title(), description: name });
 		}
-		// a bib file the document never references compiles to nothing; say so once, loudly
-		if (undeclared) {
-			toaster.warning({ title: m.zotero_bib_created_title({ name }), description: m.zotero_bib_created_desc(), duration: 8000 });
-		}
+		if (target.undeclared) warnUndeclared(target);
 	} catch (e) {
 		toaster.error({ title: m.zotero_failed_title(), description: e instanceof Error ? e.message : String(e) });
 	}
 }
 
+/** the main file as the user sees it: the open buffer when the main IS the open file */
+export async function mainTextOf(main: string, deps: ZoteroInsertDeps): Promise<string> {
+	const open = deps.openDoc();
+	return open.path && samePath(open.path, main) ? open.text : await readTextFile(main);
+}
+
+export type BibTarget = {
+	path: string;
+	/** the main file reads no bibliography from this file yet, so what lands there compiles to nothing */
+	undeclared: boolean;
+	/** the Hayagriva file a Typst main lists instead, when that is why the target is undeclared */
+	hayagriva?: string;
+};
+
+/**
+ * Where new entries land: the first bib the main file declares that the project has (else the last
+ * one it declares), else the project's references.bib or first .bib, else a new references.bib
+ * beside the main - `undeclared`, since nothing reads it yet.
+ *
+ * A Typst main that lists only Hayagriva `.yml` files gets a `.bib` all the same: the entries are
+ * BibTeX, and appended to a `.yml` they would break it. That `.bib` is undeclared until the user
+ * adds it to the `#bibliography` list.
+ */
+export async function targetBib(main: string, mainText: string, deps: ZoteroInsertDeps): Promise<BibTarget> {
+	const declared = bibPathsFromSource(mainText, deps.kind).map((rel) => resolveBibPath(main, rel, deps));
+	for (const path of declared) if ((await statFile(path)).exists) return { path, undeclared: false };
+	if (declared.length) return { path: declared[declared.length - 1], undeclared: false };
+	const hayagriva = deps.kind === 'typ' ? typstBibliographyPaths(mainText)[0] : undefined;
+	const found = (await scanFiles(deps.root, ['bib'])).files;
+	const preferred = found.find((f) => basename(f.path).toLowerCase() === 'references.bib') ?? found[0];
+	if (preferred) return { path: preferred.path, undeclared: !!hayagriva, hayagriva };
+	return { path: joinPath(dirname(main), 'references.bib'), undeclared: true, hayagriva };
+}
+
+/** a bibliography as the main file names it, where the compile reads it */
+export function resolveBibPath(main: string, rel: string, deps: ZoteroInsertDeps): string {
+	// latexmk compiles with -cd, and Typst resolves #bibliography against the file that calls it
+	// (and a leading / against the project root)
+	return deps.kind === 'typ' && rel.startsWith('/') ? joinPath(deps.root, rel.slice(1)) : joinPath(dirname(main), rel);
+}
+
+/** a bib file the document never references compiles to nothing; say so once, loudly */
+export function warnUndeclared(target: BibTarget): void {
+	const name = basename(target.path);
+	if (target.hayagriva) {
+		const yml = basename(target.hayagriva);
+		toaster.warning({
+			title: m.zotero_bib_beside_yml_title({ name }),
+			description: m.zotero_bib_beside_yml_desc({ name, yml }),
+			duration: 8000
+		});
+		return;
+	}
+	toaster.warning({ title: m.zotero_bib_created_title({ name }), description: m.zotero_bib_created_desc(), duration: 8000 });
+}
+
 /** citation at the caret: a node in the visual editor when its schema has one, text in source */
-function insertCitation(keys: string[], kind: 'tex' | 'typ'): void {
+export function insertCitation(keys: string[], kind: 'tex' | 'typ'): void {
 	const v = editorViewStore.current;
 	if (v?.dom.isConnected) {
 		// branch off the MOUNTED schema, never the file extension (see referenceManagerPlugin)
@@ -120,7 +160,7 @@ function insertCitation(keys: string[], kind: 'tex' | 'typ'): void {
 		}
 		const cite = kind === 'tex' ? v.state.schema.nodes.citation : undefined;
 		if (cite) {
-			const node = cite.create({ prenote: '', postnote: '', variant: 'autocite' }, v.state.schema.text(keys.join(',')));
+			const node = cite.create({ prenote: '', postnote: '', variant: 'cite' }, v.state.schema.text(keys.join(',')));
 			v.dispatch(v.state.tr.replaceSelectionWith(node).scrollIntoView());
 			v.focus();
 			return;

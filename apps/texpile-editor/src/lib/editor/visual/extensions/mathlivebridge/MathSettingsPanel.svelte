@@ -8,8 +8,9 @@
 	import type { Node as PMNode } from 'prosemirror-model';
 	import { generateLabel, isTexpileLabel, sanitizeLabel } from '$lib/editor/visual/label';
 	import { labelTaken } from '$lib/editor/visual/labelTaken';
-	import { repointRefs } from '$lib/editor/visual/repointRefs';
-	import { toggleEnvironmentStar } from './mathEnvironments';
+	import { announceLabelRenamed, repointRefs } from '$lib/editor/visual/repointRefs';
+	import { setDisplayNumbered } from './mathMenu/mathFormulaType';
+	import { equationNumberingChange, equationsNumbered } from '$lib/languages/typst/visual/equationNumbering';
 	import { m } from '$lib/paraglide/messages';
 
 	type Props = {
@@ -20,9 +21,12 @@
 
 	let { node, view, getPos }: Props = $props();
 
-	// the typst editor: no numbering toggle or environments (numbering is a document-level
-	// #set rule the template owns), just the <label> that @refs point at
+	// the typst editor: no environments, and numbering is one document-level #set rule for every
+	// equation, which its switch writes; the <label> is what @refs point at
 	const isTypst = $derived(!!view.state.schema.nodes.typ_ref);
+	// read when the panel opens, then kept by the switch: the rule sits outside this equation's node
+	// svelte-ignore state_referenced_locally
+	let typstNumbered = $state(isTypst && equationsNumbered(view.state.doc));
 
 	let showAdvanced = $state(false);
 	// form fields are seeded from the node once, by design
@@ -52,10 +56,12 @@
 	});
 
 	// multline only has one label, so it uses the single-label UI
-	let isPerLineLabelMode = $derived(environmentInput !== '' && ['align', 'gather', 'alignat', 'eqnarray'].includes(environmentInput));
+	let isPerLineLabelMode = $derived(
+		environmentInput !== '' && ['align', 'gather', 'alignat', 'flalign', 'eqnarray'].includes(environmentInput)
+	);
 
 	let hasSpecialEnvironment = $derived(
-		environmentInput !== '' && ['align', 'gather', 'alignat', 'eqnarray', 'multline'].includes(environmentInput)
+		environmentInput !== '' && ['align', 'gather', 'alignat', 'flalign', 'eqnarray', 'multline'].includes(environmentInput)
 	);
 
 	function isLabelDuplicate(label: string): boolean {
@@ -76,51 +82,24 @@
 			});
 			// renaming the label follows every reference to it, in the same transaction (one undo
 			// step). Both dialects: a \ref left behind still compiles, resolving to ??.
-			if ('label' in attrs) repointRefs(tr, view.state.doc, String(node.attrs.label ?? ''), String(attrs.label ?? ''));
+			const renamedFrom = 'label' in attrs ? String(node.attrs.label ?? '') : null;
+			if (renamedFrom !== null) repointRefs(tr, view.state.doc, renamedFrom, String(attrs.label ?? ''));
 			view.dispatch(tr);
+			if (renamedFrom !== null) announceLabelRenamed(renamedFrom, String(attrs.label ?? ''));
 		}
 	}
 
 	function handleNumberedToggle(details: { checked: boolean }) {
-		const newNumbered = details.checked;
-		numberedInput = newNumbered;
+		numberedInput = details.checked;
+		const pos = getPos();
+		const tr = pos === undefined ? null : setDisplayNumbered(view.state, pos, details.checked);
+		if (tr) view.dispatch(tr);
+	}
 
-		if (hasSpecialEnvironment) {
-			const pos = getPos();
-			if (pos !== undefined) {
-				// the node prop can be stale, read from the live doc
-				const currentNode = view.state.doc.nodeAt(pos);
-				if (!currentNode) return;
-				const currentContent = currentNode.textContent || '';
-
-				// star = unnumbered, so invert
-				const newContent = toggleEnvironmentStar(currentContent, !newNumbered);
-
-				if (newContent !== currentContent) {
-					const tr = view.state.tr;
-					const startPos = pos;
-					const endPos = pos + currentNode.nodeSize;
-					const nodeType = currentNode.type;
-					const newAttrs: Record<string, unknown> = { ...currentNode.attrs, numbered: newNumbered };
-					if (newNumbered && !isPerLineLabelMode && !currentNode.attrs.label) {
-						const newLabel = generateLabel('equation');
-						newAttrs.label = newLabel;
-						labelInput = newLabel;
-					}
-					const textNode = view.state.schema.text(newContent);
-					tr.replaceWith(startPos, endPos, nodeType.create(newAttrs, textNode));
-					view.dispatch(tr);
-					return;
-				}
-			}
-			updateAttrs({ numbered: newNumbered });
-		} else if (newNumbered && !labelInput) {
-			const newLabel = generateLabel('equation');
-			labelInput = newLabel;
-			updateAttrs({ numbered: newNumbered, label: newLabel });
-		} else {
-			updateAttrs({ numbered: newNumbered });
-		}
+	function handleTypstNumberedToggle(details: { checked: boolean }) {
+		typstNumbered = details.checked;
+		const tr = equationNumberingChange(view.state, details.checked);
+		if (tr) view.dispatch(tr);
 	}
 
 	function handleLineLabelChange(index: number, value: string) {
@@ -200,8 +179,17 @@
 				{#if isDuplicate}
 					<p class="text-error-ink mt-1 text-xs">{m.mathsettings_label_duplicate_error()}</p>
 				{/if}
-				<p class="text-muted mt-1 text-xs">{m.mathsettings_typst_numbering_note()}</p>
 			</label>
+		</div>
+		<div class="settings-row">
+			<Switch checked={typstNumbered} onCheckedChange={handleTypstNumberedToggle} class="flex w-full items-center justify-between gap-3">
+				<Switch.Label>{m.mathsettings_typst_numbered_label()}</Switch.Label>
+				<Switch.Control class="preset-filled-surface-200-800 data-[state=checked]:preset-filled-primary-500">
+					<Switch.Thumb />
+				</Switch.Control>
+				<Switch.HiddenInput />
+			</Switch>
+			<p class="text-muted mt-1 text-xs">{m.mathsettings_typst_numbered_hint()}</p>
 		</div>
 	{:else}
 		<div class="settings-row">

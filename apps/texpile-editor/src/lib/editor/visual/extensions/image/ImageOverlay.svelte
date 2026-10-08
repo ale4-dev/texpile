@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { tip } from '$lib/components/tooltip.svelte';
+	import { inEditorPane } from '$lib/editor/visual/editorPanePositioning';
 	import { Popover, Portal } from '@skeletonlabs/skeleton-svelte';
 	import { Settings } from '@lucide/svelte';
 	import type { EditorView } from 'prosemirror-view';
@@ -40,11 +41,11 @@
 </script>
 
 <div class="image-overlay-wrapper" bind:this={overlayElement}>
-	<div class="pointer-events-auto absolute right-2 top-2">
+	<div class="pointer-events-auto absolute top-2 right-2">
 		<Popover
 			open={settingsOpen}
 			onOpenChange={(e) => (settingsOpen = e.open)}
-			positioning={{ placement: 'bottom-end', offset: { mainAxis: 4 } }}
+			positioning={inEditorPane({ placement: 'bottom-end', offset: { mainAxis: 4 } })}
 		>
 			<Popover.Trigger class="image-settings-btn">
 				<button

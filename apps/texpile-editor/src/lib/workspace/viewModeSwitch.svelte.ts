@@ -1,9 +1,7 @@
 // Which view is showing (visual / source / diff), and keeping the scroll position across a switch.
 //
-// Both directions carry two anchors expressed as source-text offsets, resolved positionally via
-// the parse-time orig.start stamps: content matching fails wholesale against an edited buffer,
-// whereas positions only drift. `scroll` is the viewport-top block; `cursor` is the caret mapped
-// proportionally within its block's orig.latex slice.
+// Both directions carry two anchors as file offsets, through the document's source map. `scroll`
+// is the viewport-top block; `cursor` is the caret.
 //
 // Diff is deliberately NOT persisted: a reload restores the last visual/source choice, never diff.
 // It is not a third view any more either - asking for it opens a comparison TAB, and visual/source
@@ -11,7 +9,7 @@
 // is the read-only half and lives in the diff layer rather than on screen.
 import { browser } from '$lib/runtime';
 import { layout, updateLayout } from '$lib/storage/layout';
-import { isGitRepo } from '$lib/workspace/gitStore';
+import { isGitRepo } from '$lib/workspace/scm/gitStore';
 import { isDirty } from '$lib/workspace/workspaceStore';
 import { editorViewStore, viewMode as viewModeStore } from '$lib/stores/editorStore';
 import {
@@ -21,8 +19,8 @@ import {
 	placeSourceCaret,
 	type SourceAnchor
 } from '$lib/editor/visual/modeSwitchAnchors';
-import { bodyOffsetOf, type ParsedLatexFile } from '$lib/workspace/latexRoundtrip';
-import { stripFor } from '$lib/editor/visual/stripFor';
+import type { ParsedLatexFile } from '$lib/workspace/latexRoundtrip';
+import type { SourceMap } from '$lib/editor/visual/sourceSpans';
 import { createSourceHistory } from '$lib/workspace/sourceHistory';
 import { caretAfterChange } from '$lib/workspace/changeCaret';
 
@@ -40,7 +38,13 @@ export type ViewModeDeps = {
 	getDocMeta(): DocMeta;
 	/** the text the doc handed to the editor serializes to; behind getSource() while a parse is in flight */
 	getMountedSource(): string | null;
+	/** where every run of the visual doc sits in the source */
+	getSourceMap(): SourceMap;
 	getEncodingIssue(): string | null;
+	/** the file came in holding places a merge marked (DocumentBuffer.conflicted) */
+	getConflicted(): boolean;
+	/** let the visual editor have it back; false while a marked place is left */
+	leaveConflicts(): boolean;
 	rebuildVisual(): void;
 	/** open a comparison of the open file against the last saved version. */
 	startCompare(): void;
@@ -67,13 +71,6 @@ export class ViewModeSwitch {
 		if (browser && layout.current.viewMode === 'source') this.mode = 'source';
 	}
 
-	/** orig.start stamps are body-relative; bodyOffsetOf knows where the body begins in the FILE
-	 * (fragments synthesize a preamble that is not in the file, so theirs starts at 0) */
-	private bodyOffset(): number {
-		const meta = this.deps.getDocMeta();
-		return meta ? bodyOffsetOf(meta) : 0;
-	}
-
 	/** entering visual mode: consume the anchor once the PM view exists AND its doc matches the
 	 * current source. On the edited path the editor first mounts with the STALE doc while the
 	 * worker re-parse runs; consuming then would resolve against the wrong document. */
@@ -83,7 +80,7 @@ export class ViewModeSwitch {
 		if (!v || anchor == null || this.mode !== 'visual') return;
 		if (this.deps.getSource() !== this.deps.getMountedSource()) return; // parse in flight
 		this.pendingVisualAnchor = null;
-		resolveVisualAnchor(v, anchor, this.bodyOffset(), stripFor(this.deps.getKind()));
+		resolveVisualAnchor(v, anchor, this.deps.getSourceMap());
 	}
 
 	/** mirror into the store the editors read */
@@ -91,8 +88,16 @@ export class ViewModeSwitch {
 		viewModeStore.current = this.mode;
 	}
 
+	beforeSwitch: (() => void) | null = null;
+
 	set(mode: ViewMode): void {
 		const d = this.deps;
+		if (mode === 'visual' && d.getConflicted()) {
+			// the pane has been showing the source editor under a 'visual' mode: with every place
+			// chosen that becomes true again, and the visual doc has to catch up with the choices
+			if (!d.leaveConflicts()) return;
+			if (this.mode === 'visual') return d.rebuildVisual();
+		}
 		if (mode === this.mode) return;
 		if (mode === 'diff') {
 			// opens a comparison TAB rather than switching this mode: the representation the user
@@ -108,8 +113,9 @@ export class ViewModeSwitch {
 		if (structured) {
 			this.history.capture(d.getSource()); // flush the pre-switch state into the cross-mode history
 			// scroll sync: capture the outgoing view's anchor for the incoming one
-			if (this.mode === 'visual' && mode === 'source') this.sourceScrollAnchor = captureVisualAnchorAt(this.bodyOffset());
+			if (this.mode === 'visual' && mode === 'source') this.sourceScrollAnchor = captureVisualAnchorAt(this.deps.getSourceMap());
 			else if (this.mode === 'source' && mode === 'visual') this.pendingVisualAnchor = captureSourceAnchor();
+			this.beforeSwitch?.();
 		}
 		// switch optimistically; the async parse fills the visual doc when it returns. On failure
 		// the rebuild drops back to source with a toast, so the user never gets stuck on a blank

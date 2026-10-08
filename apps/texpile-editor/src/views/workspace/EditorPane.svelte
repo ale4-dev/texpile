@@ -2,13 +2,19 @@
 	// The editor column: the mode toolbar on top and, under it, whichever surface the open file
 	// needs (starter picker, diff, source, visual, bib, pdf, image). Chooses the surface; the
 	// state behind it all lives in WorkspaceView.
-	import { tip } from '$lib/components/tooltip.svelte';
 	import { fileMode } from '$lib/workspace/fileMode.svelte';
-	import { Loader2, CircleAlert, FileWarning, Info, GitCompare, RefreshCw } from '@lucide/svelte';
+	import { Loader2, CircleAlert, FileWarning, Info } from '@lucide/svelte';
+	import TypstMissingBar from '$lib/languages/typst/TypstMissingBar.svelte';
+	import EditorNotice from '$lib/components/EditorNotice.svelte';
+	import ConflictNotice from './ConflictNotice.svelte';
 	import { isTexpileManaged } from '$lib/comments/managed';
 	import SearchBar from '$lib/editor/visual/SearchBar.svelte';
-	import StarterPicker from '$lib/workspace/StarterPicker.svelte';
-	import DiffPane from './DiffPane.svelte';
+	import DiffPane from './diff/DiffPane.svelte';
+	import VisualCompareBar from './VisualCompareBar.svelte';
+	import VersionHistoryPanel from './history/VersionHistoryPanel.svelte';
+	import VersionHistoryButtons from './history/VersionHistoryButtons.svelte';
+	import { LOCAL_REF } from '$lib/workspace/localHistory/localHistory.svelte';
+	import NewDocumentStart from './NewDocumentStart.svelte';
 	import SourceEditor from '$lib/editor/source/SourceEditor.svelte';
 	import BibManager from '$lib/editor/visual/bib/BibManager.svelte';
 	import PDFViewer from '$lib/preview/PDFViewer.svelte';
@@ -22,12 +28,11 @@
 	import { noteVisualMount, visualMounted } from '$lib/workspace/visualMountGuard';
 	import type { Node as PMNode } from 'prosemirror-model';
 	import { openWorkspaceLink } from '$lib/workspace/openWorkspaceLink';
-	import { stripFor } from '$lib/editor/visual/stripFor';
-	import { bodyOffsetOf } from '$lib/workspace/latexRoundtrip';
 	import TabBar from './TabBar.svelte';
 	import EditorToolbarStrip from './EditorToolbarStrip.svelte';
 	import VisualEditorHost from './VisualEditorHost.svelte';
-	import { attachVisualDiff } from '$lib/editor/visual/diff/attachVisualDiff';
+	import CommentRail from '$lib/comments/rail/CommentRail.svelte';
+	import { attachVisualDiffOutsideComposition } from '$lib/editor/visual/diff/attachVisualDiff';
 	import { untrack } from 'svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -42,6 +47,7 @@
 		onActivateTab,
 		onCloseTab,
 		onKeepTab,
+		onTabMenu,
 		kind,
 		nameOnly = false,
 		viewMode: requestedViewMode,
@@ -50,10 +56,17 @@
 		loadError,
 		fileDeleted = false,
 		encodingIssue = null,
+		conflicted = false,
+		conflictsLeft = 0,
+		conflictStray = false,
+		changeBaseline = null,
+		onLeaveConflicts,
 		binaryWarning = null,
 		onOpenAsText,
 		applyingStarter,
 		texSource,
+		sourceMap,
+		regionParser = null,
 		rawContent,
 		visualDoc,
 		parseProgress = null,
@@ -87,19 +100,25 @@
 		onJumpToFile,
 		onOpenFileAt,
 		onJumpToLabel,
+		onJumpToDefinition,
 		onCaretMove,
 		commentRanges = [],
 		commentThreads = [],
 		selectedComment = null,
 		onAddComment,
+		onSetViewMode,
 		onInsertCitation,
+		onCiteByDoi,
 		onAddCommentAnchored,
 		onCommentsPlaced,
 		commentPendingActive = false,
 		onSelectComment,
 		onToggleDiffLayout,
-		onRefreshDiff
+		onRefreshDiff,
+		commentsCtl
 	}: EditorPaneProps = $props();
+
+	let scroller = $state<HTMLElement | null>(null);
 
 	// remounts the source editor when the file or the session's view of it changes
 	const sourceKey = $derived(`${loadedPath}:${session.active}:${session.manifestRev}`);
@@ -117,10 +136,6 @@
 	let readyFor = $state<string | null>(null);
 	const editorReady = $derived(!!loadedPath && readyFor === loadedPath);
 
-	/** which starter tab is open, so the blurb above the grid names the extension it is offering.
-	 *  Deliberately not persisted - it is a view of the templates, not a setting. */
-	let starterLang = $state<'latex' | 'typst'>('latex');
-
 	/** Rendered for the whole build, but it holds itself invisible until the wait is real (see
 	 * lateReveal.ts), so a fast build never flashes a bar. Deliberately not a size threshold: that
 	 * would bake in an assumption about how fast the machine is, and suppress the bar on a slow CPU
@@ -130,10 +145,22 @@
 	/** kinds that have a visual (ProseMirror) surface */
 	const structured = $derived(kind === 'tex' || kind === 'md' || kind === 'typ');
 
-	const viewMode = $derived(requestedViewMode === 'visual' && encodingIssue ? 'source' : requestedViewMode);
+	const viewMode = $derived(requestedViewMode === 'visual' && (encodingIssue || conflicted) ? 'source' : requestedViewMode);
+
+	/** kinds edited as raw text, which is every text file that is not one of those */
+	const rawText = $derived(kind === 'text' || (kind === 'bib' && (viewMode === 'source' || session.isGuest)));
+
+	/** a .bib's own view draws none of these, so it says they are there instead */
+	const bibSuggested = $derived(commentThreads.filter((t) => !t.resolved && t.restore !== undefined).length);
 
 	/** independent of viewMode, which says whether the diff is rendered or in source */
 	const comparing = $derived(!!compare);
+
+	/** the file and copy Version History shows: the tab's own file, set with its comparison, not loadedPath, which follows a
+	 *  beat later; with that the copy was looked for among the last file's copies, taken as deleted, and the tab left */
+	const history = $derived(
+		compare?.hash.startsWith(LOCAL_REF) && activeFilePath.current ? { path: activeFilePath.current, hash: compare.hash } : null
+	);
 
 	/** the working side IS the file, so it takes the editor's own handler - split the same way
 	 *  DiffMode's getWorkingText splits it */
@@ -160,14 +187,7 @@
 	$effect(() => {
 		const view = editorViewStore.current;
 		const wanted = comparing && viewMode === 'visual' && structured && diffVersionDoc ? { oldDoc: diffVersionDoc } : null;
-		if (!view) return;
-		const apply = () => untrack(() => attachVisualDiff(view, wanted));
-		if (!view.composing) {
-			apply();
-			return;
-		}
-		view.dom.addEventListener('compositionend', apply, { once: true });
-		return () => view.dom.removeEventListener('compositionend', apply);
+		if (view) return untrack(() => attachVisualDiffOutsideComposition(view, wanted));
 	});
 
 	// noted before a file's first build, forgotten in onVisualReady: a build that takes the renderer
@@ -189,7 +209,13 @@
 		if (loadedPath) visualMounted(loadedPath);
 		const v = editorViewStore.current;
 		if (!v || !loadedPath || session.collabFor(loadedPath)) return;
-		restoreVisualPosition(v, loadedPath, texSource, docMeta ? bodyOffsetOf(docMeta) : 0, stripFor(kind));
+		restoreVisualPosition(v, loadedPath, texSource, sourceMap);
+	}
+
+	// a shared file steps only through its own history: the workspace one swaps in a whole local snapshot, which would
+	// write over everyone else's edits. still consumed, so the browser's own undo never runs
+	function stepHistoryUnlessShared(dir: 'undo' | 'redo'): boolean {
+		return session.collabFor(loadedPath) ? true : onHistoryBoundary(dir);
 	}
 </script>
 
@@ -203,6 +229,7 @@
 			onActivate={onActivateTab}
 			onClose={onCloseTab}
 			onKeep={onKeepTab}
+			onContextMenu={onTabMenu}
 		/>
 	{/if}
 	{#if loadedPath && structured && !comparing && (viewMode === 'source' || visualDoc)}
@@ -214,240 +241,223 @@
 		     open reached it deliberately from Source Control and deserves the warning before they
 		     touch it. One short line everywhere a managed file appears - the same sentence as the
 		     SCM badge tooltip and the diff bar, so the notice reads as one voice. -->
-		<!-- 40px is the app's bar height - the PDF, editor and draft toolbars are all min-h-10, border
-		     included - so this reads as another piece of chrome rather than prose shoving the document
-		     down. -->
-		<div
-			class="border-surface-200-800 bg-surface-100-900 text-muted flex min-h-10 shrink-0 items-center gap-2 border-b px-3 text-xs"
-			use:tip={m.texpile_managed_note()}
-		>
-			<Info class="text-primary-ink size-3.5 shrink-0" />
-			<p class="min-w-0 truncate"><span class="font-medium">{m.vcs_texpile_managed()}.</span> {m.texpile_managed_note()}</p>
-		</div>
+		<EditorNotice icon={Info} tone="info" title="{m.vcs_texpile_managed()}." note={m.texpile_managed_note()} />
 	{/if}
 	{#if loadedPath && encodingIssue}
-		<div
-			class="border-surface-200-800 bg-surface-100-900 text-muted flex min-h-10 shrink-0 items-center gap-2 border-b px-3 text-xs"
-			use:tip={encodingIssue}
-		>
-			<CircleAlert class="text-warning-ink size-3.5 shrink-0" />
-			<p class="min-w-0 truncate"><span class="font-medium">{m.wsview_read_only()}.</span> {encodingIssue}</p>
-		</div>
+		<EditorNotice icon={CircleAlert} tone="warning" title="{m.wsview_read_only()}." note={encodingIssue} />
+	{/if}
+	<!-- a guest's Typst runs on the host's tinymist, and a lone file runs none: no language server, no compile -->
+	{#if loadedPath && kind === 'typ' && !session.isGuest && !fileMode.current && !comparing}
+		<TypstMissingBar />
+	{/if}
+	{#if loadedPath && conflicted && !comparing}
+		<ConflictNotice left={conflictsLeft} stray={conflictStray} onLeave={structured ? onLeaveConflicts : undefined} />
 	{/if}
 	<!-- the buffer is now the only copy, so it stays on screen; what a save will do is spelled out
 	     because it recreates the old name rather than following the rename -->
 	{#if loadedPath && fileDeleted && !comparing}
-		<div
-			class="border-surface-200-800 bg-surface-100-900 text-muted flex min-h-10 shrink-0 items-center gap-2 border-b px-3 text-xs"
-			use:tip={m.wsview_file_deleted_note()}
-		>
-			<CircleAlert class="text-warning-ink size-3.5 shrink-0" />
-			<p class="min-w-0 truncate">
-				<span class="font-medium">{m.wsview_file_deleted_title()}.</span>
-				{m.wsview_file_deleted_note()}
-			</p>
-		</div>
+		<EditorNotice icon={CircleAlert} tone="warning" title="{m.wsview_file_deleted_title()}." note={m.wsview_file_deleted_note()} />
 	{/if}
-	{#if loadedPath && comparing && viewMode === 'visual' && structured}
-		<div class="bg-surface-100-900 text-muted border-surface-200-800 flex min-h-10 shrink-0 items-center gap-2 border-b px-3 text-xs">
-			<GitCompare class="size-3.5 shrink-0" />
-			<span class="font-medium">{m.wsview_diff_since()}</span>
-			{#if compare}<span class="text-muted min-w-0 truncate" use:tip={compare.hash}>· {compare.subject}</span>{/if}
-			<!-- What it cannot show, said out loud: an unmarked document otherwise reads as "nothing
-			     changed". No count - the number would be of source runs, which nothing on screen shows. -->
-			{#if fileDeleted}
-				<span class="text-muted min-w-0 truncate">· {m.wsview_diff_file_deleted()}</span>
-			{:else if versionParsing}
-				<!-- a parse that lands quickly should flash nothing at all; see lateReveal.ts -->
-				<span class="text-muted reveal-late min-w-0 truncate">· {m.wsview_diff_finding_changes()}</span>
-			{:else if diffVersionUnavailable}
-				<span class="text-muted min-w-0 truncate">· {m.wsview_diff_version_unparsed()}</span>
-			{:else if diffVersionPreamble !== null && docMeta && diffVersionPreamble !== docMeta.preamble}
-				<span class="text-muted min-w-0 truncate">· {m.wsview_diff_source_only()}</span>
+	{#snippet historyButtons()}
+		{#if history}<VersionHistoryButtons path={history.path} hash={history.hash} />{/if}
+	{/snippet}
+	<div class="flex min-h-0 min-w-0 flex-1">
+		<div class="flex min-h-0 min-w-0 flex-1 flex-col">
+			{#if loadedPath && comparing && viewMode === 'visual' && structured}
+				<VisualCompareBar
+					{compare}
+					{fileDeleted}
+					{versionParsing}
+					versionUnavailable={diffVersionUnavailable}
+					sourceOnly={diffVersionPreamble !== null && !!docMeta && diffVersionPreamble !== docMeta.preamble}
+					onRefresh={onRefreshDiff}
+					actions={historyButtons}
+				/>
 			{/if}
-			<div class="ml-auto flex shrink-0 items-center gap-1">
-				<button
-					class="btn-icon btn-icon-xs hover:preset-tonal"
-					onclick={onRefreshDiff}
-					use:tip={m.wsview_refresh_diff()}
-					aria-label={m.wsview_refresh_diff()}
-				>
-					<RefreshCw class="size-3.5" />
-				</button>
-			</div>
-		</div>
-	{/if}
-	<!-- relative anchors the floating find bar; it sits outside the scroller so it doesn't scroll away -->
-	<div class="relative min-h-0 min-w-0 flex-1">
-		{#if loadedPath && structured && viewMode === 'visual' && visualDoc && !comparing}
-			<SearchBar />
-		{/if}
-		<!-- scroll-inset-r keeps this scrollbar clear of the lozenge on the preview divider. NOT in diff
+			<!-- relative anchors the floating find bar; it sits outside the scroller so it doesn't scroll away -->
+			<div class="relative min-h-0 min-w-0 flex-1">
+				{#if loadedPath && structured && viewMode === 'visual' && visualDoc && !comparing}
+					<SearchBar />
+				{/if}
+				<!-- scroll-inset-r keeps this scrollbar clear of the lozenge on the preview divider. NOT in diff
 		     mode or for a .pdf: those are panes, not documents - each fills the height, scrolls inside
 		     itself and draws its own full-width bar, so the 3px showed up as a gap between that bar
 		     and the divider. Each wears the inset on its own scroller instead. -->
-		<div class="h-full w-full overflow-auto {comparing || kind === 'pdf' ? '' : 'scroll-inset-r'}">
-			{#if folderEmpty && !activeFilePath.current}
-				<div class="mx-auto mt-16 max-w-xl px-6">
-					<div class="text-center">
-						<h2 class="text-lg font-semibold">{m.wsview_start_new_doc_heading()}</h2>
-						<p class="text-muted mt-1 text-sm">
-							<!-- follows the open tab: telling someone reading the Typst templates that this folder
-							     has no .tex files in it is true and useless -->
-							{m.wsview_start_new_doc_desc_pre()} <code>{starterLang === 'typst' ? '.typ' : '.tex'}</code>
-							{m.wsview_start_new_doc_desc_post()}
-						</p>
-					</div>
-					<div class="mt-6">
-						<StarterPicker
-							onPick={onPickStarter}
-							onBlank={onBlankStarter}
-							onImport={onImportStarter}
-							busy={applyingStarter}
-							bind:lang={starterLang}
+				<div
+					bind:this={scroller}
+					class="group/pane h-full w-full overflow-auto {structured && viewMode === 'visual' && !comparing
+						? '[scrollbar-gutter:stable]'
+						: ''} {comparing || kind === 'pdf' ? '' : 'scroll-inset-r'}"
+				>
+					{#if folderEmpty && !activeFilePath.current}
+						<NewDocumentStart onPick={onPickStarter} onBlank={onBlankStarter} onImport={onImportStarter} busy={applyingStarter} />
+					{:else if loadError}
+						<div class="text-error-ink mx-auto mt-12 flex max-w-md flex-col items-center gap-2 text-center">
+							<CircleAlert class="size-8" />
+							<p class="text-sm">{loadError}</p>
+						</div>
+					{:else if binaryWarning}
+						<div class="text-muted mx-auto mt-12 flex max-w-md flex-col items-center gap-3 text-center">
+							<FileWarning class="size-8" />
+							<p class="text-sm">{m.wsview_binary_warning_body()}</p>
+							<button type="button" class="btn btn-sm preset-tonal" onclick={() => onOpenAsText?.(binaryWarning.path)}>
+								{m.wsview_binary_open_anyway()}
+							</button>
+						</div>
+					{:else if loadedPath && nameOnly}
+						<div class="text-muted mt-12 text-center text-sm">
+							{m.wsview_shared_name_only({ name: basename(loadedPath) })}
+						</div>
+					{:else if loadedPath && comparing && (viewMode === 'source' || !structured) && (structured || kind === 'bib' || kind === 'text')}
+						<DiffPane
+							filename={loadedPath}
+							original={diffOriginal}
+							modified={diffModified}
+							layout={diffLayout}
+							loading={diffLoading}
+							error={diffError}
+							hasHead={diffHasHead}
+							compareRef={diffCompareRef}
+							{fileDeleted}
+							readOnly={!!session.collabFor(loadedPath) || fileDeleted}
+							onModifiedInput={onDiffInput}
+							onToggleLayout={onToggleDiffLayout}
+							onRefresh={onRefreshDiff}
+							actions={historyButtons}
 						/>
-					</div>
-				</div>
-			{:else if loadError}
-				<div class="text-error-ink mx-auto mt-12 flex max-w-md flex-col items-center gap-2 text-center">
-					<CircleAlert class="size-8" />
-					<p class="text-sm">{loadError}</p>
-				</div>
-			{:else if binaryWarning}
-				<div class="text-muted mx-auto mt-12 flex max-w-md flex-col items-center gap-3 text-center">
-					<FileWarning class="size-8" />
-					<p class="text-sm">{m.wsview_binary_warning_body()}</p>
-					<button type="button" class="btn btn-sm preset-tonal" onclick={() => onOpenAsText?.(binaryWarning.path)}>
-						{m.wsview_binary_open_anyway()}
-					</button>
-				</div>
-			{:else if loadedPath && nameOnly}
-				<div class="text-muted mt-12 text-center text-sm">
-					{m.wsview_shared_name_only({ name: basename(loadedPath) })}
-				</div>
-			{:else if loadedPath && comparing && (viewMode === 'source' || !structured) && (structured || kind === 'bib' || kind === 'text')}
-				<DiffPane
-					filename={loadedPath}
-					original={diffOriginal}
-					modified={diffModified}
-					layout={diffLayout}
-					loading={diffLoading}
-					error={diffError}
-					hasHead={diffHasHead}
-					compareRef={diffCompareRef}
-					{fileDeleted}
-					readOnly={!!session.collabFor(loadedPath) || fileDeleted}
-					onModifiedInput={onDiffInput}
-					onToggleLayout={onToggleDiffLayout}
-					onRefresh={onRefreshDiff}
-				/>
-			{:else if loadedPath && structured && viewMode === 'source'}
-				{#key sourceKey}
-					<SourceEditor
-						docPath={loadedPath}
-						value={texSource}
-						onInput={onTexInput}
-						readOnly={!!encodingIssue}
-						gotoLine={sourceGotoLine}
-						{onSyncToPdf}
-						initialScrollPos={sourceScrollAnchor}
-						{onHistoryBoundary}
-						diagnostics={kind === 'typ' ? undefined : sourceDiagnostics}
-						{onJumpToFile}
-						{onOpenFileAt}
-						{onCaretMove}
-						collab={session.collabFor(loadedPath)}
-						{commentRanges}
-						{commentThreads}
-						{selectedComment}
-						{onAddComment}
-						{onInsertCitation}
-						{onSelectComment}
-					/>
-				{/key}
-			{:else if loadedPath && structured && visualDoc}
-				<!-- deliberately NOT keyed on the file: it takes the next document via docSwap -->
-				<VisualEditorHost
-					{kind}
-					{loadedPath}
-					{visualDoc}
-					{docMeta}
-					{texSource}
-					{allReferences}
-					{showRenderBar}
-					{onVisualChange}
-					{onVisualSelection}
-					{onHistoryBoundary}
-					{onVisualReady}
-					{onMdLink}
-					{onEditFrontmatter}
-					{commentThreads}
-					{selectedComment}
-					{onSelectComment}
-					{onAddCommentAnchored}
-					{onInsertCitation}
-					{onJumpToLabel}
-					{onCommentsPlaced}
-					{commentPendingActive}
-				/>
-			{:else if visualPending}
-				<!-- doc not here yet: the parse runs in a worker and fills this in when it lands -->
-				<VisualLoading phase={parseProgress} format={kind} sizeBytes={texSource.length} {onUseSource} />
-			{:else if loadedPath && kind === 'bib' && (viewMode === 'source' || session.isGuest)}
-				<!-- guests always co-edit .bib through the Y-bound source editor; BibManager isn't
-				     CRDT-bound and would desync or clobber remote edits -->
-				{#key sourceKey}
-					<SourceEditor
-						docPath={loadedPath}
-						value={rawContent}
-						onInput={onRawInput}
-						readOnly={!!encodingIssue}
-						filename={loadedPath}
-						gotoLine={sourceGotoLine}
-						collab={session.collabFor(loadedPath)}
-					/>
-				{/key}
-			{:else if loadedPath && kind === 'bib'}
-				{#key loadedPath}
-					<BibManager value={rawContent} onInput={onRawInput} />
-				{/key}
-			{:else if loadedPath && kind === 'text'}
-				<!-- .typ no longer lands here: it is structured now (typSchema), so its source mode
+					{:else if loadedPath && structured && viewMode === 'source'}
+						<div class="flex h-full">
+							<div class="isolate h-full min-w-0 flex-1">
+								{#key sourceKey}
+									<SourceEditor
+										docPath={loadedPath}
+										value={texSource}
+										{changeBaseline}
+										onInput={onTexInput}
+										readOnly={!!encodingIssue}
+										gotoLine={sourceGotoLine}
+										{onSyncToPdf}
+										initialScrollPos={sourceScrollAnchor}
+										onHistoryBoundary={stepHistoryUnlessShared}
+										diagnostics={kind === 'typ' ? undefined : sourceDiagnostics}
+										{onJumpToFile}
+										{onOpenFileAt}
+										{onCaretMove}
+										collab={session.collabFor(loadedPath)}
+										{commentRanges}
+										{selectedComment}
+										{onAddComment}
+										{onInsertCitation}
+										{onCiteByDoi}
+										{onSelectComment}
+									/>
+								{/key}
+							</div>
+							{#if commentsCtl}
+								<CommentRail ctl={commentsCtl} threads={commentThreads} mode="source" onSelect={(id) => onSelectComment?.(id)} />
+							{/if}
+						</div>
+					{:else if loadedPath && structured && visualDoc}
+						<div class="flex min-h-full items-stretch">
+							<div class="isolate min-w-0 flex-1">
+								<!-- deliberately NOT keyed on the file: it takes the next document via docSwap -->
+								<VisualEditorHost
+									{kind}
+									{loadedPath}
+									{visualDoc}
+									{docMeta}
+									{texSource}
+									{allReferences}
+									{showRenderBar}
+									{onVisualChange}
+									{onVisualSelection}
+									onHistoryBoundary={stepHistoryUnlessShared}
+									{onVisualReady}
+									{onMdLink}
+									{onEditFrontmatter}
+									{commentRanges}
+									{sourceMap}
+									{regionParser}
+									{selectedComment}
+									{onSelectComment}
+									{onAddCommentAnchored}
+									{onInsertCitation}
+									{onCiteByDoi}
+									{onJumpToLabel}
+									{onJumpToDefinition}
+									{onCommentsPlaced}
+									{commentPendingActive}
+								/>
+							</div>
+							{#if commentsCtl}
+								<CommentRail ctl={commentsCtl} threads={commentThreads} mode="visual" {scroller} onSelect={(id) => onSelectComment?.(id)} />
+							{/if}
+						</div>
+					{:else if visualPending}
+						<!-- doc not here yet: the parse runs in a worker and fills this in when it lands -->
+						<VisualLoading phase={parseProgress} format={kind} sizeBytes={texSource.length} {onUseSource} />
+					{:else if loadedPath && rawText}
+						<!-- .typ no longer lands here: it is structured now (typSchema), so its source mode
 				     is the texSource branch above, which carries onCaretMove/onSyncToPdf for the
 				     Typst preview's follow and "Show in preview" -->
-				{#key sourceKey}
-					<SourceEditor
-						docPath={loadedPath}
-						value={rawContent}
-						onInput={onRawInput}
-						readOnly={!!encodingIssue}
-						filename={loadedPath}
-						gotoLine={sourceGotoLine}
-						collab={session.collabFor(loadedPath)}
-					/>
-				{/key}
-			{:else if loadedPath && kind === 'pdf'}
-				<!-- a .pdf opened directly: its own src, independent of the compile-output pane -->
-				<div class="h-full w-full">
-					<PDFViewer src={fileUrl(loadedPath)} filename={basename(loadedPath)} placement="file" />
+						<!-- guests always co-edit .bib through the Y-bound source editor; BibManager isn't
+				     CRDT-bound and would desync or clobber remote edits -->
+						<!-- the rail and the comment props are what make suggest mode real here: without them an
+				     edit in suggesting mode still stages a suggestion, drawn nowhere -->
+						<div class="flex h-full">
+							<div class="isolate h-full min-w-0 flex-1">
+								{#key sourceKey}
+									<SourceEditor
+										docPath={loadedPath}
+										value={rawContent}
+										{changeBaseline}
+										onInput={onRawInput}
+										readOnly={!!encodingIssue}
+										filename={loadedPath}
+										gotoLine={sourceGotoLine}
+										collab={session.collabFor(loadedPath)}
+										{commentRanges}
+										{selectedComment}
+										{onAddComment}
+										{onSelectComment}
+									/>
+								{/key}
+							</div>
+							{#if commentsCtl}
+								<CommentRail ctl={commentsCtl} threads={commentThreads} mode="source" onSelect={(id) => onSelectComment?.(id)} />
+							{/if}
+						</div>
+					{:else if loadedPath && kind === 'bib'}
+						{#key loadedPath}
+							<BibManager value={rawContent} onInput={onRawInput} suggested={bibSuggested} onShowSource={() => onSetViewMode?.('source')} />
+						{/key}
+					{:else if loadedPath && kind === 'pdf'}
+						<!-- a .pdf opened directly: its own src, independent of the compile-output pane -->
+						<div class="h-full w-full">
+							<PDFViewer src={fileUrl(loadedPath)} filename={basename(loadedPath)} placement="file" />
+						</div>
+					{:else if loadedPath && kind === 'image'}
+						<div class="flex h-full items-center justify-center p-8">
+							<img src={fileUrl(loadedPath)} alt={basename(loadedPath)} class="max-h-full max-w-full object-contain" />
+						</div>
+					{:else if loadedPath && kind === 'binary'}
+						<div class="text-muted mt-12 text-center text-sm">
+							{m.wsview_binary_file_note({ name: basename(loadedPath) })}
+						</div>
+					{:else if activeFilePath.current}
+						<!-- shown while the visual parse runs; fades in late so a fast parse never strobes a spinner -->
+						<div class="text-muted reveal-late mt-12 flex items-center justify-center gap-2 text-sm">
+							<Loader2 class="size-4 animate-spin" />
+							{m.wsview_opening()}
+						</div>
+					{:else}
+						<div class="text-muted mt-12 text-center text-sm">{m.wsview_select_file_prompt()}</div>
+					{/if}
 				</div>
-			{:else if loadedPath && kind === 'image'}
-				<div class="flex h-full items-center justify-center p-8">
-					<img src={fileUrl(loadedPath)} alt={basename(loadedPath)} class="max-h-full max-w-full object-contain" />
-				</div>
-			{:else if loadedPath && kind === 'binary'}
-				<div class="text-muted mt-12 text-center text-sm">
-					{m.wsview_binary_file_note({ name: basename(loadedPath) })}
-				</div>
-			{:else if activeFilePath.current}
-				<!-- shown while the visual parse runs; fades in late so a fast parse never strobes a spinner -->
-				<div class="text-muted reveal-late mt-12 flex items-center justify-center gap-2 text-sm">
-					<Loader2 class="size-4 animate-spin" />
-					{m.wsview_opening()}
-				</div>
-			{:else}
-				<div class="text-muted mt-12 text-center text-sm">{m.wsview_select_file_prompt()}</div>
-			{/if}
+			</div>
 		</div>
+		{#if history}
+			<VersionHistoryPanel path={history.path} hash={history.hash} />
+		{/if}
 	</div>
 </div>

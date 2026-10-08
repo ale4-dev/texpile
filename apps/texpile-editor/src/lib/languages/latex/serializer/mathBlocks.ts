@@ -37,6 +37,31 @@ function extractEnvironmentContent(latex: string, envName: string): string | nul
 	return m ? m[1].trim() : null;
 }
 
+/** rows at the even indices, `\\` breaks at the odd; one inside braces or a nested cases or matrix is not the display's */
+export function splitRows(body: string): string[] {
+	const parts: string[] = [];
+	let depth = 0;
+	let start = 0;
+	for (let i = 0; i < body.length; i++) {
+		const ch = body[i];
+		if (ch === '\\') {
+			if (body.startsWith('\\begin{', i)) depth++;
+			else if (body.startsWith('\\end{', i)) depth--;
+			else if (body[i + 1] === '\\' && depth === 0) {
+				const rowBreak = /^\\\\(?:\s*\[[^\]]*\])?/.exec(body.slice(i))![0];
+				parts.push(body.slice(start, i), rowBreak);
+				start = i + rowBreak.length;
+				i = start - 1;
+				continue;
+			}
+			i++;
+		} else if (ch === '{') depth++;
+		else if (ch === '}') depth--;
+	}
+	parts.push(body.slice(start));
+	return parts;
+}
+
 export function alignEnvironment(
 	content: string,
 	opts: { environment: string; lineLabels: string[]; label?: string; numbered: boolean }
@@ -44,18 +69,25 @@ export function alignEnvironment(
 	const envName = opts.numbered ? opts.environment : `${opts.environment}*`;
 	let inner = extractEnvironmentContent(content, opts.environment);
 	if (inner === null) inner = content.trim();
-	const lines = inner.split(/\\\\(?:\s*\[.*?\])?/);
+	// rows at the even indices, the row breaks between them at the odd ones: a break's spacing
+	// argument (`\\[2mm]`) is the row's, and goes back where it was
+	const parts = splitRows(inner);
+	const lines = parts.filter((_, i) => i % 2 === 0);
+	const breaks = parts.filter((_, i) => i % 2 === 1).map((b) => b.replace(/^\\\\\s*/, '\\\\'));
 	// a trailing \\ on the last row leaves one final EMPTY split segment. left in, the re-join
 	// adds a stray separator and the template's own \n compounds into a blank line inside math
 	// mode, which is illegal ("Paragraph ended before \align* was complete"). drop it; the join
 	// places separators only between real rows, the canonical trailing-\\-free form.
-	if (lines.length > 1 && lines[lines.length - 1].trim() === '') lines.pop();
+	if (lines.length > 1 && lines[lines.length - 1].trim() === '') {
+		lines.pop();
+		breaks.pop();
+	}
 	const processed = lines.map((line, i) => {
 		const t = line.trim();
 		const lbl = opts.lineLabels[i] || '';
 		return lbl && opts.numbered ? `${t} \\label{${lbl}}` : t;
 	});
-	let joined = processed.join(' \\\\\n');
+	let joined = processed.map((t, i) => (i < processed.length - 1 ? `${t} ${breaks[i] ?? '\\\\'}\n` : t)).join('');
 	if (opts.label && opts.numbered && opts.environment === 'multline') {
 		joined = joined.replace(/\n$/, '') + ` \\label{${opts.label}}`;
 	}

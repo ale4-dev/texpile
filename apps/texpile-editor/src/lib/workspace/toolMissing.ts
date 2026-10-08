@@ -1,5 +1,8 @@
 import { toaster } from '$lib/modals/toaster-svelte';
+import { tinymistInstaller } from '$lib/modals/window/tinymistInstall.svelte';
+import { installTinymistWithToast } from '$lib/modals/window/tinymistInstallToast';
 import { openToolchainPrefs } from '$lib/stores/dialogStore';
+import { askForProgram } from '$lib/modals/window/missingProgram/missingProgram.svelte';
 import { workspaceRoot } from './workspaceStore';
 import { resolveOutputPath } from './compileCommand';
 import { typstLogArg } from './typstCommand';
@@ -123,11 +126,34 @@ export async function reportMissingTool(opts: {
 		}
 	}
 	if (!program) return false;
+	await sayToolMissing(program);
+	return true;
+}
+
+/**
+ * "`program` is not installed". A typesetter's own program gets the dialog that shows whether it is there now and how
+ * to get it (missingProgram.svelte.ts); anything else, a helper such as gs, the toast with the one next step there is:
+ * the panel listing what IS installed.
+ */
+export async function sayToolMissing(program: string): Promise<void> {
+	if (askForProgram(program)) return;
+	if (program === 'tinymist' && tinymistInstaller.available) await tinymistInstaller.refresh();
+	const installable = program === 'tinymist' && tinymistInstaller.offered;
 	toaster.error({
 		title: m.compile_tool_missing_title(),
 		description: m.compile_tool_missing({ tool: program }),
-		duration: 8000,
-		action: { label: m.compile_tool_missing_action(), onClick: openToolchainPrefs }
+		duration: installable ? 12000 : 8000,
+		action: installable
+			? { label: m.tinymist_install(), onClick: () => void installTinymistWithToast() }
+			: { label: m.compile_tool_missing_action(), onClick: openToolchainPrefs }
 	});
-	return true;
+}
+
+/**
+ * The program an error says was not found, as main words it ("latexindent was not found on PATH. ..."), or null when the
+ * error is about something else
+ */
+export function programNotFound(e: unknown): string | null {
+	const text = e instanceof Error ? e.message : typeof e === 'string' ? e : '';
+	return /^([\w.+-]+) was not found on PATH\b/.exec(text)?.[1] ?? null;
 }

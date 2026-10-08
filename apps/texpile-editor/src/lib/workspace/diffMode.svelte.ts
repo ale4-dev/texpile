@@ -5,12 +5,15 @@
 // re-diff on every keystroke, so the snapshot deliberately reads the buffer untracked rather than
 // depending on it.
 //
-// The layout choice persists; which comparison was open does not, so a reload restores the files
-// you had rather than dropping you back into a diff.
+// The layout choice persists here; which comparisons were open persists with the other tabs.
 import type { Node as PMNode } from 'prosemirror-model';
 import { browser } from '$lib/runtime';
 import { layout, updateLayout } from '$lib/storage/layout';
-import { gitShowHead, gitShowAt } from '$lib/workspace/git';
+import { gitShowHead, gitShowAt, type GitShowResult } from '$lib/workspace/scm/git';
+import { LOCAL_REF, readLocalHistory } from '$lib/workspace/localHistory/localHistory.svelte';
+import { gitFileAt } from '$lib/workspace/scm/gitVersion';
+import { AGENT_REF, readBefore } from '$lib/ai/agentPanel/changes/agentBefore';
+import { workspaceRoot } from '$lib/workspace/workspaceStore';
 import { VisualParser } from '$lib/workspace/visualParse.svelte';
 import { m } from '$lib/paraglide/messages';
 
@@ -21,6 +24,21 @@ export type DiffDeps = {
 	/** project macro definitions, so a version parses in the same context the live document did */
 	getMacros(): string;
 };
+
+/** a git version, a Local History entry ('local:<id>') or the file before an agent's turn changed it
+ *  ('agent:...'), compared the same way. A version from before a rename is read under the name the file
+ *  had then. */
+async function versionText(path: string, ref: { hash: string; path?: string }): Promise<GitShowResult> {
+	const root = workspaceRoot.current;
+	if (ref.path && root) return gitFileAt(root, ref.path, ref.hash);
+	if (ref.hash.startsWith(AGENT_REF)) {
+		const content = readBefore(ref.hash);
+		return content === null ? { ok: false, hasHead: false, error: m.history_entry_gone() } : { ok: true, hasHead: true, content };
+	}
+	if (!ref.hash.startsWith(LOCAL_REF)) return gitShowAt(path, ref.hash);
+	const content = await readLocalHistory(path, ref.hash.slice(LOCAL_REF.length));
+	return content === null ? { ok: false, hasHead: false, error: m.history_entry_gone() } : { ok: true, hasHead: true, content };
+}
 
 export class DiffMode {
 	/** HEAD content ('' when the file has no committed baseline) */
@@ -33,7 +51,7 @@ export class DiffMode {
 	hasHead = $state(true);
 	layout = $state<'unified' | 'split'>('unified');
 	/** which version the working copy is compared against; null means HEAD */
-	compareRef = $state<{ hash: string; subject: string } | null>(null);
+	compareRef = $state<{ hash: string; subject: string; path?: string } | null>(null);
 
 	// The visual diff compares two documents, so the version goes through the importer too. On
 	// demand, not with every snapshot: a source comparison never needs it and this is the slow half.
@@ -78,7 +96,7 @@ export class DiffMode {
 		this.loading = true;
 		this.error = null;
 		const ref = this.compareRef;
-		const res = ref ? await gitShowAt(path, ref.hash) : await gitShowHead(path);
+		const res = ref ? await versionText(path, ref) : await gitShowHead(path);
 		// cleared even when superseded, or the bar keeps announcing a read that already ended
 		this.loading = false;
 		if (this.deps.getLoadedPath() !== path) return; // a file switch superseded this snapshot

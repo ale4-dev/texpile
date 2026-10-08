@@ -43,6 +43,10 @@ jobs:
               release/*.exe
               release/*.blockmap
               release/latest.yml
+          - os: windows-latest
+            variant: portable
+            artifacts: |
+              release/*-portable.zip
           - os: macos-15
             artifacts: |
               release/*.dmg
@@ -56,11 +60,11 @@ jobs:
               release/latest-linux.yml
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -89,10 +93,27 @@ jobs:
           Write-Host "TrustedSigning $((Get-Module TrustedSigning).Version) ready"
 
       - name: Build & sign installer (Windows / Azure Trusted Signing)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.variant != 'portable'
         shell: pwsh
         run: >
           pnpm dist
+          --config.releaseInfo.releaseNotesFile=release-notes.md
+          --config.win.azureSignOptions.endpoint=${{ vars.AZURE_ENDPOINT }}
+          --config.win.azureSignOptions.codeSigningAccountName=${{ vars.AZURE_CODE_SIGNING_ACCOUNT }}
+          --config.win.azureSignOptions.certificateProfileName=${{ vars.AZURE_CERT_PROFILE }}
+          "--config.win.azureSignOptions.publisherName=Texpile LLC"
+          --config.win.azureSignOptions.timestampRfc3161=http://timestamp.acs.microsoft.com
+          --config.win.azureSignOptions.timestampDigest=SHA256
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      - name: Build & sign portable zip (Windows / Azure Trusted Signing)
+        if: runner.os == 'Windows' && matrix.variant == 'portable'
+        shell: pwsh
+        run: >
+          pnpm dist:portable
           --config.releaseInfo.releaseNotesFile=release-notes.md
           --config.win.azureSignOptions.endpoint=${{ vars.AZURE_ENDPOINT }}
           --config.win.azureSignOptions.codeSigningAccountName=${{ vars.AZURE_CODE_SIGNING_ACCOUNT }}
@@ -123,9 +144,9 @@ jobs:
         if: runner.os == 'Linux'
         run: pnpm dist --config.releaseInfo.releaseNotesFile=release-notes.md
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: texpile-${{ runner.os }}-v${{ steps.ver.outputs.v }}
+          name: texpile-${{ runner.os }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}-v${{ steps.ver.outputs.v }}
           path: ${{ matrix.artifacts }}
           if-no-files-found: error
 
@@ -137,9 +158,9 @@ jobs:
     env:
       BUCKET: texpile-releases # must match the bucket name created in the Cloudflare dashboard
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: texpile-*
           merge-multiple: true
@@ -150,7 +171,7 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           missing=0
-          for f in "Texpile-Setup-$VERSION.exe" "Texpile-Setup-$VERSION.exe.blockmap" \
+          for f in "Texpile-Setup-$VERSION.exe" "Texpile-Setup-$VERSION.exe.blockmap" "Texpile-$VERSION-portable.zip" \
                    "Texpile-$VERSION.dmg" "Texpile-$VERSION.zip" "Texpile-$VERSION.zip.blockmap" \
                    "Texpile-$VERSION.AppImage" "texpile-$VERSION.deb" \
                    latest.yml latest-mac.yml latest-linux.yml; do
@@ -172,6 +193,7 @@ jobs:
         run: |
           put() { npx wrangler@4 r2 object put "$BUCKET/$1" --file "$2" --remote --content-type "$3"; }
           put "v$VERSION/Texpile-Setup-$VERSION.exe" "dist/Texpile-Setup-$VERSION.exe" application/octet-stream
+          put "v$VERSION/Texpile-$VERSION-portable.zip" "dist/Texpile-$VERSION-portable.zip" application/zip
           put "v$VERSION/Texpile-$VERSION.dmg" "dist/Texpile-$VERSION.dmg" application/octet-stream
           put "v$VERSION/Texpile-$VERSION.AppImage" "dist/Texpile-$VERSION.AppImage" application/octet-stream
           put "v$VERSION/texpile-$VERSION.deb" "dist/texpile-$VERSION.deb" application/octet-stream
@@ -229,3 +251,9 @@ jobs:
           { echo "Download installers: https://texpile.com/download"; echo; \
             node apps/texpile-editor/scripts/release-notes.mjs | sed 's/^/- /'; } > body.md
           gh release create "$GITHUB_REF_NAME" --title "Texpile $GITHUB_REF_NAME" --notes-file body.md             $([[ "$GITHUB_REF_NAME" == *-* ]] && echo --prerelease)
+
+  # the browser guest follows the desktop release; join.yml itself skips anything but a stable tag
+  deploy-join:
+    needs: publish-r2
+    uses: ./.github/workflows/join.yml
+    secrets: inherit

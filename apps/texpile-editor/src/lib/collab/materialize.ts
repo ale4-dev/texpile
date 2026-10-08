@@ -6,7 +6,10 @@
 
 import type * as Y from 'yjs';
 import { LATEX_SIDECAR_RE } from '$lib/workspace/buildArtifacts';
+import { carryGestures, type TextSpan } from '$lib/comments/editGestures';
 import { manifestOf, locksOf, textOf, type ManifestEntry } from './session';
+import { LocalFork } from './localFork';
+import { detectEol, fromLf, toLf, type Eol } from '$lib/workspace/edits/lineEndings';
 
 export type MaterializeFs = {
 	/** raw bytes: both the text/binary classification and the seeded body come from one read */
@@ -26,9 +29,9 @@ export type MaterializeFs = {
 // routing them through the CRDT would grow every participant's session memory with dead compile
 // output. They stay in the fetch-on-demand binary tier (guests still get the log and friends).
 const GENERATED_EXT = LATEX_SIDECAR_RE;
-// never shared: VCS internals and dependency trees (credentials + noise). Everything else is shared,
-// gated by size, so a guest can pull the output folder for local intellisense, the log, and the PDF.
-const EXCLUDE = /(^|\/)(\.git|\.svn|node_modules|__pycache__)(\/|$)/i;
+// never shared: anything hidden (.git, .env, .npmrc) and dependency trees (credentials + noise). Everything
+// else is shared, gated by size, so a guest can pull the output folder for local intellisense, the log, and the PDF.
+const EXCLUDE = /(^|\/)(\.[^/]*|node_modules|__pycache__)(\/|$)/i;
 // Name-based HINT that a file is source text, where content is not worth reading: the too-big-to-
 // co-edit warning, and the tree scan's "text needs no stat" fast path. Never used to DENY co-edit.
 const LIKELY_TEXT = /\.(tex|bib|cls|sty|txt|md|csv|dat|def|tikz|pgf|json|yml|yaml|toml|lco|ldf|clo|bst|typ)$/i;
@@ -69,16 +72,6 @@ const WRITE_DEBOUNCE_MS = 400;
 export const SEED_ORIGIN = 'collab-seed';
 export const EDIT_ORIGIN = 'collab-edit'; // a local editor's fold-in splice (host or guest)
 
-function toLf(s: string) {
-	return s.replace(/\r\n?/g, '\n');
-}
-function detectEol(s: string): '\r\n' | '\n' {
-	return s.includes('\r\n') ? '\r\n' : '\n';
-}
-function fromLf(s: string, eol: '\r\n' | '\n') {
-	return eol === '\r\n' ? s.replace(/\n/g, '\r\n') : s;
-}
-
 // the shared set as a stable string: which paths exist and their kind, ignoring a binary's rev
 // (an image reswap doesn't change any source binding) and lock state (that's a live read-only flip)
 function manifestSignature(manifest: Y.Map<ManifestEntry>): string {
@@ -87,26 +80,50 @@ function manifestSignature(manifest: Y.Map<ManifestEntry>): string {
 	return parts.sort().join('|');
 }
 
-/** minimal single-splice diff (common prefix/suffix trim); enough for editor-shaped changes. */
-export function spliceDiff(oldStr: string, newStr: string): { index: number; remove: number; insert: string } | null {
-	if (oldStr === newStr) return null;
-	let start = 0;
-	const maxStart = Math.min(oldStr.length, newStr.length);
-	while (start < maxStart && oldStr[start] === newStr[start]) start++;
-	let endOld = oldStr.length;
-	let endNew = newStr.length;
-	// suffix must not overlap the prefix (classic "abab" pitfall)
-	while (endOld > start && endNew > start && oldStr[endOld - 1] === newStr[endNew - 1]) {
-		endOld--;
-		endNew--;
+/** where a Y.Text change landed, as spans of the text after it; a deletion is an empty span */
+export function changedSpans(delta: Y.YTextEvent['delta'], before: string, after: string): TextSpan[] {
+	const spans = deltaSpans(delta);
+	// one edit is placed from the text, as a local one is: the writer's splice is one of several places it
+	// could have gone, and the visual editor's puts a letter typed beside the same letter after it
+	return spans.length === 1 ? carryGestures([], before, after) : spans;
+}
+
+function deltaSpans(delta: Y.YTextEvent['delta']): TextSpan[] {
+	const out: TextSpan[] = [];
+	let at = 0;
+	for (const op of delta) {
+		if (op.retain) at += op.retain;
+		else if (op.insert !== undefined) {
+			const to = at + (typeof op.insert === 'string' ? op.insert.length : 1);
+			out.push({ from: at, to });
+			at = to;
+		} else if (op.delete) out.push({ from: at, to: at });
 	}
-	return { index: start, remove: endOld - start, insert: newStr.slice(start, endNew) };
+	const merged: TextSpan[] = [];
+	for (const g of out) {
+		const prev = merged[merged.length - 1];
+		if (prev && g.from <= prev.to) prev.to = Math.max(prev.to, g.to);
+		else merged.push({ ...g });
+	}
+	return merged;
 }
 
 export class HostMaterializer {
+	/** awaited once a file's changes settle, before the write-through, so whatever the write records lands first */
+	onWrite: ((rel: string, content: string) => Promise<void>) | null = null;
+	/** the peer a transaction origin came from, or null when it is this side's own */
+	senderOf: ((origin: unknown) => number | null) | null = null;
+	/** a peer's change to a shared file, as it applies: the file just before and just after it */
+	onRemoteChange: ((rel: string, before: string, after: string, from: number, spans: TextSpan[]) => void) | null = null;
 	private readonly writeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private readonly lastWritten = new Map<string, string>(); // rel -> LF content last synced with disk
+	private readonly wrote = new Map<string, string>(); // rel -> LF content this side last wrote itself
+	private readonly running = new Map<string, string>(); // rel -> LF content as of the last transaction
+	private readonly endings = new Map<string, Eol>(); // rel -> how its lines ended on disk when this host read it
 	private readonly observers = new Map<string, () => void>();
+	// what this host listed; the manifest is not the authority, since any guest can write to it
+	private listed = new Set<string>();
+	private readonly fork: LocalFork;
 	private destroyed = false;
 
 	constructor(
@@ -115,13 +132,16 @@ export class HostMaterializer {
 		private readonly fs: MaterializeFs,
 		private readonly joinPath: (root: string, rel: string) => string,
 		private readonly onError?: (rel: string, err: unknown) => void
-	) {}
+	) {
+		this.fork = new LocalFork(doc);
+	}
 
 	/** scan + read every shared text file into the doc, in one transaction. Returns the text files
 	 *  too large to co-edit (shared view-only instead), so the host can warn about them. */
 	async seed(): Promise<{ oversizedText: string[] }> {
 		const files = (await this.fs.listFiles(this.root)).filter((f) => isShared(f.rel));
-		const bodies = new Map<string, { text: string; eol: '\r\n' | '\n' }>();
+		this.listed = new Set(files.map((f) => f.rel));
+		const bodies = new Map<string, { text: string; eol: Eol }>();
 		const oversizedText: string[] = [];
 		for (const f of files) {
 			if (isGeneratedArtifact(f.rel)) continue;
@@ -148,7 +168,8 @@ export class HostMaterializer {
 			for (const f of files) {
 				const body = bodies.get(f.rel);
 				if (body) {
-					manifest.set(f.rel, { kind: 'text', size: f.size, eol: body.eol });
+					manifest.set(f.rel, { kind: 'text', size: f.size });
+					this.endings.set(f.rel, body.eol);
 					const t = textOf(this.doc, f.rel);
 					if (t.length > 0) t.delete(0, t.length);
 					t.insert(0, body.text);
@@ -168,9 +189,15 @@ export class HostMaterializer {
 	private observe(rel: string): void {
 		if (this.observers.has(rel)) return;
 		const t = textOf(this.doc, rel);
+		this.running.set(rel, t.toString());
 		const handler = (ev: Y.YTextEvent) => {
 			const origin = ev.transaction.origin;
+			const before = this.running.get(rel) ?? '';
+			const after = t.toString();
+			this.running.set(rel, after);
 			if (origin === SEED_ORIGIN) return;
+			const from = this.senderOf?.(origin) ?? null;
+			if (from !== null && before !== after) this.onRemoteChange?.(rel, before, after, from, changedSpans(ev.delta, before, after));
 			this.scheduleWrite(rel);
 		};
 		t.observe(handler);
@@ -195,10 +222,17 @@ export class HostMaterializer {
 		const entry = manifestOf(this.doc).get(rel);
 		if (!entry || entry.kind !== 'text' || entry.gone) return;
 		const content = textOf(this.doc, rel).toString();
+		// even when the changes cancel out: what they moved is still recorded
+		try {
+			await this.onWrite?.(rel, content);
+		} catch (e) {
+			this.onError?.(rel, e);
+		}
 		if (this.lastWritten.get(rel) === content) return;
 		try {
-			await this.fs.writeText(this.joinPath(this.root, rel), fromLf(content, entry.eol ?? '\n'));
+			await this.fs.writeText(this.joinPath(this.root, rel), fromLf(content, this.endings.get(rel) ?? '\n'));
 			this.lastWritten.set(rel, content);
+			this.wrote.set(rel, content);
 		} catch (e) {
 			this.onError?.(rel, e);
 		}
@@ -226,18 +260,12 @@ export class HostMaterializer {
 		for (const rel of pending) await this.writeNow(rel);
 	}
 
-	/** fold a host editor save into the doc as a minimal splice. content is LF, already on disk. */
-	hostEdit(rel: string, lfContent: string): void {
+	/** fold a host editor save into the doc; content is LF, already on disk, and `lfBefore` is the text it was made to */
+	hostEdit(rel: string, lfContent: string, lfBefore?: string): void {
 		const entry = manifestOf(this.doc).get(rel);
 		if (!entry || entry.kind !== 'text') return;
-		const t = textOf(this.doc, rel);
-		const diff = spliceDiff(t.toString(), lfContent);
 		this.lastWritten.set(rel, lfContent); // the editor's own save already wrote the disk
-		if (!diff) return;
-		this.doc.transact(() => {
-			if (diff.remove > 0) t.delete(diff.index, diff.remove);
-			if (diff.insert) t.insert(diff.index, diff.insert);
-		}, EDIT_ORIGIN);
+		this.fork.fold(textOf(this.doc, rel), lfContent, lfBefore, EDIT_ORIGIN);
 	}
 
 	/** re-sync the manifest after host-side file ops (create/delete/rename/import). Returns whether
@@ -247,9 +275,10 @@ export class HostMaterializer {
 		const files = (await this.fs.listFiles(this.root)).filter((f) => isShared(f.rel));
 		const manifest = manifestOf(this.doc);
 		const seen = new Set(files.map((f) => f.rel));
+		this.listed = seen;
 		const sigBefore = manifestSignature(manifest);
 		const newTexts: string[] = [];
-		const bodies = new Map<string, { text: string; eol: '\r\n' | '\n' }>();
+		const bodies = new Map<string, { text: string; eol: Eol }>();
 		for (const f of files) {
 			const existing = manifest.get(f.rel);
 			if (!existing || existing.gone) {
@@ -272,7 +301,8 @@ export class HostMaterializer {
 				const existing = manifest.get(f.rel);
 				const body = bodies.get(f.rel);
 				if (body) {
-					manifest.set(f.rel, { kind: 'text', size: f.size, eol: body.eol });
+					manifest.set(f.rel, { kind: 'text', size: f.size });
+					this.endings.set(f.rel, body.eol);
 					const t = textOf(this.doc, f.rel);
 					if (t.length > 0) t.delete(0, t.length);
 					t.insert(0, body.text);
@@ -298,6 +328,25 @@ export class HostMaterializer {
 		return manifestSignature(manifest) !== sigBefore;
 	}
 
+	/** what this side last wrote to the file at rel for the session (LF), once, or null */
+	takeWrite(rel: string): string | null {
+		const content = this.wrote.get(rel) ?? null;
+		this.wrote.delete(rel);
+		return content;
+	}
+
+	/** whether this host shares the file at rel */
+	sharesFile(rel: string): boolean {
+		return this.listed.has(rel);
+	}
+
+	/** whether rel is a folder holding files this host shares */
+	sharesFolder(rel: string): boolean {
+		const prefix = rel + '/';
+		for (const f of this.listed) if (f.startsWith(prefix)) return true;
+		return false;
+	}
+
 	/** mark a file as held by the host's visual editor (guests go read-only on it). */
 	setHostLock(rel: string | null, prevRel?: string | null): void {
 		this.doc.transact(() => {
@@ -313,5 +362,6 @@ export class HostMaterializer {
 		this.writeTimers.clear();
 		for (const un of this.observers.values()) un();
 		this.observers.clear();
+		this.fork.destroy();
 	}
 }

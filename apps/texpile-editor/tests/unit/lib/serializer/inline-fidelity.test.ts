@@ -16,6 +16,21 @@ describe('inline fidelity', () => {
 		expect(rt('\\textcolor[rgb]{0.5,0,0}{red text}')).toContain('\\textcolor[rgb]{0.5,0,0}{red text}');
 	});
 
+	it('\\hl keeps the scope of its color', () => {
+		expect(rt('a \\hl{b} c')).toContain('a \\hl{b} c');
+		expect(rt('a {\\sethlcolor{green}\\hl{b}} c')).toContain('a {\\sethlcolor{green}\\hl{b}} c');
+		expect(rt('a {\\sethlcolor{green} \\hl{b} d} c')).toContain('a {\\sethlcolor{green} \\hl{b} d} c');
+		const marks = (s: string) =>
+			LatexParser.latexToProseMirror(s).doc.firstChild!.firstChild!.marks.map((m) => [m.type.name, m.attrs.color]);
+		expect(marks('\\hl{b}')).toEqual([['highlight', null]]);
+		expect(marks('{\\sethlcolor{green}\\hl{b}}')).toEqual([['highlight', 'green']]);
+	});
+
+	it("\\colorbox stays \\colorbox, model and all, not soul's \\hl", () => {
+		expect(rt('a \\colorbox{yellow}{b} c')).toContain('a \\colorbox{yellow}{b} c');
+		expect(rt('a \\colorbox[rgb]{1,0.9,0}{b} c')).toContain('a \\colorbox[rgb]{1,0.9,0}{b} c');
+	});
+
 	it('a blank line inside an argument or a cell does not fuse the words (47)', () => {
 		expect(rt('\\textbf{first\n\nsecond}')).toMatch(/first second/);
 		expect(rt('\\begin{tabular}{l}\nfirst\n\nsecond \\\\\n\\end{tabular}')).toMatch(/first second/);

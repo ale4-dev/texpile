@@ -5,24 +5,63 @@
  * pairs.
  */
 
-import type { Node, Mark } from 'prosemirror-model';
-import { serializeTable } from './tableSerializer';
+import { Fragment, type Node, type Mark } from 'prosemirror-model';
+import { serializeTable, serializeRowCells, serializeCell } from './tableSerializer';
 import { FIG_IMG_SLOT, FIG_CAP_SLOT, FIG_LAB_SLOT } from '../parser/converter';
-import { createBlockAssembly, type DocSerializeResult } from '$lib/serializer/blockAssembly';
+import { blankLineAt, createBlockAssembly, type DocSerializeResult } from '$lib/serializer/blockAssembly';
 import type { Ctx, NodeHandler } from '$lib/serializer/types';
-// direct, not through the image barrel: that one pulls in svelte and the DOM
-import { DEFAULT_FIGURE_FRACTION } from '$lib/editor/visual/extensions/image/figureDefaults';
-import { esc, applyMarks, markableMarks, marksKey } from './textEscapes';
+import { esc, applyMarks, bareTextString, joinInline, markableMarks, marksKey } from './textEscapes';
 import { blockMath, alignEnvironment } from './mathBlocks';
+import { isHandlerLeaf, mapRunLeaves, renderShadowed, shadowed, standIn, withoutShadow } from './latexShadowRun';
+import { buildIncludegraphics } from './includegraphics';
+import { continuesList, opensItsSourceList, runEnvName } from './listContinuation';
+import { dropParagraphEnd, paragraphGap } from './paragraphEnds';
+import { guardItemBody, headsItem, labelKey } from './itemLabels';
+import type { Segment } from '$lib/editor/visual/sourceSpans';
+import type { ParseOrigins } from '$lib/editor/visual/parseOrigins';
+import { afterLead, BRACKET_START, bracketFollows, guardBracket, opensLine } from './lineBreaks';
 export { esc, sanitizeText, type EscMode } from './textEscapes';
 
 export type { DocSerializeResult } from '$lib/serializer/blockAssembly';
+
+/** where the leaves of a regenerated block sit in its text, or null when the shadow could not be believed */
+function mapBlockLeaves(block: Node, ctx: Ctx, real: string): Segment[] | null {
+	return mapRunLeaves(block, real, () => serializeNode(block, ctx));
+}
+
+/** the inline children `from` up to `to` of a textblock as one run of inline content, and where
+ *  its leaves sit in it: what the segment splice writes between the bytes it keeps */
+function inlineRun(block: Node, nodes: Node[]): Node {
+	return block.type.create(block.attrs, Fragment.fromArray(nodes), block.marks);
+}
+
+function inlineBytes(block: Node, nodes: Node[], atStart: boolean, ctx: Ctx): string | null {
+	const run = inlineRun(block, nodes);
+	// a comment chip owns its line: it cannot stand mid-line between kept bytes
+	let comment = false;
+	run.forEach((c) => {
+		if (c.type.name === 'inline_latex' && c.textContent.startsWith('%')) comment = true;
+	});
+	if (comment) return null;
+	const bytes = afterLead(block, nodes, () => renderChildren(run, ctx.inTableCell));
+	return atStart && headsItem(ctx) ? guardItemBody(bytes) : bytes;
+}
+
+function mapInlineLeaves(block: Node, nodes: Node[], text: string, _atStart: boolean, ctx: Ctx): Segment[] | null {
+	const run = inlineRun(block, nodes);
+	return mapRunLeaves(run, text, () => afterLead(block, nodes, () => renderChildren(run, ctx.inTableCell)));
+}
+
+/** the real and shadow runs of one block side by side, for the oracles to say why a block maps no leaves */
+export function shadowRunOf(block: Node, ctx: Ctx): { real: string; shadow: string } {
+	return { real: serializeNode(block, ctx), shadow: renderShadowed(() => serializeNode(block, ctx)) };
+}
 
 /** A text/leaf node's content WITHOUT its own marks, for runs wrapped once by the caller. */
 function serializeBare(node: Node): string {
 	if (node.isText) return bareText(node);
 	const leafText = node.type.spec.leafText;
-	return leafText ? leafText(node) : '';
+	return leafText ? shadowed(node, leafText(node)) : '';
 }
 
 function prevSibling(ctx: Ctx): Node | null {
@@ -42,7 +81,7 @@ export function renderChildren(node: Node, inTableCell: boolean): string {
 	// merges identical text nodes, but atom leaves never merge, so \texttt{A\ B} parses to three
 	// same-marked nodes and would serialize as three separate \texttt{} calls: pointless churn
 	// that multiplies per chip.
-	const pieces: string[] = [];
+	let pieces: string[] = [];
 	let i = 0;
 	while (i < children.length) {
 		const marks = markableMarks(children[i]);
@@ -64,54 +103,10 @@ export function renderChildren(node: Node, inTableCell: boolean): string {
 		}
 		i = j;
 	}
+	// a container's untouched children are written out as their bytes, joined on the file's own gaps
+	if (pieces.length === children.length && children.length > 0 && children[0].isBlock) pieces = assembly.verbatimParts(node, pieces);
 
-	let out = '';
-	for (const piece of pieces) {
-		// if the previous chunk ends in a control word and this one starts with a letter, direct
-		// concatenation FUSES them into an undefined command (\answerYes + See = \answerYesSee;
-		// happens when a separating construct didn't survive conversion). a single space restores
-		// the boundary and is render-neutral: TeX eats whitespace after a control word. purely
-		// lexical, runs on serialized output where no AST exists. only the tail needs testing (an
-		// end-anchored regex on the whole accumulator is quadratic across pieces); 256 chars is
-		// far past any real control-word length.
-		if (piece && /\\[a-zA-Z@]+$/.test(out.slice(-256)) && /^[a-zA-Z]/.test(piece)) out += ' ';
-		// A comment owns a WHOLE line, both ends: emitted mid-line it would swallow the rest of the
-		// line, and it arrived from source on its own line (a raw '%' can only open a comment chip;
-		// escaped text starts with \%). With serializeNode closing the line after the chip, comment
-		// chips are a round-trip fixed point instead of degrading into strippable trailing comments.
-		if (piece.startsWith('%') && out && !out.endsWith('\n')) out += '\n';
-		out += piece;
-	}
-	return out;
-}
-
-/**
- * Two lists the source wrote as separate environments stay separate: the verbatim layer emits a
- * pristine neighbour with its own \begin and \end, so coalescing a regenerated one into it left
- * an unbalanced environment. Editor-made list nodes carry no source group and still coalesce.
- */
-function sameSourceList(a: Node, b: Node): boolean {
-	const ga = (a.attrs.orig as { group?: number | null } | null)?.group;
-	const gb = (b.attrs.orig as { group?: number | null } | null)?.group;
-	return ga == null || gb == null || ga === gb;
-}
-
-/** the environment name the first node of this run of list nodes carries, if any */
-function runEnvName(node: Node, ctx: Ctx): string | null {
-	if (!ctx.parent) return typeof node.attrs.envName === 'string' ? node.attrs.envName : null;
-	const kind = node.attrs.kind;
-	for (let i = ctx.index; i >= 0; i--) {
-		const n = ctx.parent.child(i);
-		if (n.type.name !== 'list' || n.attrs.kind !== kind || (i < ctx.index && !sameSourceList(n, ctx.parent.child(i + 1)))) break;
-		if (typeof n.attrs.envName === 'string' && n.attrs.envName) return n.attrs.envName;
-	}
-	return null;
-}
-
-// letters and digits only: the same label written as source and re-serialized from the editor
-// differs by ties, dash ligatures and quote curling, so compare what survives all of those
-function labelKey(s: string): string {
-	return s.replace(/\\[a-zA-Z@]+\s*/g, '').replace(/[^\p{L}\p{N}]/gu, '');
+	return joinInline(pieces);
 }
 
 /**
@@ -122,13 +117,14 @@ function labelKey(s: string): string {
  * label is not the label. `latex` is the run re-serialized, which is what an edited label has
  * to be written back as; the caller prefers the untouched source when the two still agree.
  */
-function splitLeadingLabel(item: Node): { latex: string; body: Node } | null {
+function splitLeadingLabel(item: Node): { latex: string; bare: Node; body: Node; glued: boolean } | null {
 	if (item.type.name !== 'paragraph') return null;
-	// through the LAST marked node, not the first unmarked one: an atom in the middle of a label
-	// (`\item[A $x$ B]` puts inline math there) carries no marks of its own
+	// through the LAST marked node, not the first unmarked one
 	let last = -1;
 	for (let i = 0; i < item.childCount; i++) {
-		if (item.child(i).marks.some((m) => m.type.name === 'item_label')) last = i;
+		const child = item.child(i);
+		if (child.marks.some((m) => m.type.name === 'item_label')) last = i;
+		else if (child.isText) break;
 	}
 	if (last < 0) return null;
 	let size = 0;
@@ -138,14 +134,20 @@ function splitLeadingLabel(item: Node): { latex: string; body: Node } | null {
 	const bare = item.type.schema.node(
 		'paragraph',
 		null,
-		item.content.cut(0, size).content.map((n) => n.mark(n.marks.filter((m) => m.type.name !== 'item_label' && m.type.name !== 'strong')))
+		item.content
+			.cut(0, size)
+			.content.map((n) => standIn(n.mark(n.marks.filter((m) => m.type.name !== 'item_label' && m.type.name !== 'strong')), n))
 	);
 	let rest = item.content.cut(size);
 	const next = rest.firstChild;
+	// the body runs straight on from the bracket when no whitespace stands between them
+	const glued = !!next && !(next.isText && /^\s/.test(next.text ?? ''));
 	if (next?.isText && next.text && /^\s+$/.test(next.text)) rest = rest.cut(next.nodeSize);
-	else if (next?.isText && next.text && /^\s/.test(next.text))
-		rest = rest.replaceChild(0, next.type.schema.text(next.text.replace(/^\s+/, ''), next.marks));
-	return { latex: renderChildren(bare, false).trim(), body: item.copy(rest) };
+	else if (next?.isText && next.text && /^\s/.test(next.text)) {
+		const trimmed = next.text.replace(/^\s+/, '');
+		rest = rest.replaceChild(0, standIn(next.type.schema.text(trimmed, next.marks), next, next.text.length - trimmed.length));
+	}
+	return { latex: renderChildren(bare, false).trim(), bare, body: item.copy(rest), glued };
 }
 
 const HEADING_CMD: Record<number, string> = {
@@ -156,45 +158,66 @@ const HEADING_CMD: Record<number, string> = {
 	5: '\\subparagraph'
 };
 
-/** Drop width=/scale=/height= entries from an \includegraphics option list (keep trim, clip, angle…). */
-function stripSizeKeys(opts: string): string {
-	return opts
-		.split(',')
-		.map((s) => s.trim())
-		.filter((s) => s && !/^(width|scale|height|totalheight)\s*=/.test(s))
-		.join(', ');
+function envBody(node: Node): string {
+	return dropParagraphEnd(renderChildren(node, false).replace(/^\n+|\n+$/g, ''), node.lastChild) + '\n';
 }
 
-/**
- * Rebuild the \includegraphics for an image node.
- * - resized in the editor (width/maxWidth set): emit width=<frac>\textwidth, keeping other
- *   captured options (trim/clip/angle) and replacing the original size keys.
- * - options === '': the source had no brackets, emit \includegraphics{src} verbatim.
- * - options a non-empty string: emit it verbatim.
- * - options == null (editor-created, never resized): the default width.
- */
-function buildIncludegraphics(node: Node): string {
-	const src = String(node.attrs.src ?? '');
-	const options = node.attrs.options as string | null;
-	const w = Number(node.attrs.width);
-	const mw = Number(node.attrs.maxWidth);
-	if (Number.isFinite(w) && Number.isFinite(mw) && mw > 0) {
-		const frac = Math.round((w / mw) * 100) / 100; // resize already snaps; this guards stray values
-		const rest = stripSizeKeys(typeof options === 'string' ? options : '');
-		const opts = [`width=${frac}\\textwidth`, rest].filter(Boolean).join(', ');
-		return `\\includegraphics[${opts}]{${src}}`;
-	}
-	if (options === '') return `\\includegraphics{${src}}`;
-	if (typeof options === 'string') return `\\includegraphics[${options}]{${src}}`;
-	return `\\includegraphics[width=${DEFAULT_FIGURE_FRACTION}\\textwidth]{${src}}`;
-}
+// doc assembly (verbatim substitution + per-block memo) is format-neutral and shared with the
+// markdown serializer; serializeNode hoists, so binding it here is safe.
+const assembly = createBlockAssembly((node, ctx) => serializeNode(node, ctx), {
+	beforeBreak: (text, last, next) => dropParagraphEnd(text, last.node, last.was, next.origin ?? next.was),
+	boundary: paragraphGap,
+	mapLeaves: mapBlockLeaves,
+	shadowChunk: (node, bytes) => shadowed(node, bytes),
+	// an item's label is written with \item, by the list handler, from the run at the head of the
+	// item's first block: that block cannot be rendered on its own inside the item's frame
+	spliceChild: (parent, index, was) =>
+		!(
+			parent.type.name === 'list' &&
+			(splitLeadingLabel(parent.child(index)) !== null ||
+				(was !== null && splitLeadingLabel(was) !== null) ||
+				(index === 0 && parent.attrs.itemLabel != null))
+		),
+	// inside a formula, a chip or a code block the text is the source; prose is escaped the way the text handler does
+	leafBytes: (leaf, parent, atStart, _block, ctx) => {
+		if (parent.type.spec.leafText || parent.type.spec.code) return leaf.text ?? '';
+		// a label's bytes sit inside \item[..]: a `]` in them needs the whole bracket braced
+		if (leaf.marks.some((m) => m.type.name === 'item_label') && (leaf.text ?? '').includes(']')) return null;
+		// a bare link's text is the argument of its \url, whose bytes are the text's own run
+		if (leaf.marks.some((m) => m.type.name === 'link' && m.attrs.bare)) return null;
+		const bytes = bareTextString(
+			leaf.text ?? '',
+			leaf.marks.some((m) => m.type.name === 'code')
+		);
+		return atStart && headsItem(ctx) ? guardItemBody(bytes) : bytes;
+	},
+	inlineBytes,
+	mapInlineLeaves,
+	// a comment runs to the end of its line: nothing may follow it on that line
+	endsLine: (text) => /(^|[^\\])(\\\\)*%[^\n]*$/.test(text),
+	continues: continuesList,
+	standsAlone: (parsed) => !parsed.isTextblock || splitLeadingLabel(parsed) === null,
+	// a control word ending the fresh bytes would fuse with a letter beginning the kept tail, and in
+	// prose line breaks meeting across the seam (a line taken out, a \\ before the file's own line
+	// end) would make a blank line, a new paragraph
+	keepApart: (bytes, tail, head, _gone, parent) => {
+		if (!parent.type.spec.leafText && !parent.type.spec.code && blankLineAt(head, bytes, tail)) return null;
+		const out = /\\[a-zA-Z@]+$/.test(bytes) && /^[a-zA-Z]/.test(tail) ? bytes + ' ' : bytes;
+		return parent.type.spec.code ? out : guardBracket(head, bytes, tail, out);
+	},
+	// a block written afresh inside an environment or an item continues its lines as the file
+	// indented the block it replaced, else under what stood before it on its first line
+	continuation: (_parent, text, head) => {
+		const nl = text.indexOf('\n');
+		return nl >= 0 ? /^[ \t]*/.exec(text.slice(nl + 1))![0] : head.replace(/\S/g, ' ');
+	},
+	// the paragraphs of a table cell are joined by \par, as the cell handler writes them: a blank
+	// line inside a tabular is not one
+	childGap: (parent) => (parent.type.name === 'table_cell' || parent.type.name === 'table_header' ? ' \\par ' : null)
+});
 
-// doc assembly (verbatim `orig` substitution + per-block memo) is format-neutral and shared
-// with the markdown serializer; serializeNode hoists, so binding it here is safe.
-const assembly = createBlockAssembly((node, ctx) => serializeNode(node, ctx));
-
-function serializeDocChildrenDetailed(doc: Node): DocSerializeResult {
-	return assembly.serializeDocChildrenDetailed(doc);
+function serializeDocChildrenDetailed(doc: Node, parse?: ParseOrigins | null, afresh?: ReadonlySet<Node>): DocSerializeResult {
+	return assembly.serializeDocChildrenDetailed(doc, parse, afresh);
 }
 
 function serializeDocChildren(doc: Node): string {
@@ -204,33 +227,13 @@ function serializeDocChildren(doc: Node): string {
 /** The text handler's escaping, WITHOUT wrapping in the node's own marks (shared with
  * serializeBare's run merge). */
 function bareText(node: Node): string {
-	const isCode = node.marks.some((m) => m.type.name === 'code');
-	let result = esc(node.text ?? '', 'text');
-	// a pasted tab becomes one space: there's no clean tab mapping and a space is idempotent.
-	// a bare " stays as-is: \texttt{"} re-parses to a code mark and compounds every save.
-	result = result.replace(/\t/g, ' ');
-	// Every tie became a no-break space on the way in, so a tilde still here is one someone typed
-	// meaning the character - emitted bare it would compile to a tie and vanish from the PDF.
-	// MUST run before the no-break space goes back to ~, or it would escape that one too. Code
-	// keeps its literal bytes and never had the tie converted, so it is left alone.
-	if (!isCode) result = result.replace(/~/g, '\\textasciitilde{}');
-	// a no-break space (from a ~ tie) must go back to ~, not a raw U+00A0 byte (renders
-	// differently without inputenc, and is unfaithful to the source either way).
-	result = result.replace(/\u00A0/g, '~');
-	// typographic chars become LaTeX ligatures so the .tex stays ASCII and round-trips; skipped
-	// in code, where they are literal.
-	if (!isCode) {
-		result = result
-			.replace(/\u2014/g, '---')
-			.replace(/\u2013/g, '--')
-			.replace(/\u201C/g, '``')
-			.replace(/\u201D/g, "''")
-			.replace(/\u2018/g, '`')
-			.replace(/\u2019/g, "'")
-			// \ldots reads back as U+2026, which had no way home and left a non-ASCII byte behind
-			.replace(/\u2026/g, '\\ldots{}');
-	}
-	return result;
+	return shadowed(
+		node,
+		bareTextString(
+			node.text ?? '',
+			node.marks.some((m) => m.type.name === 'code')
+		)
+	);
 }
 
 const NODES: Record<string, NodeHandler> = {
@@ -246,11 +249,17 @@ const NODES: Record<string, NodeHandler> = {
 			return (prevSibling(ctx)?.type.name === 'heading' ? '' : '\n') + renderChildren(node, false).trim() + '\n';
 		}
 		const rawContent = renderChildren(node, ctx.inTableCell);
-		if (ctx.inTableCell) return rawContent; // no \par inside table cells
+		// no \par inside table cells; a row opens after \\ (or \toprule), which reads a [ there as its argument
+		if (ctx.inTableCell) return ctx.index === 0 && BRACKET_START.test(rawContent) ? `{}${rawContent}` : rawContent;
+		// \item already opens the paragraph, so a break before it puts the body on its own line and
+		// a \par after it adds a token the source never had. A second paragraph of the same item is
+		// separated by the blank line the list handler puts in front of every continuation block
+		if (ctx.parent?.type.name === 'list') return rawContent.replace(/^\s+|\s+$/g, '') + '\n';
 
 		// trim edge whitespace: the parser re-absorbs a space before \par, so it would
 		// accumulate one per save.
-		const content = rawContent.replace(/^\s+|\s+$/g, '');
+		const trimmed = rawContent.replace(/^\s+|\s+$/g, '');
+		const content = /(^|[^\\])(\\\\)*%[^\n]*$/.test(trimmed) ? trimmed + '\n' : trimmed;
 		// first-line indent override (Tab cycles it): 'auto' emits nothing
 		const indent = node.attrs.indent === 'indent' ? '\\indent ' : node.attrs.indent === 'noindent' ? '\\noindent ' : '';
 		const prev = prevSibling(ctx);
@@ -262,12 +271,17 @@ const NODES: Record<string, NodeHandler> = {
 		const before = prev?.type.name === 'heading' || continuesDisplay ? '' : '\n';
 		const after = next?.type.name === 'heading' ? '\n' : '';
 		if (runsIntoDisplay) return before + indent + content + '\n';
-		return before + indent + content + ' \\par\n' + after;
+		// an environment, a list or a display ends the paragraph itself: no \par of its own before
+		// one, as the file had none when the two stood on a single line end
+		const endsItself =
+			!!next && ['list', 'environment', 'block_math', 'table_wrapper', 'image', 'code_block', 'abstract'].includes(next.type.name);
+		return before + indent + content + (endsItself ? '\n' : ' \\par\n') + after;
 	},
 
 	heading(node) {
 		if (node.childCount === 0) return '';
-		const text = renderChildren(node, false);
+		// a heading's text is a moving argument: a \footnote joined in from a paragraph stops the compile unless protected
+		const text = renderChildren(node, false).replace(/(?<!\\protect\s*)\\footnote(?![a-zA-Z@])/g, '\\protect\\footnote');
 		// \chapter and \part have no level of their own in the editor; the source command is kept
 		const cmd =
 			typeof node.attrs.command === 'string' && node.attrs.command
@@ -285,11 +299,15 @@ const NODES: Record<string, NodeHandler> = {
 		return applyMarks(bareText(node), node.marks);
 	},
 
-	hard_break(node) {
+	hard_break(node, ctx) {
 		// legacy lineBreak:false (a blank-line gap) is a semantic no-op: emit nothing
 		if (node.attrs?.lineBreak === false) return '';
-		if (node.attrs?.command === 'newline') return '\\newline\n';
-		return `\\\\${typeof node.attrs?.suffix === 'string' ? node.attrs.suffix : ''}\n`;
+		const suffix = typeof node.attrs?.suffix === 'string' ? node.attrs.suffix : '';
+		// with nothing drawn before it in its block (an item's start, a \label) a break has no line to
+		// end, which stops the compile: an empty box gives it one
+		const box = opensLine(ctx) ? '\\mbox{}' : '';
+		if (node.attrs?.command === 'newline' || (ctx.inTableCell && !suffix)) return `${box}\\newline\n`;
+		return `${box}\\\\${suffix}${bracketFollows(ctx) ? '{}' : ''}\n`;
 	},
 
 	block_math(node) {
@@ -315,7 +333,7 @@ const NODES: Record<string, NodeHandler> = {
 
 	blockquote: (node) => {
 		const env = node.attrs.env === 'quotation' ? 'quotation' : 'quote';
-		return `\\begin{${env}}\n${renderChildren(node, false)}\n\\end{${env}}\n`;
+		return `\\begin{${env}}\n${envBody(node)}\\end{${env}}\n`;
 	},
 
 	raw_latex: (node) => node.textContent + '\n',
@@ -326,7 +344,7 @@ const NODES: Record<string, NodeHandler> = {
 	environment: (node) => {
 		const name = String(node.attrs.name ?? 'environment');
 		const args = String(node.attrs.args ?? ''); // verbatim \begin{name}<args> (e.g. "{0.5\textwidth}")
-		return `\\begin{${name}}${args}\n${renderChildren(node, false)}\\end{${name}}\n`;
+		return `\\begin{${name}}${args}\n${envBody(node)}\\end{${name}}\n`;
 	},
 
 	// sourceForm remembers which shape the file used. the command form only fits a single-
@@ -336,7 +354,7 @@ const NODES: Record<string, NodeHandler> = {
 		if (sourceForm === 'macro' && node.childCount === 1 && node.firstChild?.type.name === 'paragraph') {
 			return `\\abstract{${renderChildren(node.firstChild, false).trimEnd()}}\n`;
 		}
-		return `\\begin{abstract}\n${renderChildren(node, false)}\\end{abstract}\n`;
+		return `\\begin{abstract}\n${envBody(node)}\\end{abstract}\n`;
 	},
 
 	horizontal_rule: () => '\\par\\noindent\\rule{\\linewidth}{0.4pt}\n',
@@ -383,7 +401,7 @@ const NODES: Record<string, NodeHandler> = {
 			// a caption added in the editor to a figure that had none has no slot to fill; drop
 			// it in just before \end{figure}.
 			if (showCaption && capContent && !template.includes(FIG_CAP_SLOT)) {
-				out = out.replace(/(\n?)(\\end\{figure\*?\})\s*$/, `\n${caption}\n$2`);
+				out = out.replace(/\n?(\\end\{figure\*?\})\s*$/, (_whole, end: string) => `\n${caption}\n${end}`);
 			}
 			return out.replace(/\s*$/, '') + '\n';
 		}
@@ -404,49 +422,77 @@ const NODES: Record<string, NodeHandler> = {
 	// prosemirror-flat-list: each `list` node is ONE item; same-kind siblings coalesce.
 	list(node, ctx) {
 		const kind = String(node.attrs.kind ?? 'bullet');
-		const prev = prevSibling(ctx);
-		const next = nextSibling(ctx);
-		const prevSame = prev?.type.name === 'list' && prev.attrs.kind === kind && sameSourceList(prev, node);
-		const nextSame = next?.type.name === 'list' && next.attrs.kind === kind && sameSourceList(node, next);
-		// a description environment is remembered on the run's first node; the rest inherit it
+		const defaultEnv = kind === 'ordered' ? 'enumerate' : 'itemize';
+		// a description environment is remembered on the run's first node; the rest inherit it. A
+		// node naming an environment of its own opens a new run: a description after an itemize
+		// is not its continuation, whatever the kinds say
 		const envName = runEnvName(node, ctx);
-		const env = envName ?? (kind === 'ordered' ? 'enumerate' : 'itemize');
+		const env = envName ?? defaultEnv;
+		const prevSame = !!ctx.parent && continuesList(ctx.parent, ctx.index);
+		const nextSame = !!ctx.parent && !!nextSibling(ctx) && continuesList(ctx.parent, ctx.index + 1);
 		// \item[label]: the editor shows it as leading bold text, so it is taken back out of the
 		// body before the bracket is rewritten. The SOURCE label is preferred while the run still
 		// says the same thing, since re-serializing turns a tie into a no-break space and a `--`
 		// into a dash; once the run says something else, the user edited the label and that wins
 		const itemLabel = typeof node.attrs.itemLabel === 'string' ? node.attrs.itemLabel : null;
-		const labelled = node.childCount > 0 ? splitLeadingLabel(node.child(0)) : null;
+		// the block carrying the label: the first, unless a line break at its start left empty
+		// paragraphs in front of it, which \item writes as nothing. Read with the shadow off: the label
+		// is compared with the source's by its words
+		let first = 0;
+		const labelled = withoutShadow(() => {
+			while (first < node.childCount - 1 && isEmptyParagraph(node.child(first)) && splitLeadingLabel(node.child(first + 1)) !== null)
+				first++;
+			return node.childCount > 0 ? splitLeadingLabel(node.child(first)) : null;
+		});
 		const sourceHolds = itemLabel != null && labelled != null && labelKey(labelled.latex) === labelKey(itemLabel);
-		const label = labelled ? (sourceHolds ? itemLabel : labelled.latex) : itemLabel === '' ? '' : null;
-		const itemCmd = label == null ? '\\item' : `\\item[${label}]`;
+		const said = labelled ? (sourceHolds ? itemLabel : labelled.latex) : itemLabel === '' ? '' : null;
+		// written through the shadow when that writes the same bytes, so a run can tell where the label's words went
+		const label = labelled && said === labelled.latex ? renderChildren(labelled.bare, false).trim() : said;
+		// a `]` in the label would close the bracket early: braces around it keep it inside
+		const bracketed = said != null && said.includes(']') && !/^\{[^]*\}$/.test(said) ? `{${label}}` : label;
+		const itemCmd = label == null ? '\\item' : `\\item[${bracketed}]`;
 
+		// an item's untouched blocks are written out as their bytes; the labelled first block is shown
+		// without its label, so it is always rendered afresh
+		const inners: string[] = [];
+		node.forEach((item, _offset, i) => {
+			const shown = i === first && labelled ? labelled.body : item;
+			inners.push(serializeNode(shown, { parent: node, index: i, isLastChild: i === node.childCount - 1, inTableCell: ctx.inTableCell }));
+		});
+		const rendered = assembly.verbatimParts(node, inners, { join: false, keep: (i) => i === first && !!labelled });
 		const parts: string[] = [];
 		node.forEach((item, _offset, i) => {
-			const shown = i === 0 && labelled ? labelled.body : item;
-			const inner = serializeNode(shown, { parent: node, index: i, isLastChild: i === node.childCount - 1, inTableCell: ctx.inTableCell });
+			const inner = rendered[i];
+			if (i < first) return;
 			if (item.type.name === 'list') {
 				// only the FIRST of a run of same-kind sub-lists opens \item[]; the rest coalesce
 				// into the same nested env (prevSame means no \begin), and another \item[] would
 				// re-parse as an extra empty item and double every save.
 				const prevChild = i > 0 ? node.child(i - 1) : null;
 				const continues = prevChild?.type.name === 'list' && prevChild.attrs.kind === item.attrs.kind;
-				parts.push(continues ? `\n${inner}` : `\\item[] ${inner}`);
-			} else if (i === 0) parts.push(`${itemCmd} ${inner}`);
-			else parts.push('\n' + inner); // continuation block within the same item
+				// a sub-list under the item's OWN body needs no \item[]: that item is already open, and
+				// the break the nested env opens with would put a blank line between the two
+				const afterBody = !!prevChild && prevChild.type.name !== 'list';
+				parts.push(continues ? `\n${inner}` : afterBody ? inner.replace(/^\n/, '') : `\\item[] ${inner}`);
+			} else if (i === first) {
+				const alone = labelled && !inner.trim() && node.childCount > first + 1 && node.child(first + 1).type.name !== 'list';
+				parts.push(alone ? `${itemCmd} \\par` : `${itemCmd}${labelled?.glued ? '' : ' '}${guardItemBody(inner)}`);
+			} else parts.push('\n' + inner); // continuation block within the same item
 		});
 
 		let out = '';
 		if (!prevSame) {
+			const own = opensItsSourceList(node, ctx.parent);
 			// enumitem-style options the source gave the environment; see createList
-			const envArgs = typeof node.attrs.envArgs === 'string' ? node.attrs.envArgs : '';
+			const envArgs = own && typeof node.attrs.envArgs === 'string' ? node.attrs.envArgs : '';
 			out += `\n\\begin{${env}}${envArgs}\n`;
 			// raw setup content that preceded the first \item in the source; see createList
-			const preBody = typeof node.attrs.preBody === 'string' ? node.attrs.preBody : '';
+			const preBody = own && typeof node.attrs.preBody === 'string' ? node.attrs.preBody : '';
 			if (preBody) out += preBody + '\n';
 		}
 		out += parts.join('');
-		if (!nextSame) out += `\n\\end{${env}}\n`;
+		// an item body already ends its line, so a break of our own would open a blank one above \end
+		if (!nextSame) out += `${out.endsWith('\n') ? '' : '\n'}\\end{${env}}\n`;
 		return out;
 	},
 
@@ -455,8 +501,8 @@ const NODES: Record<string, NodeHandler> = {
 	table: (node) => serializeTable(node, serializeNode),
 	table_caption: (node) => serializeTable(node, serializeNode),
 	table_notes: (node) => serializeTable(node, serializeNode),
-	table_row: (node) => serializeTable(node, serializeNode),
-	table_cell: (node) => serializeTable(node, serializeNode),
+	table_row: (node, ctx) => serializeRowCells(node, ctx.parent?.type.name === 'table' ? ctx.parent : null, serializeNode),
+	table_cell: (node, ctx) => serializeCell(node, ctx.index === 0, serializeNode),
 	table_header: (node) => serializeTable(node, serializeNode)
 };
 
@@ -467,7 +513,7 @@ export function serializeNode(node: Node, ctx: Ctx): string {
 	// wrap them the same way `text` does.
 	const leafText = node.type.spec.leafText;
 	if (leafText && !node.isText) {
-		const text = applyMarks(leafText(node), node.marks);
+		const text = applyMarks(shadowed(node, leafText(node)), node.marks);
 		// A comment chip owns the rest of its line: % consumes to the newline, so one is restored
 		// here or the prose after the chip would be commented out. The chip's own text stays
 		// single-line for display (a baked-in newline rendered as an empty second chip line).
@@ -476,7 +522,10 @@ export function serializeNode(node: Node, ctx: Ctx): string {
 	}
 
 	const handler = NODES[node.type.name];
-	if (handler) return handler(node, ctx);
+	if (handler) {
+		const text = handler(node, ctx);
+		return isHandlerLeaf(node) ? shadowed(node, text) : text;
+	}
 
 	// unknown node: preserve content rather than dropping it
 	return node.isText ? esc(node.text ?? '', 'text') : renderChildren(node, ctx.inTableCell);
@@ -496,8 +545,8 @@ export function serializeToLatex(doc: Node): string {
  * boundary: latexRoundtrip.ts must NOT insert its own separator around a protected edge (the
  * body already carries the exact original bytes), only around a regenerated one.
  */
-export function serializeToLatexDetailed(doc: Node): DocSerializeResult {
-	return serializeDocChildrenDetailed(doc);
+export function serializeToLatexDetailed(doc: Node, parse?: ParseOrigins | null, afresh?: ReadonlySet<Node>): DocSerializeResult {
+	return serializeDocChildrenDetailed(doc, parse, afresh);
 }
 
 /** Nothing but labels (and whitespace) - the paragraph the importer makes for a \label sitting on

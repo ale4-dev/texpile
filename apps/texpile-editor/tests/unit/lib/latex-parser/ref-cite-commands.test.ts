@@ -6,7 +6,7 @@ import { latexToProseMirror } from '../../../../src/lib/languages/latex/parser/c
 import { serializeToLatex } from '$lib/languages/latex/serializer/latexSerializer';
 import { schema } from '$lib/languages/latex/schema/latexPMSchema';
 import { refText } from '$lib/languages/latex/visual/extensions/ref/refText';
-import { citationText } from '$lib/languages/latex/visual/extensions/citation/citationText';
+import { citationText } from '$lib/editor/visual/extensions/citation/citationText';
 
 function parse(src: string) {
 	return latexToProseMirror(src, {}).doc;
@@ -36,6 +36,23 @@ describe('commands the editor models', () => {
 			expect(rt(src)).toBe(src);
 		}
 	);
+});
+
+describe('a starred citation', () => {
+	// read without its star, the star was taken for the key and the key left behind as text
+	it.each(['\\citet*{smith}', '\\citep*[p.~2]{smith}', '\\parencite*{smith}', '\\citeauthor*{smith}'])(
+		'%s is written back as it was',
+		(src) => {
+			expect(rt(`See ${src} here.`)).toBe(`See ${src} here.`);
+		}
+	);
+});
+
+describe('a starred reference', () => {
+	// hyperref's \ref* prints the number without the link; the chip wrote it back linked
+	it('is written back as it was', () => {
+		expect(rt('See \\ref*{fig:a} here.')).toBe('See \\ref*{fig:a} here.');
+	});
 });
 
 describe('commands whose output only the preamble knows', () => {

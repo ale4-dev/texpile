@@ -4,7 +4,12 @@
 	import MainFileModal from './MainFileModal.svelte';
 	import CompileCommandModal from './CompileCommandModal.svelte';
 	import FormatModal from './FormatModal.svelte';
+	import GitDialogsHost from './GitDialogsHost.svelte';
 	import CommandPalette from '$lib/palette/CommandPalette.svelte';
+	import SymbolPicker from '$lib/editor/symbols/SymbolPicker/SymbolPicker.svelte';
+	import MathSearchPanel from '$lib/editor/visual/extensions/mathlivebridge/mathSearch/MathSearchPanel.svelte';
+	import TemplateDetailsDialog from '$lib/workspace/templates/saved/TemplateDetailsDialog.svelte';
+	import TypstExportDialog from '$lib/languages/typst/export/dialog/TypstExportDialog.svelte';
 	import { promptAsk } from '$lib/modals/confirm.svelte';
 	import { basename } from '$lib/workspace/fileSystem';
 	import type { RefUpdate } from '$lib/workspace/refUpdate';
@@ -155,3 +160,12 @@
 
 <!-- takes no props: it reads the action registry WorkspaceView fills in, and owns its own Ctrl+K -->
 <CommandPalette />
+
+<!-- takes no props either: the source toolbar, the Insert menu and the palette open it -->
+<SymbolPicker />
+<!-- Tab in an equation opens it -->
+<MathSearchPanel />
+<TemplateDetailsDialog />
+<TypstExportDialog />
+<!-- who is committing, where to publish, and git's own sign-in questions -->
+<GitDialogsHost />

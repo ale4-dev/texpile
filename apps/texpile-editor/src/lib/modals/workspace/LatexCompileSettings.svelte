@@ -80,9 +80,9 @@
 			{m.wsview_livemode_desc_post()}
 		</p>
 		<p class="text-warning-ink mt-1 text-xs">{m.wsview_live_mode_battery_note()}</p>
-		<div class="border-surface-300-700 text-muted mt-3 rounded-base border border-dashed px-3 py-2 text-xs">
+		<div class="border-surface-300-700 text-muted rounded-base mt-3 border border-dashed px-3 py-2 text-xs">
 			{m.wsview_compile_disabled_live()}
-			<code class="bg-surface-200-800 ml-1 rounded-base px-1 opacity-70">lualatex (built-in)</code>
+			<code class="bg-surface-200-800 rounded-base ml-1 px-1 opacity-70">lualatex (built-in)</code>
 		</div>
 	{/if}
 </div>
@@ -106,8 +106,8 @@
 						</button>
 					{/each}
 				</div>
-				<label class="text-muted inline-flex items-center gap-1.5 text-xs">
-					<input type="checkbox" class="checkbox" checked={latexmk} onchange={(e) => applyLatexmk(e.currentTarget.checked)} />
+				<label class="text-muted inline-flex cursor-pointer items-center gap-1.5 text-xs">
+					<input type="checkbox" class="checkbox scale-75" checked={latexmk} onchange={(e) => applyLatexmk(e.currentTarget.checked)} />
 					{m.wsview_use_latexmk_label()}
 				</label>
 			</div>

@@ -7,6 +7,7 @@
 import { activeFilePath, isDirty } from '$lib/workspace/workspaceStore';
 import { toLf, detectEol, type Eol } from '$lib/workspace/fileSystem';
 import { recordDiskStamp } from '$lib/workspace/diskStamp';
+import { addLocalHistory } from '$lib/workspace/localHistory/localHistory.svelte';
 
 // long enough for a rewrite-in-place to finish, short enough that the banner still feels immediate
 const RECHECK_MS = 100;
@@ -37,6 +38,8 @@ export type ExternalChangeDeps = {
 	exists(path: string): Promise<boolean>;
 	/** the open file went missing on disk, or came back */
 	setDeleted(deleted: boolean): void;
+	/** the text (LF) a session this host runs last wrote to `path` for its guests, handed over once, or null */
+	takeSessionWrite(path: string): string | null;
 	/** "keep mine": overwrite disk now. Must FORCE past the save pipeline's external-write guard -
 	 * the guard is what raised this conflict, and by choosing "keep" the user has seen that disk
 	 * differs and decided to overwrite it. An unforced save would just re-trip the guard forever. */
@@ -74,9 +77,16 @@ export class ExternalChangeWatcher {
 		d.setDeleted(false); // it reads, so it is there: an earlier deletion has been undone
 		const disk = toLf(raw); // compare in LF against our LF baseline/buffers
 		if (activeFilePath.current !== path) return;
+		const sessionWrite = d.takeSessionWrite(path);
 		if (disk === d.getDiskBaseline()) {
 			// same bytes, new mtime (touch, a formatter, a checkout and back): nothing to adopt, but
 			// the save guard compares stamps, and without a fresh one every later autosave re-trips it
+			void recordDiskStamp(path);
+			return;
+		}
+		// the session's own write-through: already in the shared text, and the visual editor takes it in from there
+		if (disk === sessionWrite) {
+			d.setDiskBaseline(disk);
 			void recordDiskStamp(path);
 			return;
 		}
@@ -143,7 +153,10 @@ export class ExternalChangeWatcher {
 			return;
 		}
 		this.deferred = null;
-		if (choice === 'reload') this.applyDiskReload(c.disk, c.eol);
-		else if (this.deps.getLoadedPath() === c.path) this.deps.saveNow();
+		if (choice === 'reload') {
+			// the edits being replaced were never saved: kept first, so Reload is not the end of them
+			if (this.deps.getLoadedPath() === c.path) void addLocalHistory(c.path, this.deps.getBuffer(), 'before-reload');
+			this.applyDiskReload(c.disk, c.eol);
+		} else if (this.deps.getLoadedPath() === c.path) this.deps.saveNow();
 	}
 }

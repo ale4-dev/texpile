@@ -18,6 +18,15 @@ export type WorkspaceCapabilities = {
 	search: boolean;
 	/** the shell dock (host only, desktop only). */
 	terminal: boolean;
+	/** host a shared session from this folder (host only). */
+	share: boolean;
+	/** review comments and suggestion mode, kept in the folder's .texpile. */
+	comments: boolean;
+	/** the Agent tab, which works on the whole folder (host only, desktop only). */
+	agent: boolean;
+	/** read the folder as a project: the main file, its .texpile/config.json, citations and labels from the other files,
+	 *  templates made from it. Off for a lone file, whose folder may be Downloads. */
+	project: boolean;
 };
 
 export type WorkspaceProvider = {
@@ -56,7 +65,7 @@ export type WorkspaceProvider = {
 	 * should degrade to a plain remove rather than pretend. TreeOps checks for it and skips
 	 * recording history when it is absent, so undo is never offered for something it cannot reverse.
 	 */
-	trash?(path: string, root: string): Promise<{ backup: string | null; recycled: boolean }>;
+	trash?(path: string, root: string, keep?: boolean): Promise<{ backup: string | null; recycled: boolean; kept?: boolean }>;
 	/** copy a backed-up entry back to `to`; must refuse rather than overwrite. */
 	restore?(from: string, to: string): Promise<void>;
 

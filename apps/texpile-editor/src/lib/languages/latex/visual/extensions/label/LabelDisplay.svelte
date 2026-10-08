@@ -1,11 +1,17 @@
 <script lang="ts">
 	import { tip } from '$lib/components/tooltip.svelte';
+	import { inEditorPane } from '$lib/editor/visual/editorPanePositioning';
 	import { Popover, Portal } from '@skeletonlabs/skeleton-svelte';
 	import { Tag } from '@lucide/svelte';
 	import { sanitizeLabel } from '$lib/editor/visual/label';
+	import { liveRefProblems } from '$lib/workspace/document/liveRefChecks.svelte';
+	import { refProblemText } from '$lib/workspace/document/liveRefDiagnostics';
 	import { m } from '$lib/paraglide/messages';
 
 	let { name, onRename }: { name: string; onRename: (next: string) => void } = $props();
+
+	// the label is defined a second time, here or in another file of the document
+	const twice = $derived(liveRefProblems.current?.problems.find((p) => p.kind === 'label-twice' && p.name === name) ?? null);
 
 	let open = $state(false);
 	let draft = $state('');
@@ -32,15 +38,19 @@
 	}
 </script>
 
-<Popover {open} onOpenChange={(e) => onOpenChange(e.open)} positioning={{ placement: 'bottom-start', offset: { mainAxis: 4 } }}>
+<Popover
+	{open}
+	onOpenChange={(e) => onOpenChange(e.open)}
+	positioning={inEditorPane({ placement: 'bottom-start', offset: { mainAxis: 4 } })}
+>
 	<Popover.Trigger
-		class="text-muted bg-surface-200-800 hover:bg-surface-300-700 inline-flex cursor-pointer items-center gap-1 rounded-base px-1.5 py-0.5 align-baseline text-xs font-medium transition-colors"
+		class="text-muted bg-surface-200-800 hover:bg-surface-300-700 rounded-base inline-flex cursor-pointer items-center gap-1 px-1.5 py-0.5 align-baseline text-xs font-medium transition-colors"
 		style="font-size: 0.75rem;"
 	>
 		{#snippet element(attrs)}
-			<button {...attrs} use:tip={m.label_chip_title({ name })}>
-				<Tag class="size-3 shrink-0" />
-				<span class="font-mono">{name}</span>
+			<button {...attrs} use:tip={twice ? refProblemText(twice) : m.label_chip_title({ name })}>
+				<Tag class="size-3 shrink-0 {twice ? 'text-ref-broken-fg' : ''}" />
+				<span class="font-mono {twice ? 'text-ref-broken-fg' : ''}">{name}</span>
 			</button>
 		{/snippet}
 	</Popover.Trigger>

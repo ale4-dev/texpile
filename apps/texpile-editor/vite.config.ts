@@ -1,8 +1,9 @@
 import { svelte } from '@sveltejs/vite-plugin-svelte';
-import { defineConfig } from 'vitest/config';
+import { defineConfig, type Plugin } from 'vitest/config';
 import tailwindcss from '@tailwindcss/vite';
 import { paraglideVitePlugin } from '@inlang/paraglide-js';
 import wasm from 'vite-plugin-wasm';
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { readChangelog } from './scripts/changelog.mjs';
@@ -30,9 +31,35 @@ const NO_PREBUNDLE = new Set([
 // y-protocols has no "." entry, so pre-bundle its subpaths instead of the bare package
 const prebundle = [...Object.keys(pkg.dependencies ?? {}).filter((d) => !NO_PREBUNDLE.has(d)), 'y-protocols/awareness', 'y-protocols/sync'];
 
+// vite-plugin-wasm names its helper module `/__vite-plugin-wasm-helper`, which vitest's runner takes
+// for a file path: absolute on Linux, a path with no drive on Windows, where no suite loading the
+// Typst parser could even start. In tests the helper gets a virtual id instead
+const WASM_HELPER = '/__vite-plugin-wasm-helper';
+// and in a browser-like suite it fetches the .wasm by its `?url` import, which vitest gives as a /@fs/
+// path for a file outside the app; Node's fetch reads no such path, so those get the module inline
+const wasmUrlInTests: Plugin = {
+	name: 'wasm-url-in-tests',
+	enforce: 'pre',
+	load: (id) =>
+		id.endsWith('.wasm?url')
+			? `export default 'data:application/wasm;base64,${fs.readFileSync(id.slice(0, -'?url'.length)).toString('base64')}'`
+			: undefined
+};
+const wasmHelperInTests: Plugin = {
+	name: 'wasm-helper-in-tests',
+	enforce: 'pre',
+	resolveId: (id) => (id === WASM_HELPER ? '\0wasm-helper' : undefined),
+	load: (id) => {
+		if (id !== '\0wasm-helper') return undefined;
+		const helper = path.join(path.dirname(require.resolve('vite-plugin-wasm')), '../dist/wasm-helper.js');
+		return `export default ${(require(helper) as { code: string }).code}`;
+	}
+};
+
 export default defineConfig(({ mode }) => ({
 	plugins: [
 		tailwindcss(),
+		...(mode === 'test' ? [wasmHelperInTests, wasmUrlInTests] : []),
 		// packages/typst-syntax-wasm is Typst's own parser built by wasm-pack; its glue imports the
 		// .wasm as an ES module, which Vite cannot do unaided
 		wasm(),

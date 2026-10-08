@@ -1,15 +1,22 @@
+<script lang="ts" module>
+	// a jump runs once: every switch into source mode mounts a new editor, which must not replay the last one
+	let lastGotoToken: number | null = null;
+</script>
+
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { EditorView, type ViewUpdate } from '@codemirror/view';
 	import { EditorState, Compartment } from '@codemirror/state';
 	import { setCommentRanges, focusCommentThread, type CommentRange } from '$lib/editor/visual/extensions/comments';
-	import type { CommentThread } from '$lib/comments/log';
+	import { setSuggestionRanges, focusSuggestion, fitsSuggestion } from '$lib/editor/source/cmSuggestions';
+	import { setChangeBaseline } from '$lib/editor/source/cmChangeMarkers';
+	import { activeSuggestions } from '$lib/comments/activeSuggestions.svelte';
 	import { flashLineEffect } from '$lib/languages/latex/source/synctexFlash';
 	import { bindModalKeymap, modalKeymapCompartment } from '$lib/editor/source/extensions/keybindings/modalKeymap';
 	import { typstServerGen } from '$lib/languages/typst/intellisense/lspClient';
 	import { sourceCmView } from '$lib/stores/editorStore';
 	import { docText } from '$lib/editor/source/docText';
-	import { setSourceDocCount, setSourceSelectionCount } from '$lib/stores/countStore.svelte';
+	import { setSourceDocCount, setSourceSelectionCount, sourceCounting } from '$lib/stores/countStore.svelte';
 	import { trailingDebounce } from '$lib/trailingDebounce';
 	import { settings } from '$lib/settings';
 	import * as Y from 'yjs';
@@ -21,6 +28,7 @@
 	import { resolveGotoTarget } from './sourceGotoTarget';
 	import { TypstLspBinding } from './typstLspBinding';
 	import { openSourceContextMenu } from '$lib/editor/source/sourceContextMenu';
+	import { samePath } from '$lib/workspace/fileSystem';
 
 	// gotoLine: token makes repeat jumps to the same line re-fire; selectText anchors against line drift.
 	// initialScrollPos: one-shot mode-switch sync applied at mount.
@@ -43,16 +51,17 @@
 		selectedComment = null,
 		onAddComment,
 		onInsertCitation,
+		onCiteByDoi,
 		onSelectComment,
-		commentThreads = [],
-		readOnly = false
+		readOnly = false,
+		changeBaseline = null
 	}: {
 		value?: string;
 		onInput?: (v: string) => void;
 		filename?: string;
 		/** absolute path, for remembering this file's caret across tab switches */
 		docPath?: string | null;
-		gotoLine?: { line: number; token: number; selectText?: string };
+		gotoLine?: { line: number; token: number; selectText?: string; column?: number; path?: string };
 		onSyncToPdf?: (line: number) => void;
 		initialScrollPos?: { scroll: number | null; cursor: number | null } | null;
 		onHistoryBoundary?: (dir: 'undo' | 'redo') => boolean;
@@ -72,10 +81,13 @@
 		onAddComment?: (from: number, to: number) => void;
 		/** pick citations from Zotero and insert them at the caret (host + desktop only) */
 		onInsertCitation?: () => void;
-		onSelectComment?: (id: string, from: 'text' | 'gutter') => void;
+		/** look a work up by DOI or arXiv ID and cite it at the caret (host + desktop only) */
+		onCiteByDoi?: () => void;
+		onSelectComment?: (id: string) => void;
 		/** this file's threads, read by the hover card over commented text and its line number */
-		commentThreads?: CommentThread[];
 		readOnly?: boolean;
+		/** the file as it was in the last saved version, for the change bars in the margin; null for none */
+		changeBaseline?: string | null;
 	} = $props();
 
 	/** last position reported to onCaretMove, so redundant selection updates do not spray requests */
@@ -106,14 +118,18 @@
 	const diagFeed = new SourceDiagnosticsFeed();
 	const lsp = new TypstLspBinding(() => view, lspConf);
 
-	const deferredDocCount = trailingDebounce(300, setSourceDocCount);
+	const counting = $derived(sourceCounting(fileFor));
+	// a LaTeX or Typst file's whole count comes from the workspace, in either view (countOpenFile)
+	const deferredDocCount = trailingDebounce(300, (text: string) => {
+		if (counting === 'text') setSourceDocCount(text);
+	});
 	// throttle-ish: scrolling and arrow keys fire constantly, and only the resting place matters
 	const deferredRememberPosition = trailingDebounce<void>(400, () => positions.remember(view, docPath, !!collab));
 	// reads the selection at fire time (not capture), so a huge selection isn't sliced per keystroke
 	const deferredSelectionCount = trailingDebounce<void>(150, () => {
 		if (!view) return;
 		const s = view.state.selection.main;
-		setSourceSelectionCount(s.empty ? null : view.state.sliceDoc(s.from, s.to));
+		setSourceSelectionCount(s.empty ? null : view.state.sliceDoc(s.from, s.to), counting);
 	});
 	// held at component scope so onDestroy can tear it down (else its doc observer leaks across
 	// every file switch / mode toggle that remounts this editor)
@@ -161,6 +177,7 @@
 				...(restored ? { selection: { anchor: restored.cursor } } : {}),
 				extensions: buildSourceExtensions({
 					fileFor,
+					foldsOf: collab ? null : docPath,
 					collab,
 					undoManager,
 					langConf,
@@ -172,10 +189,6 @@
 					lineWrap: settings.current.sourceLineWrap !== false,
 					onAddComment,
 					onSelectComment,
-					commentPreview: (id) => {
-						const thread = commentThreads.find((t) => t.id === id);
-						return thread ? { messages: thread.messages } : null;
-					},
 					onJumpToFile,
 					onOpenFileAt,
 					onHistoryBoundary,
@@ -192,7 +205,7 @@
 		// the file was closed) — hand the truth back so the save pipeline starts aligned
 		if (collab && onInput && collab.ytext.toString() !== value) onInput(collab.ytext.toString());
 		// seed the counts now; the updateListener only fires on later changes
-		setSourceDocCount(docText(view.state.doc));
+		if (counting === 'text') setSourceDocCount(docText(view.state.doc));
 		setSourceSelectionCount(null);
 		if (initialScrollPos != null) applyModeSwitchAnchor(view, initialScrollPos);
 		// publish this CM as the source-mode editor so menuBarCommands can route Insert/Format to it
@@ -241,6 +254,29 @@
 		v.dispatch({ effects: setCommentRanges.of(list) });
 	});
 
+	// the last saved version arrives after the file does (git is asked separately), and again when a
+	// new version is saved; the field then diffs every keystroke against it incrementally
+	let lastBaseline: string | null | undefined;
+	$effect(() => {
+		const base = changeBaseline;
+		const v = view;
+		void value;
+		if (!v || base === lastBaseline) return;
+		lastBaseline = base;
+		v.dispatch({ effects: setChangeBaseline.of(base) });
+	});
+
+	let lastSuggestions: typeof activeSuggestions.current | null = null;
+	$effect(() => {
+		const marks = activeSuggestions.current;
+		const v = view;
+		void value;
+		if (!v || !onAddComment || marks === lastSuggestions) return;
+		if (!marks.every((r) => fitsSuggestion(v.state, r))) return;
+		lastSuggestions = marks;
+		v.dispatch({ effects: setSuggestionRanges.of(marks.map(({ id, from, to, restore, mine }) => ({ id, from, to, restore, mine }))) });
+	});
+
 	// kept apart from the ranges: selecting happens far more often and must not rebuild the whole set
 	let lastFocus: string | null = null;
 	$effect(() => {
@@ -248,7 +284,7 @@
 		const v = view;
 		if (!v || !onAddComment || id === lastFocus) return;
 		lastFocus = id;
-		v.dispatch({ effects: focusCommentThread.of(id) });
+		v.dispatch({ effects: [focusCommentThread.of(id), focusSuggestion.of(id)] });
 	});
 
 	// the effect still runs per keystroke (value is a dependency), but the feed skips dispatches
@@ -266,11 +302,12 @@
 
 	// the token has to be CHECKED, not just carried: the prop arrives inside an inline object
 	// literal, so a save or a compile re-runs this effect and would re-apply the last jump
-	let lastGotoToken: number | null = null;
 	$effect(() => {
 		const req = gotoLine;
 		if (!req || !view) return;
 		if (req.token === lastGotoToken) return;
+		// a jump into another file is for that file's editor, which mounts once it has opened
+		if (req.path && docPath && !samePath(req.path, docPath)) return;
 		lastGotoToken = req.token;
 		const { from, to } = resolveGotoTarget(view.state.doc, req);
 		view.dispatch({ selection: { anchor: from, head: to }, scrollIntoView: true, effects: flashLineEffect.of(from) });
@@ -304,7 +341,8 @@
 	bind:this={host}
 	class="source-editor h-full"
 	oncontextmenu={(e) =>
-		view && openSourceContextMenu(e, view, { onSyncToPdf, onAddComment, onInsertCitation, syncTarget: isTypFile ? 'preview' : 'pdf' })}
+		view &&
+		openSourceContextMenu(e, view, { onSyncToPdf, onAddComment, onInsertCitation, onCiteByDoi, syncTarget: isTypFile ? 'preview' : 'pdf' })}
 	role="presentation"
 ></div>
 
@@ -354,6 +392,12 @@
 	}
 	.source-editor :global(.cm-content) {
 		padding: calc(var(--spacing) * 4) 0;
+	}
+	/* CodeMirror indents every line 6px off the gutter, which reads as a stray space in front of the
+	   first character. Not to zero though: the caret is drawn centred on its position, so column 0
+	   needs half a caret of room or the sticky gutter paints over it on a blank line */
+	.source-editor :global(.cm-line) {
+		padding-left: 2px;
 	}
 	.source-editor :global(.cm-focused) {
 		outline: none;

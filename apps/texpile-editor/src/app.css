@@ -28,6 +28,241 @@ html[data-mode='dark'] {
 	color-scheme: dark;
 }
 
+/* The see-through window (windowGlass.svelte.ts). The system paints the blurred desktop behind the page and the grounds
+   clear to show it; text and content stay solid, and whatever floats is a frosted sheet. It is all built from Skeleton's surface scale, so
+   every theme gets it without a line of its own. How it is arranged:
+   - ONE veil, on body, and nothing over it: the window is see-through by the same amount everywhere, and the lines
+     between panes are what sets them apart. Layers of differing strength (a tint on the title bar, a more solid writing
+     area) were tried, and read as patches: some parts see-through, some not
+   - so the two steps a mode paints grounds with (50 and 100 light, 950 and 900 dark) go fully clear, as do the app's own
+     ground tokens. The third step stays as a faint mark, because it is what a hovered row or a chip is drawn with
+   - text comes from the other end of the scale, so it is never touched
+   - html keeps the theme's grounds under --solid-* names, because body replaces the real ones and floating things take
+     them back
+   - Tailwind's colour utilities are inlined light-dark() pairs of the base steps; Skeleton's own classes (input,
+     preset-*, card) read the PAIRING variables, so body declares those again to pick the cleared steps up */
+html.window-glass {
+	--solid-surface-50: var(--color-surface-50);
+	--solid-surface-100: var(--color-surface-100);
+	--solid-surface-200: var(--color-surface-200);
+	--solid-surface-800: var(--color-surface-800);
+	--solid-surface-900: var(--color-surface-900);
+	--solid-surface-950: var(--color-surface-950);
+	--solid-terminal-bg: var(--terminal-bg);
+	--solid-pdf-viewer-bg: var(--pdf-viewer-bg);
+	--solid-pdf-page-area-bg: var(--pdf-page-area-bg);
+	--solid-pdf-toolbar-bg: var(--pdf-toolbar-bg);
+	/* how much of the veil's colour stays. A light ground over a dark desktop mixes to grey long before a dark one over a
+	   bright desktop stops reading, and dark text on grey is the worst case there is, so a light window clears far less */
+	--glass-veil-light: 72%;
+	--glass-veil-dark: 20%;
+	--glass-mark-light: 45%;
+	--glass-mark-dark: 30%;
+	/* a sheet is whatever floats. It lies over the document, not over a desktop someone chose, so it keeps far more of
+	   its color than the veil: a dark menu over a white PDF page still has to read */
+	--glass-sheet-light: 88%;
+	--glass-sheet-dark: 80%;
+	--glass-sheet-blur: 64px;
+	background-color: transparent;
+}
+/* a macOS material already tints for legibility in the app's own mode (nativeAppearance.ts); a veil on top greys it out */
+html.window-glass.window-vibrancy {
+	--glass-veil-light: 0%;
+	--glass-veil-dark: 0%;
+}
+/* the veil:the theme's own ground, pushed a little further the way the mode already leans. It lightens what shows through
+   in light mode and darkens it in dark mode, so text keeps its contrast */
+html.window-glass body {
+	background-color: light-dark(
+		color-mix(in oklab, color-mix(in oklab, var(--solid-surface-50) 70%, white) var(--glass-veil-light), transparent),
+		color-mix(in oklab, color-mix(in oklab, var(--solid-surface-950) 70%, black) var(--glass-veil-dark), transparent)
+	);
+	/* a line between panes or around a field. Made to stand out by CONTRAST, never by thickness: a step of the ground's
+	   own scale all but vanishes over glass, a share of the text colour reads over any backdrop */
+	--glass-line: color-mix(in oklab, var(--color-surface-950-50) 30%, transparent);
+	--color-surface-300-700: var(--glass-line);
+	--pdf-toolbar-border: var(--glass-line);
+	--pdf-toolbar-divider: var(--glass-line);
+}
+html.window-glass:not([data-mode='dark']) body {
+	--color-surface-50: transparent;
+	--color-surface-100: transparent;
+	--color-surface-200: color-mix(in oklab, var(--solid-surface-200) var(--glass-mark-light), transparent);
+	--terminal-bg: transparent;
+	--pdf-viewer-bg: transparent;
+	--pdf-page-area-bg: transparent;
+	--pdf-toolbar-bg: transparent;
+	--color-surface-50-950: light-dark(var(--color-surface-50), var(--color-surface-950));
+	--color-surface-100-900: light-dark(var(--color-surface-100), var(--color-surface-900));
+	--color-surface-200-800: light-dark(var(--color-surface-200), var(--color-surface-800));
+}
+html.window-glass[data-mode='dark'] body {
+	--color-surface-950: transparent;
+	--color-surface-900: transparent;
+	--color-surface-800: color-mix(in oklab, var(--solid-surface-800) var(--glass-mark-dark), transparent);
+	--terminal-bg: transparent;
+	--pdf-viewer-bg: transparent;
+	--pdf-page-area-bg: transparent;
+	--pdf-toolbar-bg: transparent;
+	--color-surface-50-950: light-dark(var(--color-surface-50), var(--color-surface-950));
+	--color-surface-100-900: light-dark(var(--color-surface-100), var(--color-surface-900));
+	--color-surface-200-800: light-dark(var(--color-surface-200), var(--color-surface-800));
+}
+html.window-glass
+	:is(
+		.border-surface-100-900,
+		.border-surface-200-800,
+		.border-surface-300-700,
+		.border-surface-400-600,
+		.preset-outlined-surface-200-800,
+		.preset-outlined-surface-400-600,
+		.fieldset
+	),
+/* the editor's own boxes draw their borders through @apply, not a utility class, so the rule above misses them */
+html.window-glass .TexpileEditor :is(hr, div.abstract, .table-wrapper, .table-header, td, th, .settings-button) {
+	border-color: var(--glass-line);
+}
+/* a bar's line drawn as a shadow, which the border rule above does not reach */
+html.window-glass .line-under {
+	box-shadow: inset 0 -1px 0 var(--glass-line);
+}
+/* scroll-inset-r is a 3px TRANSPARENT border, a spacer that keeps a scrollbar off the divider's handle. The rule above
+   colours every side of whatever carries a border utility, and the spacer sits on the same elements */
+html.window-glass .scroll-inset-r {
+	border-right-color: transparent;
+}
+/* a native checkbox paints its own solid box whatever color it is given, a dark or white hole in the glass. Clear
+   inside the glass line like the fields; a ticked one keeps the native accent */
+html.window-glass .checkbox:not(:checked, :indeterminate) {
+	appearance: none;
+	background-color: transparent;
+	border: 1px solid var(--glass-line);
+}
+/* the picked segment of a segmented control is the ground raised over a mark of it, a step glass all but evens out; it
+   is told from its track by a share of the text colour instead */
+html.window-glass .shadow-sm.bg-surface-50-950 {
+	background-color: color-mix(in oklab, var(--color-surface-950-50) 16%, transparent);
+}
+/* the open tab is the ground the editor stands on, over a strip one step off it, and glass clears both steps; it
+   takes the tint the dock's picked view wears instead */
+html.window-glass [role='tab'][aria-selected='true'].bg-surface-50-950 {
+	background-color: color-mix(in oklab, var(--color-surface-950-50) 10%, transparent);
+}
+/* unwrapped lines pass under the line numbers, so their strip has to cover; wrapped ones never do, and it can be glass */
+html.window-glass .cm-gutters {
+	background-color: light-dark(var(--solid-surface-50), var(--solid-surface-950));
+}
+html.window-glass .cm-editor:has(.cm-lineWrapping) .cm-gutters {
+	background-color: transparent;
+}
+/* xterm fills its own viewport from a colour read off the page's root, which stays solid; xterm 6 also writes it
+   inline on the scrollable wrapper */
+html.window-glass .xterm :is(.xterm-viewport, .xterm-scrollable-element) {
+	background-color: transparent !important;
+}
+/* everything that floats carries a step of the z-index scale below, sits in a Zag positioner, or names its role.
+   Solid is the safe side for these: see-through without a blur is text over text */
+html.window-glass
+	:is(
+		.app-scrim,
+		[data-part='positioner'],
+		[data-scope='toast'],
+		[role='menu'],
+		[role='dialog'],
+		[role='listbox'],
+		[role='tooltip'],
+		.z-floating-ui,
+		.z-search,
+		.z-dropdown,
+		.z-dialog,
+		.z-modal,
+		.z-banner,
+		.z-overlay-critical,
+		.z-special-modal,
+		.z-template-picker,
+		.z-fullscreen-modal,
+		.z-pdf-viewer,
+		.z-tooltip,
+		.cm-tooltip,
+		.cm-panels
+	) {
+	--color-surface-50: var(--solid-surface-50);
+	--color-surface-100: var(--solid-surface-100);
+	--color-surface-200: var(--solid-surface-200);
+	--color-surface-800: var(--solid-surface-800);
+	--color-surface-900: var(--solid-surface-900);
+	--color-surface-950: var(--solid-surface-950);
+	--terminal-bg: var(--solid-terminal-bg);
+	--pdf-viewer-bg: var(--solid-pdf-viewer-bg);
+	--pdf-page-area-bg: var(--solid-pdf-page-area-bg);
+	--pdf-toolbar-bg: var(--solid-pdf-toolbar-bg);
+	--color-surface-50-950: light-dark(var(--color-surface-50), var(--color-surface-950));
+	--color-surface-100-900: light-dark(var(--color-surface-100), var(--color-surface-900));
+	--color-surface-200-800: light-dark(var(--color-surface-200), var(--color-surface-800));
+	--color-surface-300-700: light-dark(var(--color-surface-300), var(--color-surface-700));
+}
+
+/* the sheet itself: whatever casts a shadow AND paints the ground is a floating card in this app's markup (a shadow
+   alone can be a paper page). The rest are the floating things that paint their ground by hand: toasts, the comment
+   pill, the settings button on an image, and the two libraries' own popups. What lies under a sheet is blurred until
+   nothing of it can be made out, then the sheet's own color goes over that. The next two steps stay marks, the same
+   way they do on the window.
+   The blur ends in url(#glass-opaque) (windowGlassFilter.ts), which makes the blurred copy opaque. Chromium draws that
+   copy OVER what it blurred, so over a see-through page the sharp text stayed readable under its own blur, and no
+   amount of blur changed that. The cost is that the desktop does not show through a sheet, only the frosted page */
+html.window-glass :is(.shadow-lg, .shadow-xl, .shadow-2xl):is(.bg-surface-50-950, .bg-surface-100-900),
+html.window-glass [data-scope='toast'][data-part='root'],
+html.window-glass .cm-tooltip,
+html.window-glass .cm-comment-add,
+html.window-glass .settings-button,
+html.window-glass #mathlive-suggestion-popover {
+	--color-surface-300-700: var(--glass-line);
+	backdrop-filter: blur(var(--glass-sheet-blur)) url(#glass-opaque);
+}
+/* only the mode's own end of the scale, as on body: the other end is what text is drawn with */
+html.window-glass:not([data-mode='dark']) :is(.shadow-lg, .shadow-xl, .shadow-2xl):is(.bg-surface-50-950, .bg-surface-100-900),
+html.window-glass:not([data-mode='dark']) [data-scope='toast'][data-part='root'],
+html.window-glass:not([data-mode='dark']) .cm-tooltip,
+html.window-glass:not([data-mode='dark']) .cm-comment-add,
+html.window-glass:not([data-mode='dark']) .settings-button,
+html.window-glass:not([data-mode='dark']) #mathlive-suggestion-popover {
+	--color-surface-50: color-mix(in oklab, var(--solid-surface-50) var(--glass-sheet-light), transparent);
+	--color-surface-100: color-mix(in oklab, var(--solid-surface-100) var(--glass-mark-light), transparent);
+	--color-surface-200: color-mix(in oklab, var(--solid-surface-200) var(--glass-mark-light), transparent);
+	--color-surface-50-950: light-dark(var(--color-surface-50), var(--color-surface-950));
+	--color-surface-100-900: light-dark(var(--color-surface-100), var(--color-surface-900));
+	--color-surface-200-800: light-dark(var(--color-surface-200), var(--color-surface-800));
+}
+html.window-glass[data-mode='dark'] :is(.shadow-lg, .shadow-xl, .shadow-2xl):is(.bg-surface-50-950, .bg-surface-100-900),
+html.window-glass[data-mode='dark'] [data-scope='toast'][data-part='root'],
+html.window-glass[data-mode='dark'] .cm-tooltip,
+html.window-glass[data-mode='dark'] .cm-comment-add,
+html.window-glass[data-mode='dark'] .settings-button,
+html.window-glass[data-mode='dark'] #mathlive-suggestion-popover {
+	--color-surface-950: color-mix(in oklab, var(--solid-surface-950) var(--glass-sheet-dark), transparent);
+	--color-surface-900: color-mix(in oklab, var(--solid-surface-900) var(--glass-mark-dark), transparent);
+	--color-surface-800: color-mix(in oklab, var(--solid-surface-800) var(--glass-mark-dark), transparent);
+	--color-surface-50-950: light-dark(var(--color-surface-50), var(--color-surface-950));
+	--color-surface-100-900: light-dark(var(--color-surface-100), var(--color-surface-900));
+	--color-surface-200-800: light-dark(var(--color-surface-200), var(--color-surface-800));
+}
+/* these take the second dark step as their ground, which is a mark on a sheet. The pill keeps the ground when hovered
+   too: a mark there would make it clearer under the pointer */
+html.window-glass .cm-tooltip.cm-tooltip,
+html.window-glass .cm-tooltip.cm-tooltip-autocomplete,
+html.window-glass .cm-tooltip.cm-math-preview,
+html.window-glass .cm-comment-add,
+html.window-glass .cm-comment-add:hover,
+html.window-glass .settings-button.settings-button,
+html.window-glass .settings-button.settings-button:hover {
+	background-color: var(--color-surface-50-950);
+}
+/* the completion's info box hangs OUTSIDE its tooltip, and a blur inside a blurred element only sees what that element
+   painted, which out there is nothing. So it stays a solid card */
+html.window-glass .cm-tooltip .cm-completionInfo {
+	background-color: light-dark(var(--solid-surface-50), var(--solid-surface-900));
+}
+
 /* mathlive's caret defaults to its blue accent in both schemes; follow the page text color
    instead (the var pierces the shadow root, and an explicit value beats both of its
    prefers-color-scheme fallbacks, which track the OS rather than the app toggle) */
@@ -64,7 +299,7 @@ math-field {
 :root .cm-gutters {
 	background-color: var(--color-surface-50-950); /* opaque: content scrolled sideways must pass under it */
 	color: var(--muted-text);
-	border-right: var(--default-border-width) solid color-mix(in srgb, currentColor 10%, transparent);
+	border-right: none; /* off, not absent: CM's own rule underneath draws a #ddd line on every theme */
 }
 :root .cm-activeLineGutter {
 	background-color: transparent;
@@ -89,10 +324,8 @@ math-field {
 }
 
 /* ONE selection colour for both editors and every simulated one. The source editor's drawn layer
-   (above) and the visual editor's ::selection read it; node views (math fields, code chips) sit
-   outside the browser's ::selection painting, so cursor-plugin shades them with .pm-selected-node
-   when a range crosses them; the blurred-editor simulation (.pm-blur-selection) and the
-   keep-visible-under-menu rule (ContextMenu.svelte) are the same species. Any drift showed as
+   (above) and the visual editor's ::selection read it; everything the browser paints nothing over
+   is drawn by the range painter (highlight/paintRange.ts) in this same color. Any drift showed as
    patchwork inside a single drag: solid Tailwind blue boxes over math, native blue over prose,
    lavender in source. Light is lighter over a white page. */
 :root {
@@ -103,15 +336,6 @@ math-field {
 }
 .ProseMirror ::selection {
 	background-color: var(--editor-selection);
-}
-.ProseMirror .pm-selected-node {
-	background-color: var(--editor-selection);
-}
-/* an <hr> is a border line over a zero-height content box, so the background above paints
-   nothing visible: a crossed divider wears its selection as a band around the line instead
-   (box-shadow, so no layout shift) */
-.ProseMirror hr.pm-selected-node {
-	box-shadow: 0 0 0 0.3em var(--editor-selection);
 }
 /* prosemirror-tables paints its own cell overlay, hardcoded to rgba(200, 200, 255, 0.4): theme
    blind, and the one selection in the editor that was not reading the variable above - a pale
@@ -148,6 +372,11 @@ math-field {
 .ProseMirror-gapcursor:after {
 	border-top: var(--default-border-width) solid var(--color-surface-950-50) !important;
 }
+/* dropPastNodeViews.ts. mathlive turns pointer events back on inside its shadow root */
+.ProseMirror.pm-own-drag [contenteditable='false'],
+.ProseMirror.pm-own-drag math-field::part(container) {
+	pointer-events: none;
+}
 /* CM autocomplete/tooltips (rendered in <body> via tooltipsInBody) ship light; these put them on
    the theme in both modes */
 :root .cm-tooltip,
@@ -163,6 +392,9 @@ math-field {
 }
 :root .cm-completionMatchedText {
 	color: var(--primary-ink);
+}
+:root .cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionMatchedText {
+	color: inherit;
 }
 
 /* mathlive's \command suggestion popover (light DOM in <body>) ships one hardcoded gray look
@@ -218,14 +450,71 @@ html #mathlive-suggestion-popover li a:hover {
 }
 
 /* Skeleton's .input transparent bg leaks the OS-default white on <select> (native form chrome
-   ignores transparent), so the control and its <option> popup get the theme's ground outright;
-   color-scheme is inherited from html, which is what makes the popup follow the mode */
+   ignores transparent), so the control gets the theme's ground outright */
 select.input,
-select,
-select.input option,
-select option {
+select {
+	appearance: base-select;
 	background-color: light-dark(var(--color-surface-50), var(--color-surface-900));
 	color: var(--color-surface-950-50);
+}
+
+/* base-select has Chromium draw a select's open list in the page instead of asking the system for one, so it takes the
+   look every list in the app shares (lib/menus/menuStyles.ts): the panel, the rows, the highlight under the pointer and
+   the arrow keys. The select keeps its own keys, typing to jump and what a screen reader hears */
+select::picker(select) {
+	appearance: base-select;
+	margin-block: calc(var(--spacing) * 1);
+	padding: calc(var(--spacing) * 1);
+	border: var(--default-border-width) solid var(--color-surface-200-800);
+	border-radius: var(--radius-container);
+	background-color: var(--color-surface-50-950);
+	color: var(--color-surface-950-50);
+	box-shadow: var(--shadow-xl);
+	font-size: var(--text-sm);
+}
+select option {
+	gap: calc(var(--spacing) * 3);
+	padding: calc(var(--spacing) * 1) calc(var(--spacing) * 2.5);
+	border-radius: var(--radius-base);
+	background-color: transparent;
+	cursor: pointer;
+}
+/* preset-tonal's ground */
+select option:is(:hover, :focus-visible) {
+	outline: none;
+	background-color: color-mix(in oklab, light-dark(var(--color-surface-950), var(--color-surface-50)) 10%, transparent);
+}
+select option::checkmark {
+	order: 1;
+	margin-inline-start: auto;
+}
+/* the list is a sheet in the see-through window as the other lists are; apart from their rule above, which a selector
+   Chromium did not know would drop whole */
+html.window-glass select::picker(select) {
+	backdrop-filter: blur(var(--glass-sheet-blur)) url(#glass-opaque);
+}
+html.window-glass:not([data-mode='dark']) select::picker(select) {
+	background-color: color-mix(in oklab, var(--solid-surface-50) var(--glass-sheet-light), transparent);
+}
+html.window-glass[data-mode='dark'] select::picker(select) {
+	background-color: color-mix(in oklab, var(--solid-surface-950) var(--glass-sheet-dark), transparent);
+}
+
+/* Skeleton leaves a select's inline padding and arrow to the browser, which puts both on the
+   border; the chevron is drawn here so the text sits where an input's does, and the line-height is
+   the field size again because text-sm on the class list stretched the box past a button's */
+select.select::picker-icon,
+select.input::picker-icon {
+	display: none;
+}
+select.select,
+select.input {
+	line-height: var(--field-size);
+	padding-inline: calc((var(--field-size) - var(--spacing) * 0.5) / 2 + var(--spacing)) calc(var(--spacing) * 7);
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237f7f7f' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+	background-repeat: no-repeat;
+	background-position: right calc(var(--spacing) * 2) center;
+	background-size: calc(var(--spacing) * 4);
 }
 
 /* block handle gutter, rendered on document.body by block-handle-plugin */
@@ -254,37 +543,11 @@ select option {
 	);
 	color: var(--error-ink);
 }
-.block-handle-menu {
-	min-width: calc(var(--spacing) * 44);
-	max-height: 60vh;
-	overflow-y: auto;
-	padding: calc(var(--spacing) * 1);
-	border-radius: var(--radius-base);
-	border: var(--default-border-width) solid var(--color-surface-300-700);
-	background: var(--color-surface-50-950);
-	box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
-}
-.block-handle-menu-item {
-	display: block;
-	width: 100%;
-	padding: 0.3rem 0.55rem;
-	border: none;
-	border-radius: var(--radius-base);
-	background: transparent;
-	text-align: left;
-	font-size: 0.875rem;
-	color: var(--color-surface-800-200);
-	cursor: pointer;
-}
-.block-handle-menu-item:hover {
-	background: var(--color-surface-200-800);
-}
-
 /* first-line indent from the Tab toggle (data-indent). 'noindent' renders flush like 'auto', so it
    gets a label in the left margin to tell the two apart. The block handle shares that margin, so it
    drops a line for these paragraphs (see block-handle-plugin).
 
-   Abbreviated, and small, because the margin is 48px (EditorPane's px-12) and that is a hard
+   Abbreviated, and small, because the margin is 48px (VisualEditorHost's pl-12) and that is a hard
    ceiling: on a narrow window the mx-auto centering collapses and there is nothing else. Spelt in
    full at 0.8em the label wanted ~70px and got cut from the LEFT, so \noindent rendered as
    "indent" - the one thing it must never say. max-width pins the failure direction: if it ever
@@ -311,13 +574,79 @@ select option {
 	pointer-events: none;
 }
 
+/* with the block handles stacked (comments crowding a narrow pane) the margin is 30px: keep the head, \no */
+[data-gutter-stacked] .ProseMirror p[data-indent='noindent']::before {
+	max-width: 1.4rem;
+}
+
+/* in a list the space just left of the paragraph holds the bullet or the number, so the label goes
+   out past the item's own marker column (32px, prosemirror-flat-list's margin) */
+.ProseMirror .prosemirror-flat-list p[data-indent='noindent']::before {
+	margin-right: calc(0.4em + 32px);
+}
+
+/* lines ended where lineBreakPlugin chose: the paragraph cannot wrap, only the marked spaces, dashes
+   and hyphenation points can. The space that ends a line hangs past the edge (pre-wrap), so a line
+   that ends in a hyphen stops where the others do. */
+.ProseMirror .pm-line-par {
+	text-wrap-mode: nowrap;
+}
+.ProseMirror .pm-line-justified {
+	text-align: justify;
+}
+/* a document too large to break line by line carries no decorations, so one rule justifies its body text */
+.ProseMirror.pm-lines-plain > p,
+.ProseMirror.pm-lines-plain > .prosemirror-flat-list p {
+	text-align: justify;
+}
+/* while the column's width is changing the browser wraps on its own, and the marks stay in place for when it rests */
+.ProseMirror.pm-lines-native .pm-line-par {
+	text-wrap-mode: wrap;
+}
+/* an input method's text grows at the caret and cannot be re-broken until it commits (compositionWrap) */
+.ProseMirror.pm-composing .pm-line-par.pm-line-caret {
+	text-wrap-mode: wrap;
+}
+.ProseMirror .pm-line-par .pm-line-break {
+	white-space: pre-wrap;
+}
+.ProseMirror .pm-line-par .pm-line-hyphen {
+	text-wrap-mode: wrap;
+	hyphens: manual;
+	hyphenate-character: '-';
+}
+/* a soft hyphen as generated content: drawn only if the line does end there, and never in the text */
+.ProseMirror .pm-line-par .pm-line-hyphen::after {
+	content: '\00AD';
+}
+/* the browser paints no selection over generated content; a selected word's hyphen gets the colour from hyphenSelection */
+.ProseMirror .pm-line-par .pm-line-hyphen.pm-line-hyphen-selected::after {
+	background-color: var(--editor-selection);
+	/* up to the line box, as the browser paints selected text (rangeBands.ts measures the line) */
+	padding-block: var(--band-up, 0px) var(--band-down, 0px);
+}
+/* inside a word no line can hold, the browser's way out; a zero width space makes the character's end a break */
+.ProseMirror .pm-line-par .pm-line-anywhere {
+	text-wrap-mode: wrap;
+}
+.ProseMirror .pm-line-par .pm-line-anywhere::after {
+	content: '\200B';
+}
+
 /* scrollbars for the app's own scrollers, a share of the text colour so they sit on any ground;
    the PDF viewer (shadow DOM) and terminal style their own */
+/* Skeleton puts scrollbar-color on the root, and it inherits. Any value there but auto makes Chromium drop the
+   ::-webkit-scrollbar rules for the system bar: 15px wide, arrows at both ends, drawn even with nothing to scroll */
+:root {
+	scrollbar-color: auto;
+	scrollbar-width: auto;
+}
 ::-webkit-scrollbar {
 	width: calc(var(--spacing) * 2.5);
 	height: calc(var(--spacing) * 2.5);
 }
-::-webkit-scrollbar-track {
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
 	background: transparent;
 }
 ::-webkit-scrollbar-thumb {
@@ -389,6 +718,17 @@ select option {
 .app-window-controls {
 	width: calc(100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px));
 }
+/* and the start of the bar, for desktops set to put the buttons on the left (xfwm and GNOME both offer it): the
+   draggable span then begins where the buttons end */
+.app-window-controls-start {
+	width: env(titlebar-area-x, 0px);
+}
+/* the window buttons are drawn over the page too, so a dialog reaching the top of a short window sat
+   under them: a scrim keeps what it centers below the bar. --scrim-top is a dialog that sits higher up;
+   macOS has no overlay to measure, and windowOverlay.ts gives the traffic lights' row as --mac-titlebar */
+.app-scrim {
+	padding-top: max(var(--scrim-top, 1rem), calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, var(--mac-titlebar, 0px)) + 0.5rem));
+}
 /* thin always-present scrollbar on the toolbar: the macOS overlay scrollbar hides until you
    scroll, which made off-screen toolbar icons look simply missing */
 /* Chrome bars scroll by wheel and trackpad, but never show a bar. A horizontal scrollbar inside a
@@ -400,10 +740,29 @@ select option {
 	scrollbar-width: none;
 }
 
-/* The "add comment" pill that floats in the source editor's left margin. Its geometry is set by
-   the CodeMirror extension; the colours are here because a baseTheme cannot branch on dark mode,
-   and this has to read as part of the app's chrome rather than as part of the document. */
+/* The selection toolbar (editor/selectionToolbarRow.ts), floating above the selection in both editors. Here rather
+   than in a CodeMirror baseTheme because the colours need a dark mode branch, and it has to read as part of the app's
+   chrome rather than as part of the document. The row is what gets positioned and faded; the buttons inside it are
+   plain chrome. Over CodeMirror's gutter, which paints at 200: a selection near the left edge puts the row across it. */
+.cm-comment-add-row {
+	position: fixed;
+	z-index: 250;
+	align-items: center;
+	gap: 2px;
+	opacity: 0;
+	transition: opacity 0.05s ease-in;
+}
+.cm-comment-add-visible {
+	opacity: 1;
+}
 .cm-comment-add {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	padding: 0;
+	cursor: pointer;
 	border: var(--default-border-width) solid var(--color-surface-300-700);
 	border-radius: calc(var(--radius-base) * 1.5);
 	background-color: light-dark(var(--color-surface-50), var(--color-surface-900));
@@ -414,22 +773,250 @@ select option {
 	background-color: light-dark(var(--color-surface-100), var(--color-surface-800));
 	color: var(--primary-ink);
 }
-
-/* Review-comment highlights in the visual editor: the same tints as the source editor's
-   .cm-comment (extensions/comments.ts baseTheme), so a thread looks like the same thread on
-   either side of a mode switch. */
-.TexpileEditor .pm-comment {
-	background-color: color-mix(in srgb, var(--comment-tint) 14%, transparent);
+/* the class's display would otherwise beat the attribute: Refine is hidden until an agent is set up */
+.cm-comment-add[hidden] {
+	display: none;
 }
-.TexpileEditor .pm-comment-focused {
-	background-color: color-mix(in srgb, var(--comment-tint) 30%, transparent);
+.cm-comment-add:disabled {
+	opacity: 0.5;
+	cursor: default;
 }
-/* the selection being commented on, held visible while the composer owns the focus (an
-   unfocused ProseMirror hides the native selection); selection-blue, not thread-yellow */
-.TexpileEditor .pm-comment-pending {
-	background-color: color-mix(in srgb, var(--comment-pending-tint) 22%, transparent);
+/* narrower than the buttons it dismisses: secondary, and it must not read as another action */
+.cm-comment-add-off {
+	width: 20px;
 }
 
+/* a suggestion's tints come from the range painter (suggestionTint in pmSuggestionWidgets.ts) */
+.TexpileEditor .pm-suggest-old {
+	text-decoration: line-through;
+	user-select: none;
+}
+/* the same under a collaborator's selection, in their color; our own selection is laid over it */
+.TexpileEditor .pm-suggest-old.pm-peer-selected {
+	background-color: transparent;
+	background-image: linear-gradient(var(--peer-tint), var(--peer-tint)), linear-gradient(var(--range-tint), var(--range-tint));
+	background-clip: border-box, content-box;
+}
+/* selected old words: their own tint stays text high under the selection color, as it does where the
+   browser paints over new words, and the selection color alone fills the rest of the band */
+.TexpileEditor .pm-suggest-old.pm-range-selected {
+	background-color: transparent;
+	background-image:
+		linear-gradient(var(--editor-selection), var(--editor-selection)), linear-gradient(var(--range-tint), var(--range-tint));
+	background-clip: border-box, content-box;
+}
+/* The formula a change replaced, typeset beside the one that replaced it: maths has no words to
+   strike, so the two set side by side are the whole of what changed. The rule through it is PAINTED,
+   not text-decoration: mathlive builds its markup out of inline-blocks, and a decoration does not
+   cross into one, so the line would stop at the first box it met. */
+.TexpileEditor .pm-suggest-was {
+	display: inline-block;
+	margin-right: 0.3em;
+	opacity: 0.75;
+	text-decoration: none;
+	background-image: linear-gradient(
+		to bottom,
+		transparent calc(50% - 0.5px),
+		currentColor calc(50% - 0.5px),
+		currentColor calc(50% + 0.5px),
+		transparent calc(50% + 0.5px)
+	);
+}
+.TexpileEditor div.pm-suggest-was {
+	display: block;
+	margin: 0 0 0.3em;
+}
+/* a display formula sits centered, as the one that replaced it does, with the rule through the formula alone */
+.TexpileEditor div.pm-suggest-was:has(> div.math-static-placeholder) {
+	background-image: none;
+}
+.TexpileEditor div.pm-suggest-was > div.math-static-placeholder {
+	display: flex;
+	justify-content: center;
+}
+.TexpileEditor div.pm-suggest-was > div.math-static-placeholder > .ML__latex {
+	width: fit-content;
+	background-image: linear-gradient(
+		to bottom,
+		transparent calc(50% - 0.5px),
+		currentColor calc(50% - 0.5px),
+		currentColor calc(50% + 0.5px),
+		transparent calc(50% + 0.5px)
+	);
+}
+/* Blocks a suggestion took out. They are gone from the document, so there is nothing left in it to
+   strike and no block that could be tinted without saying a paragraph changed that did not. Same
+   shape as the diff view's removed block, for the same reason: a whole block took a whole block's
+   room, and cramming it into the line beside it collapses it to a sliver. The breaks are its own,
+   which is why it keeps its whitespace. */
+.TexpileEditor .pm-suggest-gone {
+	display: block;
+	margin: 0.35em 0;
+	padding: 0.15em 0.3em;
+	white-space: break-spaces;
+	border-radius: calc(var(--radius-base) * 0.5);
+	/* drawn inside the heading a cut joined, its paragraphs came out in the heading's weight */
+	font-size: calc(1rem * var(--text-scaling));
+	font-weight: normal;
+	line-height: var(--leading-relaxed, 1.625);
+}
+/* nothing is dropped on it (goneBlocksRefuseDrop.ts), so no drop cursor shows over it either */
+html.pm-drop-refused .pm-drop-cursor {
+	display: none;
+}
+/* the file no longer has them, so they take no number and move nobody else's */
+.ProseMirror[data-show-section-numbers] .pm-suggest-gone :is(h1, h2, h3, h4, h5, h6) {
+	counter-increment: none;
+	counter-reset: none;
+}
+.ProseMirror[data-show-section-numbers] .pm-suggest-gone :is(h1, h2, h3, h4, h5, h6)::before {
+	content: none;
+}
+/* the same for an item taken out of a numbered list: the item after it goes on from the one before */
+.ProseMirror .prosemirror-flat-list[data-list-kind='ordered'] + .pm-suggest-gone .prosemirror-flat-list[data-list-kind='ordered'] {
+	counter-increment: none;
+	counter-reset: none;
+	counter-set: none;
+}
+.ProseMirror .prosemirror-flat-list[data-list-kind='ordered'] + .pm-suggest-gone .prosemirror-flat-list[data-list-kind='ordered']::before {
+	content: none;
+}
+.ProseMirror .prosemirror-flat-list[data-list-kind='ordered'] + .pm-suggest-gone + .prosemirror-flat-list[data-list-kind='ordered'] {
+	counter-reset: none;
+	counter-set: none;
+}
+/* the tint shows through what would paint its own ground over it */
+.TexpileEditor .pm-suggest-gone :is(.table-wrapper, th) {
+	background: transparent;
+}
+.TexpileEditor .pm-suggest-gone .table-wrapper[data-show-notes='false'] > .table-notes {
+	display: none;
+}
+/* tailwind's table-caption utility shares the class name; the view's flex column is what undoes it there */
+.TexpileEditor .pm-suggest-gone .table-caption {
+	display: block;
+}
+.TexpileEditor .pm-suggest-gone code {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+.TexpileEditor .pm-suggest-gone div.math-static-placeholder {
+	display: flex;
+	justify-content: center;
+	opacity: 0.75;
+}
+/* an aligned environment's box would otherwise take the whole line, and sit at its left */
+.TexpileEditor .pm-suggest-gone div.math-static-placeholder > .ML__latex {
+	width: fit-content;
+}
+/* struck the way a replaced formula is, a painted rule, since a decoration stops at mathlive's boxes;
+   in a line only, where the words beside it are struck */
+.TexpileEditor .pm-suggest-gone span.math-static-placeholder .ML__latex {
+	opacity: 0.75;
+	background-image: linear-gradient(
+		to bottom,
+		transparent calc(50% - 0.5px),
+		currentColor calc(50% - 0.5px),
+		currentColor calc(50% + 0.5px),
+		transparent calc(50% + 0.5px)
+	);
+}
+/* the view's header names the environment; drawn without one, the name goes on top */
+.TexpileEditor .pm-suggest-gone .tex-environment::before {
+	content: attr(data-env);
+	display: block;
+	font-size: 0.7em;
+	color: var(--muted-text);
+}
+.TexpileEditor .pm-gone-figure {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	margin: 0.5em 0;
+}
+.TexpileEditor .pm-gone-figure img {
+	max-width: 100%;
+	opacity: 0.6;
+}
+/* Where a paragraph break is being put in or taken out. A bar, the way a diff marks one, rather
+   than a pilcrow or a ↵: those are characters the document does not contain and nobody explains. */
+.TexpileEditor .pm-suggest-break,
+.cm-suggest-break {
+	display: inline-block;
+	width: 2px;
+	height: 1.05em;
+	vertical-align: text-bottom;
+	border-radius: 1px;
+	margin-inline: 0.12em;
+}
+.TexpileEditor .pm-suggest-break-added,
+.cm-suggest-break-added {
+	background-color: var(--diff-insert-tint);
+}
+.TexpileEditor .pm-suggest-break-removed,
+.cm-suggest-break-removed {
+	background-color: var(--diff-delete-tint);
+}
+/* the blank lines an added break opens, carried down their left edge like a diff's gutter */
+.cm-suggest-break-lines {
+	box-shadow: inset 2px 0 0 var(--diff-insert-tint);
+}
+
+.comment-card {
+	position: absolute;
+	left: calc(4px - var(--comment-card-shift, 0px));
+	width: 242px;
+	z-index: 2;
+	padding: 6px 8px 6px 10px;
+	transition:
+		top 160ms ease,
+		left 160ms ease,
+		box-shadow 160ms ease;
+}
+.comment-rail-source {
+	position: sticky;
+	top: 0;
+	z-index: 300;
+	flex: 0 0 auto;
+	align-self: stretch;
+	overflow: visible clip;
+}
+.comment-rail-narrow::after {
+	content: '';
+	position: absolute;
+	top: 0;
+	left: calc(246px - var(--comment-card-shift, 0px));
+	width: var(--comment-rail-tail, 0px);
+	height: 1px;
+}
+.comment-card-hovered {
+	border-color: var(--color-surface-300-700);
+}
+/* the cards fading into the pane where its edge cuts them; placed by CommentRail */
+.comment-rail-fade {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	z-index: 6;
+	pointer-events: none;
+	background: linear-gradient(to right, transparent, var(--comment-rail-fade-bg));
+}
+.comment-card-selected,
+.comment-card-pending {
+	left: calc(0px - var(--comment-card-shift, 0px));
+	width: 246px;
+	z-index: 4;
+	border-color: var(--color-surface-300-700);
+	box-shadow: 0 6px 20px color-mix(in srgb, var(--color-surface-950) 22%, transparent);
+}
+.comment-card-pending {
+	z-index: 5;
+}
+@media (prefers-reduced-motion: reduce) {
+	.comment-card {
+		transition: none;
+	}
+}
 /* Hold a scroll container's scrollbar 3px in from its right edge, for panes that sit against a
    divider: the collapse lozenge straddles the rule and overhangs 3px into each side, and what lives
    hard against a pane's inner edge is exactly its scrollbar. 3px is the whole overhang and not a
@@ -441,6 +1028,35 @@ select option {
    gap, at heights that move with the view mode and the TOC fraction. */
 .scroll-inset-r {
 	border-right: 3px solid transparent;
+}
+
+/* the line along the foot of the top bar and the notice bars under the tabs. A shadow, not a border, so it takes none of
+   the bar's height and centered icons stay on whole pixels */
+.line-under {
+	box-shadow: inset 0 -1px 0 var(--color-surface-200-800);
+}
+
+.source-editor .cm-scroller {
+	scrollbar-gutter: stable;
+}
+
+/* what a fold leaves on its line. The dots take the accent and the caret the text color, with nothing drawn behind the
+   dots, so a caret beside them still shows */
+.cm-editor .cm-content .cm-foldPlaceholder {
+	/* padding, never margin: a caret after the dots stands at the box's edge, so a margin would only space their left */
+	margin: 0;
+	padding: 0 0.15em;
+	border: none;
+	border-radius: var(--radius-base);
+	background: none;
+	color: var(--primary-ink);
+	font-weight: 700;
+	cursor: pointer;
+	user-select: none;
+}
+
+.cm-editor .cm-content .cm-foldPlaceholder:hover {
+	background: color-mix(in oklab, var(--primary-ink) 14%, transparent);
 }
 
 /* The visual editor while it builds. VISIBILITY, never display: an element with no box intersects
@@ -558,6 +1174,7 @@ select option {
 	--color-muted: var(--muted-text);
 	--color-faint: var(--faint-text);
 	--color-primary-tint: var(--primary-tint);
+	--color-primary-tint-solid: var(--primary-tint-solid);
 	--color-primary-wash: var(--primary-wash);
 	--color-primary-flood: var(--primary-flood);
 	--color-secondary-tint: var(--secondary-tint);
@@ -588,8 +1205,10 @@ select option {
 	--color-error-tonal: var(--error-tonal);
 	--color-error-tonal-hover: var(--error-tonal-hover);
 	--color-surface-tint: var(--surface-tint);
+	--color-tonal-hover-solid: var(--tonal-hover-solid);
 	--color-surface-wash: var(--surface-wash);
 	--color-surface-strong-wash: var(--surface-strong-wash);
+	--color-surface-strong-wash-solid: var(--surface-strong-wash-solid);
 	--color-surface-scrim: var(--surface-scrim);
 	--color-primary-ink: var(--primary-ink);
 	--color-secondary-ink: var(--secondary-ink);
@@ -611,6 +1230,110 @@ select option {
 	--color-swatch-clear: var(--swatch-clear);
 	--color-page-sheet: var(--page-sheet);
 	--color-draft-band: var(--draft-band);
+}
+
+/* lines an even number of pixels tall, else an icon and its words snap to the pixel grid apart (+ 0.001 for float error) */
+@theme inline {
+	--text-xs--line-height: calc(
+		(round(16 * var(--text-scaling) * var(--text-scaling), 2) + 0.001) / round(12 * var(--text-scaling), 1 / 64)
+	);
+	--text-sm--line-height: calc(
+		(round(20 * var(--text-scaling) * var(--text-scaling), 2) + 0.001) / round(14 * var(--text-scaling), 1 / 64)
+	);
+	--text-base--line-height: calc(
+		(round(24 * var(--text-scaling) * var(--text-scaling), 2) + 0.001) / round(16 * var(--text-scaling), 1 / 64)
+	);
+	--text-lg--line-height: calc(
+		(round(28 * var(--text-scaling) * var(--text-scaling), 2) + 0.001) / round(18 * var(--text-scaling), 1 / 64)
+	);
+	--text-xl--line-height: calc(
+		(round(28 * var(--text-scaling) * var(--text-scaling), 2) + 0.001) / round(20 * var(--text-scaling), 1 / 64)
+	);
+	--text-2xl--line-height: calc(
+		(round(32 * var(--text-scaling) * var(--text-scaling), 2) + 0.001) / round(24 * var(--text-scaling), 1 / 64)
+	);
+	--text-3xl--line-height: calc(
+		(round(36 * var(--text-scaling) * var(--text-scaling), 2) + 0.001) / round(30 * var(--text-scaling), 1 / 64)
+	);
+	--text-4xl--line-height: calc(
+		(round(40 * var(--text-scaling) * var(--text-scaling), 2) + 0.001) / round(36 * var(--text-scaling), 1 / 64)
+	);
+	--text-5xl--line-height: calc(
+		(round(48 * var(--text-scaling) * var(--text-scaling), 2) + 0.001) / round(48 * var(--text-scaling), 1 / 64)
+	);
+	--text-6xl--line-height: calc(
+		(round(60 * var(--text-scaling) * var(--text-scaling), 2) + 0.001) / round(60 * var(--text-scaling), 1 / 64)
+	);
+	--text-7xl--line-height: calc(
+		(round(72 * var(--text-scaling) * var(--text-scaling), 2) + 0.001) / round(72 * var(--text-scaling), 1 / 64)
+	);
+	--text-8xl--line-height: calc(
+		(round(96 * var(--text-scaling) * var(--text-scaling), 2) + 0.001) / round(96 * var(--text-scaling), 1 / 64)
+	);
+	--text-9xl--line-height: calc(
+		(round(128 * var(--text-scaling) * var(--text-scaling), 2) + 0.001) / round(128 * var(--text-scaling), 1 / 64)
+	);
+}
+
+/* Skeleton's btn, chip and badge lines and icons on even pixels, so an icon sits level with its word */
+@utility btn {
+	--btn-line: round(up, var(--btn-size), 2px);
+	line-height: var(--btn-line);
+	padding-block: round(calc((var(--btn-size) * 2 - --spacing(0.5) - var(--btn-line)) / 2), 1px);
+	& > :where(svg) {
+		width: round(var(--btn-size), 2px);
+		height: round(var(--btn-size), 2px);
+	}
+}
+@utility btn-icon {
+	--btn-box: round(calc(var(--btn-size) * 2 - --spacing(0.5)), 2px);
+	--btn-glyph: round(var(--btn-size), 2px);
+	width: var(--btn-box);
+	height: var(--btn-box);
+	padding: calc((var(--btn-box) - var(--btn-glyph)) / 2);
+	& > :where(svg) {
+		width: var(--btn-glyph);
+		height: var(--btn-glyph);
+	}
+}
+/* a label trimmed to its capitals, so items-center puts an icon on the capitals' middle in any font; not with py-* */
+@utility cap-center {
+	@supports (text-box: trim-both cap alphabetic) {
+		/* 1lh can read up to 1/32px short of the line, so within 1/32px of a whole pixel it snaps to it */
+		--lh: round(1lh, 1px / 64);
+		--to-whole: calc(round(1lh, 1px) - var(--lh));
+		--line: calc(var(--lh) + 2 * clamp(-1px / 32, var(--to-whole), 1px / 32) - clamp(-1px / 16, var(--to-whole), 1px / 16));
+		/* in the browser's 1/64px steps, so the three parts add up to exactly one line */
+		--cap: round(1cap, 1px / 64);
+		--cap-above: round(down, calc((var(--line) - var(--cap)) / 2), 1px / 64);
+		text-box: trim-both cap alphabetic;
+		padding-top: var(--cap-above);
+		padding-bottom: calc(var(--line) - var(--cap) - var(--cap-above));
+		/* truncate clips only the sides, or a tight line loses the tails of g and y; clip needs min-width 0 that hidden gave */
+		&.truncate {
+			overflow-x: clip;
+			overflow-y: visible;
+			min-width: 0;
+		}
+	}
+}
+@utility chip {
+	--chip-line: round(up, var(--chip-size), 2px);
+	line-height: var(--chip-line);
+	padding-block: round(calc((var(--chip-size) * 2 - --spacing(0.5) - var(--chip-line)) / 2), 1px);
+	& > :where(svg) {
+		width: round(var(--chip-size), 2px);
+		height: round(var(--chip-size), 2px);
+	}
+}
+@utility badge {
+	--badge-line: round(up, var(--badge-size), 2px);
+	line-height: var(--badge-line);
+	padding-block: round(calc((var(--badge-size) * 2 - --spacing(0.5) - var(--badge-line)) / 2), 1px);
+	& > :where(svg) {
+		width: round(var(--badge-size), 2px);
+		height: round(var(--badge-size), 2px);
+	}
 }
 
 @utility z-sticky-header {
@@ -744,6 +1467,14 @@ select option {
 [data-scope='toast'][data-part='root']:has([data-part='description']:empty) [data-part='close-trigger'] {
 	height: auto;
 	padding-block: calc(var(--spacing) * 0.5);
+}
+/* Skeleton fills a toast's action, a white block on a dark toast; a toast's action is a quiet second choice */
+[data-scope='toast'][data-part='action-trigger'] {
+	@apply btn-sm preset-tonal;
+}
+/* work under way is one line, so its action (a Cancel) sits beside the title rather than on a row of its own */
+[data-scope='toast'][data-part='root'][data-type='loading'] {
+	display: flex;
 }
 
 .box-show .preview-box {
@@ -1116,6 +1847,18 @@ select option {
 	counter-reset: figure;
 }
 
+/* the writing area runs to the foot of the pane, so a drop or a click below the last block lands at the end of the document */
+.texpile-main-editor,
+.texpile-main-editor > main {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+}
+.texpile-main-editor > main > .ProseMirror {
+	flex: 1;
+	padding-bottom: 2rem;
+}
+
 /* "(X)" to the right of single-line equations, from data-equation-number */
 .ProseMirror
 	.block-math-container[data-numbered='true'][data-label]:not([data-label='']):not([data-label='null']):not([data-environment])::after,
@@ -1204,15 +1947,178 @@ select option {
 	width: fit-content;
 }
 
-/* generic editable LaTeX environment block; the env name lives in the node-view header, so no ::before badge */
-.tex-environment {
+/* a raw chip drawn as what it prints (DrawnChipView); a click opens its panel */
+.ProseMirror .drawn-chip-face {
+	cursor: pointer;
+	border-radius: calc(var(--radius-base) * 0.5);
+}
+.ProseMirror .drawn-chip-line {
+	display: block;
+}
+/* ProseMirror's caret hack after a chip ending its paragraph would be an empty line under one on a line of its own;
+   the keys leave the caret on the next line instead. important: prosemirror-view's own sheet forces the image inline */
+.ProseMirror .drawn-chip-line + .ProseMirror-separator,
+.ProseMirror .drawn-chip-line + .ProseMirror-separator + .ProseMirror-trailingBreak {
+	display: none !important;
+}
+.ProseMirror .drawn-chip-face.drawn-chip-selected {
+	outline: var(--default-border-width) solid var(--color-primary-500);
+	outline-offset: 1px;
+}
+
+/* a panel field's suggestions open from its own chevron; the browser's arrow resists a plain display rule */
+.drawn-chip-panel input[list]::-webkit-calendar-picker-indicator {
+	display: none !important;
+}
+
+/* a comment folded to one quiet line */
+.ProseMirror .drawn-comment {
+	display: block;
+	overflow: hidden;
+	font-size: 0.85em;
+	color: var(--faint-text);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.ProseMirror .drawn-comment-marker {
+	font-family: var(--font-mono, monospace);
+}
+.ProseMirror .drawn-comment-more {
+	margin-left: 0.6em;
+	font-size: 0.85em;
+}
+
+/* a Typst set rule as one quiet line saying what it sets */
+.ProseMirror .drawn-setting {
+	display: block;
+	overflow: hidden;
+	font-size: 0.85em;
+	color: var(--muted-text);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.ProseMirror .drawn-setting-target {
+	font-weight: 600;
+}
+
+/* a vertical space at its size: an arrow from its top to its bottom, labelled with the command and its length */
+.ProseMirror .drawn-vspace {
+	display: flex;
+	align-items: center;
+	gap: 0.4em;
+	color: var(--faint-text);
+}
+/* whole pixels and an odd width, so the heads' tips and the 1px line share one center */
+.ProseMirror .drawn-vspace-arrow {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	align-self: stretch;
+	flex: none;
+	width: 9px;
+	margin-inline: 4px;
+}
+.ProseMirror .drawn-vspace-head {
+	flex: none;
+	width: 9px;
+	height: 6px;
+	fill: currentColor;
+}
+.ProseMirror .drawn-vspace-shaft {
+	flex: 1;
+	width: 1px;
+	background: currentColor;
+}
+.ProseMirror .drawn-space-command,
+.ProseMirror .drawn-space-length {
+	font-family: var(--font-mono, monospace);
+	font-size: 0.7em;
+	line-height: 1;
+}
+
+/* a horizontal space as room in the line; an \hspace also shows its extent, bracketed */
+.ProseMirror .drawn-space,
+.ProseMirror .drawn-hspace {
+	display: inline-block;
+	height: 0.6em;
+	vertical-align: baseline;
+}
+.ProseMirror .drawn-hspace {
+	border: var(--default-border-width) solid var(--faint-text);
+	border-top: none;
+}
+.ProseMirror .drawn-hspace-negative {
+	width: 0;
+	border-right: none;
+	border-bottom: none;
+}
+.ProseMirror .drawn-space:hover,
+.ProseMirror .drawn-hspace:hover {
+	background: color-mix(in srgb, var(--color-primary-500) 12%, transparent);
+}
+
+/* a page break, the appendix, the bibliography: a labelled line across the column, closed at both ends */
+.ProseMirror .drawn-divider {
+	display: flex;
+	align-items: center;
+	gap: 0.75em;
+	margin: calc(var(--spacing) * 2) 0;
+	border-inline: var(--default-border-width) solid currentColor;
+	font-size: 0.7rem;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--faint-text);
+}
+.ProseMirror .drawn-divider::before,
+.ProseMirror .drawn-divider::after {
+	content: '';
+	flex: 1;
+	border-top: var(--default-border-width) solid currentColor;
+}
+.ProseMirror .drawn-divider-label {
+	text-transform: none;
+	letter-spacing: normal;
+}
+
+.ProseMirror .drawn-footnote {
+	margin-left: 0.05em;
+	font-size: 0.75em;
+	line-height: 0;
+	color: var(--color-ref-fg);
+}
+
+/* the same tinted text a \ref is (RefDisplay.svelte) */
+.ProseMirror .drawn-crossref {
+	border-radius: var(--radius-base);
+	color: var(--color-ref-fg);
+}
+.ProseMirror .drawn-crossref:hover {
+	background: var(--color-ref-bg);
+}
+.ProseMirror .drawn-crossref-broken {
+	color: var(--color-ref-broken-fg);
+}
+.ProseMirror .drawn-crossref-broken:hover {
+	background: var(--color-ref-broken-bg);
+}
+
+/* a macro drawn as its definition: the dotted underline says it is a command, as \today's does */
+.ProseMirror .drawn-macro {
+	border-bottom: var(--default-border-width) dotted var(--faint-text);
+}
+
+/* generic editable LaTeX environment block, and typst's call around content; the name lives in the
+   node-view header, so no ::before badge */
+.tex-environment,
+.typ-environment {
 	position: relative;
 	border: var(--default-border-width) solid var(--color-surface-300-700);
 	border-radius: var(--radius-base);
 	padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3);
 	margin: calc(var(--spacing) * 3) 0;
 }
-.tex-environment-body > :last-child {
+.tex-environment-body > :last-child,
+.typ-environment-body > :last-child {
 	margin-bottom: 0;
 }
 
@@ -1244,11 +2150,6 @@ select option {
 		opacity: 0;
 	}
 }
-.pm-blur-selection {
-	/* the same colour a live selection has, so blurring for a menu doesn't visibly recolour it */
-	background-color: var(--editor-selection);
-}
-
 /* \title/\author/\date rendered as in-place editable fields (frontmatterView.ts) */
 .frontmatter-block {
 	margin: calc(var(--spacing) * 3) 0;
@@ -1461,5 +2362,35 @@ select option {
 	.hover\:preset-tonal-error:hover {
 		background-color: var(--error-tonal);
 		color: var(--error-on-tonal);
+	}
+}
+
+/* a muted or faint icon fades as one piece. Its color is see-through, and an icon draws each stroke
+   apart, so where two cross (a window's title bar meeting its frame) the overlap painted twice and
+   showed lighter. In the utilities layer so a hover:text-* on the icon still outranks it */
+@layer utilities {
+	svg.text-muted {
+		color: inherit;
+		opacity: var(--muted-share);
+	}
+	svg.text-faint {
+		color: inherit;
+		opacity: var(--faint-share);
+	}
+	/* an icon right inside a muted or faint element takes the see-through color from it, overlaps and all:
+	   drawn in that color made solid and faded whole the same way. A parent that brightens on hover gives the
+	   icon its hover color as it is. Left alone where the color changes some other way (group-hover:,
+	   aria-pressed:, data-*:), which a fade set here would not follow */
+	.text-muted:not([class*='group-hover:text-'], [class*='aria-'], [class*='data-']) > svg.lucide-icon:not([class*='text-']) {
+		color: rgb(from currentColor r g b / 1);
+		opacity: var(--muted-share);
+	}
+	.text-faint:not([class*='group-hover:text-'], [class*='aria-'], [class*='data-']) > svg.lucide-icon:not([class*='text-']) {
+		color: rgb(from currentColor r g b / 1);
+		opacity: var(--faint-share);
+	}
+	[class*='hover:text-']:hover > svg.lucide-icon:not([class*='text-']) {
+		color: inherit;
+		opacity: 1;
 	}
 }

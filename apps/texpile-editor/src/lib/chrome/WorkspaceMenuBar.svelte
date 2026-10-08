@@ -5,18 +5,19 @@
 	// Menu is Skeleton's here, so lucide's hamburger comes in aliased
 	import { Menu as MenuIcon, MoreHorizontal } from '@lucide/svelte';
 	import { editorConfigStore, cursorInCm } from '$lib/stores/editorStore';
-	import { recentFolders } from '$lib/workspace/workspaceStore';
+	import { recentFolders, activeFilePath } from '$lib/workspace/workspaceStore';
 	import { isDesktop, openNewWindow, openFolderInNewWindow } from '$lib/workspace/fileSystem';
 	import { isMac } from '$lib/platform';
-	import { setSpellcheckEnabled } from '$lib/editor/spellcheck/spellcheckConfig';
+	import { setSpellcheckEnabled } from '$lib/editor/spellcheck/config/spellcheckConfig';
 	import { hasVisualMode, isRawTextKind, formatOf, type FileKind } from '$lib/workspace/documentBuffer.svelte';
 	import { editSelect, formatSelect } from './menuBarCommands';
-	import { preferencesOpen, dictionaryOpen, shortcutsOpen } from '$lib/stores/dialogStore';
+	import { preferencesOpen, shortcutsOpen, openPreferencesAt } from '$lib/stores/dialogStore';
 	import { commandPalette } from '$lib/workspace/commandPalette.svelte';
 	import { attachNativeMenu, publishMenuState } from '$lib/workspace/nativeMenu';
+	import { typstExport } from '$lib/languages/typst/export/dialog/typstExportState.svelte';
 	import { titleBarLayout } from '$lib/chrome/titleBarLayout.svelte';
 	import { whatsNewOpen } from '$lib/whatsNew';
-	import { triggerClass, contentClass } from './menubar/menuBarStyles';
+	import { triggerClass, menuContentClass } from '$lib/menus/menuStyles';
 	import { makeInsertHandlers } from './menubar/menuBarInsert';
 	import { checkUpdates } from './menubar/menuBarUpdates';
 	import FileMenu from './menubar/FileMenu.svelte';
@@ -28,7 +29,7 @@
 	import TerminalMenu from './menubar/TerminalMenu.svelte';
 	import HelpMenu from './menubar/HelpMenu.svelte';
 	import TextPrompt from './menubar/TextPrompt.svelte';
-	import SupportModal from './menubar/SupportModal.svelte';
+	import { reportProblemUrl } from './menubar/reportProblemUrl';
 	import ImagePickerInput from './menubar/ImagePickerInput.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -49,6 +50,12 @@
 		/** the compile target is Typst: New offers .typ instead of .tex/.cls/.sty (md either way) */
 		typstProject?: boolean;
 		onOpenFolder?: (path?: string) => void;
+		/** Save the folder as a template of the user's own (desktop, host only). */
+		onSaveAsTemplate?: () => void;
+		onCloneRepository?: () => void;
+		/** File › Local History… and Restore Deleted File…: the host's own workspace */
+		onLocalHistory?: () => void;
+		onRestoreDeleted?: () => void;
 		/** Close the current folder and return to the Start screen. */
 		onCloseWorkspace?: () => void;
 		onSave?: () => void;
@@ -78,6 +85,10 @@
 		onNewFile,
 		typstProject = false,
 		onOpenFolder,
+		onSaveAsTemplate,
+		onCloneRepository,
+		onLocalHistory,
+		onRestoreDeleted,
 		onCloseWorkspace,
 		onSave,
 		onShareSession,
@@ -133,7 +144,6 @@
 
 	let imagePicker: ImagePickerInput;
 	let textPrompt: TextPrompt;
-	let supportModal: SupportModal;
 
 	function viewSelect(value: string) {
 		if (value === 'zoom-in') onZoomIn?.();
@@ -146,7 +156,7 @@
 		else if (value === 'whatsnew') whatsNewOpen.current = true;
 		else if (value === 'docs') window.open('https://texpile.com/docs', '_blank', 'noopener,noreferrer');
 		else if (value === 'discord') window.open('https://discord.gg/7wanVzCBWf', '_blank', 'noopener,noreferrer');
-		else if (value === 'support') supportModal?.show();
+		else if (value === 'report') window.open(reportProblemUrl(__APP_VERSION__), '_blank', 'noopener,noreferrer');
 		else if (value === 'updates') void checkUpdates();
 	}
 
@@ -154,7 +164,12 @@
 		if (value === 'save') onSave?.();
 		else if (value === 'new-window') openNewWindow();
 		else if (value === 'open-folder-new-window') openFolderInNewWindow();
+		else if (value === 'export-typst') typstExport.show();
+		else if (value === 'clone') onCloneRepository?.();
+		else if (value === 'local-history') onLocalHistory?.();
+		else if (value === 'restore-deleted') onRestoreDeleted?.();
 		else if (value === 'share-session') onShareSession?.();
+		else if (value === 'save-as-template') onSaveAsTemplate?.();
 		else if (value === 'close-workspace') onCloseWorkspace?.();
 		else if (value === 'preferences') preferencesOpen.current = true;
 	}
@@ -170,14 +185,22 @@
 
 	const { mathSelect, insertSelect } = makeInsertHandlers({
 		dialect: () => dialect,
-		askText: (title, initial) => textPrompt.askText(title, initial),
+		askText: (title, initial, offered) => textPrompt.askText(title, initial, offered),
 		pickImage: () => imagePicker?.pick()
 	});
+
+	// a text style the visual editor draws goes in as a chip, the way the Insert menu's drawn items do
+	function formatMenuSelect(value: string) {
+		if (value === 'format-document') onFormatDocument?.();
+		else if (value.startsWith('style:')) void insertSelect(value);
+		else formatSelect(value, dialect);
+	}
 
 	const spellcheckOn = $derived(editorConfigStore.current?.spellcheck ?? false);
 	function spellcheckSelect(value: string) {
 		if (value === 'toggle') setSpellcheckEnabled(!spellcheckOn);
-		else if (value === 'dictionary') dictionaryOpen.current = true;
+		// the dictionary is a section of the Spelling tab
+		else if (value === 'dictionary' || value === 'settings') openPreferencesAt('proofing');
 	}
 
 	function terminalSelect(value: string) {
@@ -199,7 +222,7 @@
 			view: viewSelect,
 			insert: (v) => void insertSelect(v),
 			math: mathSelect,
-			format: (v) => (v === 'format-document' ? onFormatDocument?.() : formatSelect(v, dialect)),
+			format: formatMenuSelect,
 			spelling: spellcheckSelect,
 			terminal: terminalSelect,
 			help: (v) => (v === 'tutorial' ? onOpenTutorial?.() : helpSelect(v))
@@ -222,8 +245,13 @@
 			canFormat: !!onFormatDocument,
 			canNewFile: !!onNewFile,
 			typstProject,
+			canExportTypst: typstExport.available,
 			canInsertImage: !!imageDir,
 			canOpenFolder: !!onOpenFolder,
+			canSaveTemplate: !!onSaveAsTemplate,
+			canClone: !!onCloneRepository,
+			canLocalHistory: !!onLocalHistory,
+			fileOpen: !!activeFilePath.current,
 			canTutorial: !!onOpenTutorial,
 			recentFolders: recentFolders.current
 		})
@@ -255,7 +283,7 @@
 				</Menu.Trigger>
 				<Portal>
 					<Menu.Positioner>
-						<Menu.Content class={contentClass}>
+						<Menu.Content class={menuContentClass}>
 							{@render topMenus(true)}
 						</Menu.Content>
 					</Menu.Positioner>
@@ -280,7 +308,12 @@
 			{openFolderSelect}
 			canNewFile={!!onNewFile}
 			{typstProject}
+			canExportTypst={typstExport.available}
 			canOpenFolder={!!onOpenFolder}
+			canSaveAsTemplate={!!onSaveAsTemplate}
+			canClone={!!onCloneRepository}
+			canLocalHistory={!!onLocalHistory}
+			fileOpen={!!activeFilePath.current}
 			canCloseWorkspace={!!onCloseWorkspace}
 			canShareSession={!!onShareSession}
 		/>
@@ -293,7 +326,8 @@
 			{findable}
 		/>
 	{/if}
-	<!-- zoom is webContents.setZoomFactor, and View holds nothing else; the browser has its own -->
+	<!-- zoom is webContents.setZoomFactor, which the browser has its own of; the color vision check
+	     there is the eye on the preview toolbar -->
 	{#if !__WEB__ && showAt(2, overflow)}
 		<ViewMenu index={2} select={viewSelect} {uiZoomPercent} />
 	{/if}
@@ -301,14 +335,7 @@
 		<InsertMenu index={3} select={(v) => void insertSelect(v)} {mathSelect} {structured} {dialect} canInsertImage={!!imageDir} />
 	{/if}
 	{#if showAt(4, overflow)}
-		<FormatMenu
-			index={4}
-			select={(v) => (v === 'format-document' ? onFormatDocument?.() : formatSelect(v, dialect))}
-			{structured}
-			{dialect}
-			{fileKind}
-			canFormatDocument={!!onFormatDocument}
-		/>
+		<FormatMenu index={4} select={formatMenuSelect} {structured} {dialect} {fileKind} canFormatDocument={!!onFormatDocument} />
 	{/if}
 	{#if showAt(5, overflow)}
 		<SpellingMenu index={5} select={spellcheckSelect} {editable} {spellcheckOn} />
@@ -328,4 +355,3 @@
      a guest session renders no menu bar, and they are window features rather than menu features.
      This file still OPENS them, through dialogStore. -->
 <TextPrompt bind:this={textPrompt} />
-<SupportModal bind:this={supportModal} />

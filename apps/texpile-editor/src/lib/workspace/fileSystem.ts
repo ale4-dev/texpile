@@ -2,7 +2,9 @@
 // data ops over fs:* IPC, raw file bytes over the texfile:// protocol. no browser transport.
 import type { SourceEncoding, SourceRead } from './sourceEncoding';
 import { browser } from '$lib/runtime';
-import type { GitStatusResult, GitShowResult, GitOpResult, GitLogResult, GitChangesResult, GitPushResult } from './git';
+import { isMac, isWindows } from '$lib/platform';
+import type { GitStatusResult, GitShowResult, GitOpResult, GitLogResult, GitChangesResult, GitPushResult } from './scm/git';
+import type { GitBridges } from './scm/gitBridges';
 
 export type TexFile = {
 	name: string;
@@ -63,12 +65,15 @@ export type DraftResult =
 			parSkip?: number;
 			// \topskip: where a column's first baseline lands (chain-planner landing rule)
 			topSkip?: number;
+			// \lineskiplimit: where TeX switches the interline glue from \baselineskip to \lineskip
+			lsLimit?: number;
 			// the line \begin{document} executed at (main file), from the hook itself
 			bodyLine?: number;
 			// per-line counter snapshots; the daemon pins typesets to these TRUE values
 			counters?: { l: number; f?: string; s: Record<string, number> }[];
 			// per-break pruned runs: what TeX discarded at each column/page break
 			seams?: { page: number; col: number; pen: number; run: Record<string, number>[] }[];
+			paras?: Record<string, unknown>[];
 			marginX: number;
 			marginY: number;
 			pages: DraftPage[];
@@ -90,24 +95,54 @@ export type ParagraphResult =
 	  }
 	| { ok: false; error: string };
 
-// one page-skeleton item: a line as a bare box, glue at natural size, or a penalty
+// one page-skeleton item: a line as a bare box, glue at natural size, a kern, a penalty, a whatsit or
+// mark (x), or the \topskip glue over the next box (t), which the engine sets from its own \topskip
 export type SkeletonItem =
-	{ t: 'b'; h: number; d: number } | { t: 'g'; w: number; st: number; sto: number; sh: number; sho: number } | { t: 'p'; p: number };
+	| { t: 'b'; h: number; d: number }
+	| { t: 'g'; w: number; st: number; sto: number; sh: number; sho: number }
+	| { t: 'k'; w: number }
+	| { t: 'p'; p: number }
+	| { t: 'x' }
+	| { t: 't' };
 
+// how the engine answers for a skeleton: break it (capacity charges depth past maxDepth like the page
+// builder), or pack it to the target height
+export type SkeletonMode = { capacity?: boolean; pack?: boolean; maxDepth?: number };
+
+// nA: nodes in the packed box; iy: where each of them starts; end: the box's height plus depth
 export type SkeletonResult =
-	{ ok: true; kA: number; kB: number; gs: number; gsn: number; go: number; ys: number[]; nys?: number[] } | { ok: false; error: string };
+	| {
+			ok: true;
+			kA: number;
+			kB: number;
+			nA: number;
+			gs: number;
+			gsn: number;
+			go: number;
+			ys: number[];
+			nys?: number[];
+			iy: number[];
+			end: number;
+	  }
+	| { ok: false; error: string };
 
 /** a held main thread or a timed spawn, epoch ms; see electron/src/startupStats.ts */
 export type MainSpan = { label: string; at: number; ms: number };
+
+type NativeMenuItem =
+	| { separator: true }
+	| { id: string; label: string; enabled?: boolean; checked?: boolean; toolTip?: string; accelerator?: string; submenu?: NativeMenuItem[] };
 
 type TexpileNative = {
 	/** answered synchronously in preload, so the first render already knows what it is opening */
 	bootstrap?: { open: { kind: 'file' | 'folder'; path: string } | null; settings: Record<string, unknown> };
 	openFolder: () => Promise<string | null>;
+	pickFolder?: (title: string) => Promise<string | null>;
+	pickFile?: (title: string) => Promise<string | null>;
 	onOpenPath?: (cb: (filePath: string) => void) => () => void;
 	onOpenFolder?: (cb: (root: string) => void) => () => void;
 	onJoinSession?: (cb: (url: string) => void) => () => void;
-	claimWorkspace?: (root: string) => Promise<{ ok: boolean; reason?: string }>;
+	claimWorkspace?: (root: string, kind?: 'file' | 'folder') => Promise<{ ok: boolean; reason?: string }>;
 	releaseWorkspace?: () => Promise<{ ok: boolean }>;
 	newWindow?: () => Promise<void>;
 	toggleDevTools?: () => void;
@@ -119,6 +154,10 @@ type TexpileNative = {
 	onWorkspaceFsChanged?: (cb: () => void) => () => void;
 	closeDecision?: (proceed: boolean) => void;
 	setZoomFactor?: (factor: number) => Promise<number>;
+	windowClose?: () => Promise<void>;
+	windowGlassWorks?: () => Promise<boolean>;
+	setWindowGlass?: (on: boolean) => Promise<boolean>;
+	setNativeAppearance?: (choice: 'light' | 'dark' | 'system') => void;
 	// optional: an older preload predates the native surfaces, and the renderer draws its own
 	showMessageBox?: (req: {
 		kind: 'question' | 'warning';
@@ -128,11 +167,7 @@ type TexpileNative = {
 		buttons: string[];
 		cancelId?: number;
 	}) => Promise<number | null>;
-	popupMenu?: (req: {
-		items: ({ separator: true } | { id: string; label: string; enabled?: boolean; accelerator?: string })[];
-		x: number;
-		y: number;
-	}) => Promise<string | null>;
+	popupMenu?: (req: { items: NativeMenuItem[]; x: number; y: number }) => Promise<string | null>;
 	fsScan: (root: string, exts?: string) => Promise<{ root: string; files: TexFile[] }>;
 	fsRead: (path: string) => Promise<{ content: string; encoding: SourceEncoding }>;
 	// optional: an older preload predates the binary probe
@@ -144,7 +179,7 @@ type TexpileNative = {
 	fsTree: (root: string) => Promise<{ root: string; children: TreeEntry[] }>;
 	fsTreeScan: (root: string, exts?: string) => Promise<{ root: string; children: TreeEntry[]; files: TexFile[] }>;
 	fsOp: (body: Record<string, unknown>) => Promise<{ ok: boolean }>;
-	fsTrash: (body: { path: string; root: string }) => Promise<{ backup: string | null; recycled: boolean }>;
+	fsTrash: (body: { path: string; root: string; keep?: boolean }) => Promise<{ backup: string | null; recycled: boolean; kept?: boolean }>;
 	fsPurgeUndo: (root: string) => Promise<{ ok: boolean }>;
 	revealItem?: (path: string) => Promise<{ ok: boolean }>;
 	fsSearch: (
@@ -154,22 +189,23 @@ type TexpileNative = {
 		caseSensitive: boolean
 	) => Promise<{ results: SearchFileResult[]; truncated: boolean; total?: number; error?: string }>;
 	fsStat: (path: string) => Promise<{ exists: boolean; mtimeMs: number; size: number }>;
+	fsRealRelative: (root: string, rel: string) => Promise<string | null>;
 	fsFormatLatex: (path: string, text: string) => Promise<{ formatted: string }>;
 	synctex: (body: Record<string, unknown>) => Promise<Record<string, unknown>>;
 	draftCompile: (body: { root: string; mainFile: string }) => Promise<DraftResult>;
 	draftTypeset: (body: { root: string; mainFile: string; text: string; hsize?: number; splitTo?: number }) => Promise<ParagraphResult>;
-	draftSkeleton?: (body: {
-		root: string;
-		mainFile: string;
-		items: SkeletonItem[];
-		targetPt: number;
-		capacity?: boolean;
-	}) => Promise<SkeletonResult>;
+	draftSkeleton?: (
+		body: {
+			root: string;
+			mainFile: string;
+			items: SkeletonItem[];
+			targetPt: number;
+		} & SkeletonMode
+	) => Promise<SkeletonResult>;
 	draftStop: () => Promise<{ ok: boolean }>;
 	draftTakeover?: (body: { root: string }) => Promise<{ ok: boolean }>;
 	onDraftPreempted?: (cb: (notice: { root: string }) => void) => () => void;
 	draftSavePdf: (body: { root: string; defaultName: string; to?: string }) => Promise<{ saved: boolean; path?: string }>;
-	savePdfAs?: (body: { src: string; defaultPath: string; to?: string }) => Promise<{ saved: boolean; path?: string }>;
 	savePdfBytes?: (body: { bytes: Uint8Array; defaultName: string; to?: string }) => Promise<{ saved: boolean; path?: string }>;
 	gitStatus: (root: string) => Promise<GitStatusResult>;
 	gitShow: (path: string) => Promise<GitShowResult>;
@@ -178,14 +214,15 @@ type TexpileNative = {
 	gitUnstage: (root: string, paths: string[]) => Promise<GitOpResult>;
 	gitDiscard: (root: string, paths: string[]) => Promise<GitOpResult>;
 	gitCommit: (root: string, message: string) => Promise<GitOpResult>;
-	gitUserName: (root: string) => Promise<{ ok: true; name: string | null }>;
+	gitIdentity: (root: string) => Promise<{ ok: true; name: string | null; email: string | null }>;
 	// optional: an older preload predates the history surface, and the client degrades to no history
 	gitLog?: (root: string, limit?: number) => Promise<GitLogResult>;
 	gitChangesSince?: (root: string, hash: string) => Promise<GitChangesResult>;
 	gitShowAt?: (path: string, ref: string) => Promise<GitShowResult>;
-	gitRestore?: (root: string, hash: string, message: string) => Promise<GitOpResult>;
+	gitRestore?: (root: string, hash: string, message: string) => Promise<GitOpResult & { untracked?: string[]; failure?: 'same' }>;
+	gitRestoreInTheWay?: (root: string, hash: string) => Promise<GitOpResult & { files?: string[] }>;
 	gitPush?: (root: string) => Promise<GitPushResult>;
-};
+} & GitBridges;
 
 export function nativeBridge(): TexpileNative | undefined {
 	if (!browser) return undefined;
@@ -210,13 +247,13 @@ export async function pickFolder(): Promise<string | null> {
 	return n ? n.openFolder() : null;
 }
 
-/** registers this window as the folder's owner. { ok:false } means another window already
- *  has it open (that window was focused); the caller should abort its own open. */
-export async function claimWorkspace(root: string): Promise<{ ok: boolean; reason?: string }> {
+/** registers this window as the folder's owner, or with kind 'file' as a lone file's (its folder stays free).
+ *  { ok:false } means another window already has it open (that window was focused); the caller should abort its own open. */
+export async function claimWorkspace(root: string, kind: 'file' | 'folder' = 'folder'): Promise<{ ok: boolean; reason?: string }> {
 	const n = nativeBridge();
 	if (!n?.claimWorkspace) return { ok: true }; // browser dev: single window, nothing to claim
 	try {
-		return await n.claimWorkspace(root);
+		return await n.claimWorkspace(root, kind);
 	} catch {
 		return { ok: true };
 	}
@@ -293,13 +330,18 @@ export function copyEntry(from: string, to: string) {
  * The undoable delete: back the entry up outside the workspace, then send it to the OS recycle bin.
  *
  * `backup` is null when the entry was too large to copy - still deleted, just not undoable here.
- * `recycled` is false when the OS had nowhere to put it and it had to be unlinked instead. Both
+ * `recycled` is false when the OS had nowhere to put it and it had to be unlinked instead - or, with
+ * `keep`, was left where it is (`kept`) for the caller to ask about. Both
  * are reported rather than inferred, because the two failures compound: neither one leaves anything
  * to recover from, and that is the only case worth interrupting the user about.
  */
-export async function trashEntry(path: string, root: string): Promise<{ backup: string | null; recycled: boolean }> {
-	const r = await ipc(requireNative().fsTrash({ path, root }));
-	return { backup: r?.backup ?? null, recycled: r?.recycled !== false };
+export async function trashEntry(
+	path: string,
+	root: string,
+	keep = false
+): Promise<{ backup: string | null; recycled: boolean; kept?: boolean }> {
+	const r = await ipc(requireNative().fsTrash({ path, root, keep }));
+	return { backup: r?.backup ?? null, recycled: r?.recycled !== false, ...(r?.kept ? { kept: true } : {}) };
 }
 
 /** copy a backed-up entry back into place; refuses rather than overwrite whatever stands at `to`. */
@@ -318,17 +360,9 @@ export async function revealItem(path: string): Promise<void> {
 }
 
 /**
- * Offer `src` (a PDF already on disk) through a native save dialog. `{saved: false}` covers both
- * a cancelled dialog and a non-desktop shell, so callers treat them the same: say nothing.
- */
-export async function savePdfAs(src: string, defaultPath: string): Promise<{ saved: boolean; path?: string }> {
-	return (await nativeBridge()?.savePdfAs?.({ src, defaultPath })) ?? { saved: false };
-}
-
-/**
- * Offer PDF bytes the renderer is holding through a native save dialog. Used where there is no
- * file to point `savePdfAs` at: a collaboration guest only ever has the document in memory.
- * `{saved: false}` again covers both a cancelled dialog and a non-desktop shell.
+ * Offer PDF bytes the renderer is holding through a native save dialog. Bytes rather than a path:
+ * a collaboration guest only ever has the document in memory. `{saved: false}` covers both a
+ * cancelled dialog and a non-desktop shell, so callers treat them the same: say nothing.
  */
 export async function savePdfBytes(bytes: Uint8Array, defaultName: string): Promise<{ saved: boolean; path?: string }> {
 	return (await nativeBridge()?.savePdfBytes?.({ bytes, defaultName })) ?? { saved: false };
@@ -391,22 +425,7 @@ export async function searchInFolder(
 	}
 }
 
-// the editor works in LF internally; a file's original ending is read on load and
-// re-applied on save so a Windows CRLF file round-trips byte-for-byte
-export type Eol = '\r\n' | '\n';
-
-/** the file's dominant line ending: CRLF if any \r\n is present, else LF. */
-export function detectEol(text: string): Eol {
-	return text.includes('\r\n') ? '\r\n' : '\n';
-}
-
-export function toLf(text: string): string {
-	return text.replace(/\r\n?/g, '\n');
-}
-
-export function fromLf(text: string, eol: Eol): string {
-	return eol === '\r\n' ? text.replace(/\n/g, '\r\n') : text;
-}
+export { detectEol, toLf, fromLf, type Eol } from './edits/lineEndings';
 
 /** basename helper that works for both / and \ separators. */
 export function basename(path: string): string {
@@ -419,18 +438,25 @@ export function dirname(path: string): string {
 	return parts.join('/');
 }
 
-/** Path equality that ignores separator style and case (Windows paths reach us both ways). */
+/** a path's identity: separators unified, case folded where the file system folds it (NTFS, APFS) */
+export function pathKey(path: string): string {
+	const p = path.replace(/\\/g, '/');
+	return isWindows || isMac ? p.toLowerCase() : p;
+}
+
 export function samePath(a: string, b: string) {
-	return a.replace(/\\/g, '/').toLowerCase() === b.replace(/\\/g, '/').toLowerCase();
+	return pathKey(a) === pathKey(b);
 }
 
 /** `abs` written relative to `root` with forward slashes, or null when it is not under it */
 export function relativeInside(root: string, abs: string): string | null {
 	if (!root || !abs) return null;
-	const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '');
+	function norm(p: string) {
+		return p.replace(/\\/g, '/').replace(/\/+$/, '');
+	}
 	const r = norm(root);
 	const a = norm(abs);
-	if (!a.toLowerCase().startsWith(r.toLowerCase() + '/')) return null;
+	if (!pathKey(a).startsWith(pathKey(r) + '/')) return null;
 	return a.slice(r.length + 1);
 }
 
@@ -468,10 +494,10 @@ export function normalizePath(p: string): string {
 	return out.join(sep);
 }
 
-/** is `p` the workspace root or inside it, separator- and case-insensitively */
+/** is `p` the workspace root or inside it */
 export function underRoot(root: string, p: string): boolean {
-	const r = root.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-	const q = p.replace(/\\/g, '/').toLowerCase();
+	const r = pathKey(root).replace(/\/+$/, '');
+	const q = pathKey(p);
 	return q === r || q.startsWith(r + '/');
 }
 

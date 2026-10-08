@@ -70,7 +70,7 @@
 				{m.problems_boxes_count({ count: log.badboxes.length })}
 			</label>
 		</div>
-		<div class="min-h-0 flex-1 overflow-y-auto">
+		<div class="min-h-0 flex-1 [scrollbar-gutter:stable] overflow-y-auto">
 			{#if rows.length === 0}
 				<!-- no icon: the header row above already carries the check next to "Compiled clean" -->
 				<div class="text-muted p-4">
@@ -81,7 +81,7 @@
 					{@const t = target(e)}
 					<button
 						class="flex w-full items-start gap-2 px-2 py-1.5 text-left {t
-							? 'hover:bg-surface-200-800 cursor-pointer'
+							? 'hover:preset-tonal cursor-pointer'
 							: 'cursor-default opacity-60'}"
 						onclick={() => t && onJump(t.file, t.line)}
 					>

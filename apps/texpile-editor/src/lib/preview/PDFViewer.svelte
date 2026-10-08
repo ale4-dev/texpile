@@ -4,6 +4,7 @@
 	import PdfActionsBridge from './PdfActionsBridge.svelte';
 	import PreviewHeader from './PreviewHeader.svelte';
 	import PdfSearchBar from '$lib/pdf-view/PdfSearchBar.svelte';
+	import ColorVisionFilter from './colorVision/ColorVisionFilter.svelte';
 	import { pdfStore } from '$lib/stores/pdfStore';
 	import { pdfFindToggle } from '$lib/stores/editorStore';
 	import { PictureInPicture2 } from '@lucide/svelte';
@@ -11,7 +12,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import { savePdfBytes } from '$lib/workspace/fileSystem';
 	import { resolvedMode } from '$lib/theme';
-	import { layout } from '$lib/storage/layout';
+	import { layout, updateLayout } from '$lib/storage/layout';
 	import { untrack } from 'svelte';
 
 	type Props = {
@@ -135,6 +136,7 @@
 
 {#if pdfSource && !error}
 	{@const dark = resolvedMode.current === 'dark'}
+	{@const inverted = dark ? layout.current.pdfDarkPages : layout.current.pdfDarkPagesInLight}
 	<div class="flex h-full w-full flex-col">
 		<!-- the viewer holds the bytes but not the native bridge, so the save dialog is injected here -->
 		<PdfViewer src={pdfSource} documentKey={docKey} downloadFilename={filename} onSavePdf={savePdfBytes}>
@@ -147,25 +149,28 @@
 				inPopout={placement === 'window'}
 				{findOpen}
 				onToggleFind={() => (findOpen = !findOpen)}
+				{inverted}
+				onToggleInvert={() => updateLayout(dark ? { pdfDarkPages: !inverted } : { pdfDarkPagesInLight: !inverted })}
 			/>
 			<PdfActionsBridge onActions={(a) => (actions = a)} />
 			<!-- darkMode inverts the page canvases; the chrome always follows the app theme via `dark`.
-			     Scrollbar matches the app's scrollers: native in light mode, the [data-mode='dark']
-			     pill in dark (that global rule can't reach into the shadow DOM). -->
+			     the scrollbar repeats app.css's, whose rule cannot reach into the shadow DOM -->
 			<!-- the find bar drops over the pages, under the toolbar -->
 			<div class="relative flex min-h-0 flex-1 flex-col">
 				<PdfSearchBar open={findOpen} onClose={() => (findOpen = false)} />
-				<PdfRenderer
-					{onPageClick}
-					darkMode={dark && layout.current.pdfDarkPages}
-					backgroundColor="var(--pdf-page-area-bg)"
-					pageShadow={dark ? '0 2px 8px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4)' : undefined}
-					scrollbarThumbColor={dark ? 'var(--color-surface-700, #4a4a52)' : undefined}
-					scrollbarTrackColor={dark ? 'transparent' : undefined}
-					scrollbarThumbHoverColor={dark ? 'var(--color-surface-600, #5e5e68)' : undefined}
-					scrollbarWidth={dark ? '10px' : undefined}
-					scrollInsetRight={inEditor ? '3px' : undefined}
-				/>
+				<ColorVisionFilter class="flex min-h-0 flex-1 flex-col">
+					<PdfRenderer
+						{onPageClick}
+						darkMode={inverted}
+						backgroundColor="var(--pdf-page-area-bg)"
+						pageShadow={dark ? '0 2px 8px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4)' : undefined}
+						scrollbarThumbColor="color-mix(in oklab, var(--color-surface-950-50) 30%, transparent)"
+						scrollbarTrackColor="transparent"
+						scrollbarThumbHoverColor="color-mix(in oklab, var(--color-surface-950-50) 45%, transparent)"
+						scrollbarWidth="10px"
+						scrollInsetRight={inEditor ? '3px' : undefined}
+					/>
+				</ColorVisionFilter>
 			</div>
 		</PdfViewer>
 	</div>

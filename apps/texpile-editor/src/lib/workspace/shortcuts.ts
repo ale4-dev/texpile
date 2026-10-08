@@ -8,6 +8,7 @@ import { tabs, tabKey, type Tab } from '$lib/workspace/tabs.svelte';
 import { settings, updateSettings } from '$lib/settings';
 import { nativeBridge } from '$lib/workspace/fileSystem';
 import { pdfFindToggle } from '$lib/stores/editorStore';
+import { isMac } from '$lib/platform';
 
 /** where a keystroke is typing, not a command */
 export const TYPING_HOSTS = 'input, textarea, [contenteditable="true"], .xterm';
@@ -33,6 +34,7 @@ export function uiZoomReset() {
 
 export type ShortcutDeps = {
 	closeTab(tab: Tab): void;
+	reopenTab(): void;
 	/** a guest has nothing to save: its edits are already live in the shared doc */
 	isGuest(): boolean;
 	save(): void;
@@ -42,18 +44,47 @@ export type ShortcutDeps = {
 	runCompile(): void;
 	stopCompile(): void;
 	openPreferences(): void;
+	/** does nothing in a guest's window, which cannot swap its folder out */
+	openFolder(): void;
+	stepDocumentHistory(direction: 'undo' | 'redo'): void;
 };
+
+/** VS Code's keys: Mod+Z undoes, Mod+Y and Mod+Shift+Z redo */
+function historyKey(e: KeyboardEvent): 'undo' | 'redo' | null {
+	if (!(e.metaKey || e.ctrlKey) || e.altKey) return null;
+	const k = e.key.toLowerCase();
+	if (k === 'z') return e.shiftKey ? 'redo' : 'undo';
+	return k === 'y' && !e.shiftKey ? 'redo' : null;
+}
 
 export function createKeydownHandler(deps: ShortcutDeps): (e: KeyboardEvent) => void {
 	return (e: KeyboardEvent) => {
 		const mod = e.metaKey || e.ctrlKey;
-		if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'w') {
+		const history = historyKey(e);
+		if (history) {
+			// the editors and the file tree take these themselves; from anywhere else (the body, once a card's
+			// Reject button has gone) they reach the open document the way the Edit menu does. Chromium's own
+			// undo lands there only by chance, and its redo never does
+			if (e.defaultPrevented || (e.target instanceof Element && e.target.closest(`${TYPING_HOSTS}, [role="dialog"]`))) return;
+			e.preventDefault();
+			deps.stepDocumentHistory(history);
+		} else if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'w') {
 			e.preventDefault();
 			// closes the FOCUSED tab, which may be a comparison rather than the file itself. The tab
 			// strip runs on activeFilePath, not on the loaded document: a file that failed to load
 			// (deleted on disk) still has its tab focused while the document buffer holds no path
 			const path = activeFilePath.current;
 			if (path) deps.closeTab({ path, compare: activeCompare.current ?? undefined });
+			// with no tab left, the window, as Cmd+W does in every other Mac app
+			else if (isMac) void nativeBridge()?.windowClose?.();
+		} else if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'o') {
+			// Ctrl+O in the terminal is the shell's
+			if (e.target instanceof Element && e.target.closest('.xterm')) return;
+			e.preventDefault();
+			deps.openFolder();
+		} else if (mod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 't') {
+			e.preventDefault();
+			deps.reopenTab();
 		} else if (mod && !e.shiftKey && !e.altKey && e.key === ',') {
 			// the desktop convention; macOS also has it as a native accelerator (windowChrome.ts)
 			e.preventDefault();
@@ -99,6 +130,19 @@ export function createKeydownHandler(deps: ShortcutDeps): (e: KeyboardEvent) => 
 			e.preventDefault();
 			if (deps.isCompiling()) deps.stopCompile();
 			else deps.runCompile();
+		}
+	};
+}
+
+/** Keys that must reach the workspace before an editor sees them. Ctrl+Shift+G is VS Code's Source
+ *  Control, and the source editor would take it as find-previous (still on Shift+F3 and Shift+Enter).
+ *  Ctrl on macOS too, as in VS Code: Cmd+Shift+G stays find-previous there. */
+export function createCaptureKeydownHandler(deps: { openSourceControl(): void }): (e: KeyboardEvent) => void {
+	return (e: KeyboardEvent) => {
+		if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === 'g') {
+			e.preventDefault();
+			e.stopPropagation();
+			deps.openSourceControl();
 		}
 	};
 }

@@ -1,7 +1,10 @@
 // The resolved compile command and everything that follows it around: the project config
 // adopt, the per-engine Problems lane, the shared-session compile intel, and loading an
 // existing log on folder open.
+import { withLiveRefs } from '$lib/workspace/document/liveRefDiagnostics';
+import { liveRefProblems } from '$lib/workspace/document/liveRefChecks.svelte';
 import { untrack } from 'svelte';
+import { fileMode } from '$lib/workspace/fileMode.svelte';
 import { compileLog } from '$lib/stores/compileLogStore';
 import {
 	shareCompileState as shareHostCompileState,
@@ -43,7 +46,8 @@ export class WorkspaceCompileState {
 		// .texpile/config.json: the project's own build settings, adopted on open and written back on
 		// every change. Its compile command needs accepting once per project - see projectConfig.ts.
 		$effect(() => {
-			const root = d.guest() ? null : workspaceRoot.current;
+			// a lone file's folder is no project: its .texpile/config.json, if one is there, is not this file's
+			const root = d.guest() || fileMode.current ? null : workspaceRoot.current;
 			// adopt() writes through workspaceStore, which the live command was ALREADY derived
 			// from when the folder opened - so without re-resolving here the config landed in storage
 			// and the editor went on using whatever it had worked out before reading the file.
@@ -123,11 +127,12 @@ export class WorkspaceCompileState {
 		return isTypstCommand(this.command);
 	}
 
-	/** last compile's problems for the file open in source mode */
+	/** last compile's problems for the file open in source mode, and the live reference checks' */
 	get sourceDiagnostics() {
-		return this.d.guest()
+		const compiled = this.d.guest()
 			? guestDiagnosticsFor(this.d.session().compileIntel, this.d.doc.path)
 			: hostDiagnosticsFor(compileLog.current, workspaceRoot.current, this.d.doc.path);
+		return withLiveRefs(compiled, liveRefProblems.current, this.d.doc.path);
 	}
 
 	/** re-derive the command from the current main file (folder switches, accepted config) */

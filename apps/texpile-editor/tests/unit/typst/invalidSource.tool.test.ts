@@ -3,14 +3,14 @@
 // typst's parser is error-recovering - broken code arrives as Error nodes inside a valid tree,
 // never as a thrown failure - so the questions worth pinning are ours, not the parser's:
 //   1. does the converter survive every breakage without throwing,
-//   2. is a NO-EDIT save still byte-identical (the orig machinery should guarantee this
+//   2. is a NO-EDIT save still byte-identical (the verbatim layer should guarantee this
 //      regardless of parse quality),
 //   3. does regeneration (what an EDITED block goes through) reach a fixed point, or does a
 //      damaged construct drift a little more on every save?
 import { describe, it, expect } from 'vitest';
 import { parseTypstFile, serializeTypstFile } from '$lib/languages/typst/visual/roundtrip';
-import { serializeToTypst } from '$lib/languages/typst/visual/serializer';
-import { typstToProseMirror } from '$lib/languages/typst/visual/converter';
+import { serializeToTypst } from '$lib/languages/typst/visual/serialize/serializer';
+import { typstToProseMirror } from '$lib/languages/typst/visual/convert/converter';
 
 const roundtrip = (src: string): string => {
 	const parsed = parseTypstFile(src);

@@ -1,5 +1,5 @@
 // Review comments in the source editor: the highlight under commented text, the mark on its line
-// number, and the pill in the left margin that offers to comment on a selection.
+// number, and the selection toolbar in the left margin (cmSelectionToolbar).
 //
 // There is no comments plugin for CodeMirror 6 - not an official one, and nothing maintained worth
 // taking - so this is the usual shape: a StateField holding a RangeSet of decorations, remapped
@@ -9,23 +9,11 @@
 // Ranges arrive already resolved. Anchoring lives in $lib/comments/anchor and runs on load; once a
 // range is in this field, CodeMirror's own mapping keeps it correct through every edit, exactly and
 // for free. Nothing here re-searches the document.
-import {
-	EditorView,
-	Decoration,
-	type DecorationSet,
-	ViewPlugin,
-	gutterLineClass,
-	GutterMarker,
-	hoverTooltip,
-	showTooltip,
-	type BlockInfo,
-	type Tooltip
-} from '@codemirror/view';
+import { EditorView, Decoration, type DecorationSet, gutterLineClass, GutterMarker, type BlockInfo } from '@codemirror/view';
 import { StateEffect, StateField, RangeSet, type Extension, type EditorState } from '@codemirror/state';
-import type { CommentMessage } from '$lib/comments/log';
-import { settings, updateSettings } from '$lib/settings';
-import { observe } from '$lib/runes/observe.svelte';
-import { m } from '$lib/paraglide/messages';
+import { cmSuggestions } from '$lib/editor/source/cmSuggestions';
+import { threadAtPointer } from '$lib/comments/threadAtPointer';
+import { cmSelectionToolbar } from './cmSelectionToolbar';
 
 export type CommentRange = {
 	id: string;
@@ -33,64 +21,6 @@ export type CommentRange = {
 	to: number;
 	resolved: boolean;
 };
-
-/** what the hover card shows for a thread, oldest message first */
-export type CommentPreview = { messages: Pick<CommentMessage, 'by' | 'body'>[] };
-
-/** enough to know what a thread is about without opening the panel */
-const PREVIEW_MESSAGES = 3;
-
-function previewCard(preview: CommentPreview): HTMLElement {
-	const card = document.createElement('div');
-	card.className = 'cm-tooltip-latex-hover cm-comment-preview';
-	for (const msg of preview.messages.slice(0, PREVIEW_MESSAGES)) {
-		const row = card.appendChild(document.createElement('div'));
-		row.className = 'cm-comment-preview-message';
-		const by = row.appendChild(document.createElement('div'));
-		by.className = 'cm-comment-preview-by';
-		by.textContent = msg.by;
-		row.appendChild(document.createElement('div')).textContent = msg.body;
-	}
-	const more = preview.messages.length - PREVIEW_MESSAGES;
-	if (more > 0) {
-		const rest = card.appendChild(document.createElement('div'));
-		rest.className = 'cm-comment-preview-by';
-		rest.textContent = m.comments_preview_more({ count: more });
-	}
-	return card;
-}
-
-/** the card over commented text, the way a macro gets its documentation card */
-function previewOnHover(preview: (id: string) => CommentPreview | null): Extension {
-	return hoverTooltip(
-		(view, pos) => {
-			const hit = commentAt(view.state, pos);
-			if (!hit || hit.resolved) return null;
-			const thread = preview(hit.id);
-			if (!thread?.messages.length) return null;
-			return { pos: hit.from, end: hit.to, above: true, create: () => ({ dom: previewCard(thread) }) };
-		},
-		{ hoverTime: 250 }
-	);
-}
-
-// the gutter's card is driven by its own mouse handlers, so it lives in a field the handlers set
-const setGutterPreview = StateEffect.define<{ pos: number; preview: CommentPreview } | null>();
-
-const gutterPreview = StateField.define<Tooltip | null>({
-	create: () => null,
-	update(tooltip, tr) {
-		for (const e of tr.effects) {
-			if (e.is(setGutterPreview)) {
-				const next = e.value;
-				return next ? { pos: next.pos, above: true, create: () => ({ dom: previewCard(next.preview) }) } : null;
-			}
-		}
-		if (tooltip && tr.docChanged) return { ...tooltip, pos: tr.changes.mapPos(tooltip.pos) };
-		return tooltip;
-	},
-	provide: (f) => showTooltip.from(f)
-});
 
 /** the thread whose mark sits on this line: the one that begins there */
 function threadStartingOn(state: EditorState, line: BlockInfo): CommentRange | null {
@@ -127,18 +57,34 @@ const commentRanges = StateField.define<CommentRange[]>({
 		// every later transaction, wedging the whole editor. Dropped rather than clamped: clamped it
 		// would highlight text the comment was never about; the next reanchor re-supplies the rest.
 		for (const e of tr.effects)
-			if (e.is(setCommentRanges)) return e.value.filter((r) => r.from >= 0 && r.to > r.from && r.to <= tr.newDoc.length);
+			if (e.is(setCommentRanges)) return e.value.filter((r) => r.from >= 0 && r.to >= r.from && r.to <= tr.newDoc.length);
 		if (!tr.docChanged) return ranges;
 		// A comment covers the text it was made about, and nothing typed after the fact at its
 		// edges: assoc 1 on `from` and -1 on `to` both point AWAY from the range, so text inserted
 		// at a boundary lands outside it. (The reverse - what this used to do - grows the highlight
 		// under the cursor as you keep typing, which reads as the comment refusing to end.) An edit
-		// strictly inside still extends it, and a range whose text is gone collapses and is dropped.
+		// strictly inside still extends it.
 		const mapped: CommentRange[] = [];
+		// a comment on exactly the replaced words moves onto the new ones, as in a file that is not open
+		const replaced = new Map<string, { from: number; to: number }>();
+		tr.changes.iterChanges((fromA, toA, fromB, toB) => {
+			if (toA > fromA && toB > fromB) replaced.set(`${fromA}:${toA}`, { from: fromB, to: toB });
+		});
 		for (const r of ranges) {
+			const exact = replaced.get(`${r.from}:${r.to}`);
+			if (exact) {
+				mapped.push({ ...r, ...exact });
+				continue;
+			}
+			if (r.to === r.from) {
+				const at = tr.changes.mapPos(r.from, -1);
+				mapped.push({ ...r, from: at, to: at });
+				continue;
+			}
 			const from = tr.changes.mapPos(r.from, 1);
 			const to = tr.changes.mapPos(r.to, -1);
 			if (to > from) mapped.push({ ...r, from, to });
+			else mapped.push({ ...r, from: Math.min(from, to), to: Math.min(from, to) });
 		}
 		return mapped;
 	}
@@ -161,7 +107,7 @@ function build(state: EditorState): DecorationSet {
 			// resolved threads are not decorated at all. The point of resolving is that the argument
 			// is over, and leaving a mark on the text says the opposite; the panel still lists them
 			// under "Show resolved".
-			.filter((r) => !r.resolved)
+			.filter((r) => !r.resolved && r.to > r.from)
 			.map((r) =>
 				Decoration.mark({
 					class: `cm-comment${r.id === focus ? ' cm-comment-focused' : ''}`,
@@ -180,37 +126,20 @@ function build(state: EditorState): DecorationSet {
  * its own config, and the gutter here is the caller's - the whole point of gutterLineClass was to
  * mark the line-number cells rather than add a column of our own.
  */
-export function commentGutterHandlers(onSelect: (id: string) => void, preview?: (id: string) => CommentPreview | null) {
-	const hideCard = (view: EditorView) => {
-		if (view.state.field(gutterPreview, false)) view.dispatch({ effects: setGutterPreview.of(null) });
-	};
+export function commentGutterHandlers(onSelect: (id: string) => void) {
 	return {
 		mousedown(view: EditorView, line: BlockInfo): boolean {
 			const hit = threadStartingOn(view.state, line);
 			// unmarked lines fall through, so clicking a bare line number keeps doing whatever it did
 			if (!hit) return false;
-			hideCard(view);
 			onSelect(hit.id);
 			return true;
-		},
-		mousemove(view: EditorView, line: BlockInfo): boolean {
-			if (!preview) return false;
-			const hit = threadStartingOn(view.state, line);
-			const thread = hit ? preview(hit.id) : null;
-			if (!hit || !thread?.messages.length) {
-				hideCard(view);
-				return false;
-			}
-			// the pointer crossing the same cell must not rebuild the card on every pixel
-			if (view.state.field(gutterPreview, false)?.pos === hit.from) return false;
-			view.dispatch({ effects: setGutterPreview.of({ pos: hit.from, preview: thread }) });
-			return false;
-		},
-		mouseleave(view: EditorView): boolean {
-			hideCard(view);
-			return false;
 		}
 	};
+}
+
+export function liveCommentRanges(state: EditorState): CommentRange[] {
+	return state.field(commentRanges, false) ?? [];
 }
 
 /** the innermost thread at a position, so nested comments resolve to the one you clicked */
@@ -249,22 +178,18 @@ type CommentsConfig = {
 	 * document who happened to land on commented text, and rearranging the window under them for
 	 * that would be rude.
 	 */
-	onSelect?: (id: string, from: 'text' | 'gutter') => void;
+	onSelect?: (id: string) => void;
 	/** the reader asked to comment on the current selection */
 	onAdd?: (from: number, to: number) => void;
 	/** label for the tooltip button, so the caller owns translation */
 	addLabel?: string;
-	/** the thread behind an id, for the hover card; without it hovering shows nothing */
-	preview?: (id: string) => CommentPreview | null;
 };
 
-export function comments({ onSelect, onAdd, addLabel = 'Comment', preview }: CommentsConfig = {}): Extension {
+export function comments({ onSelect, onAdd, addLabel = 'Comment' }: CommentsConfig = {}): Extension {
 	return [
 		focusedThread,
 		commentRanges,
 		commentDecorations,
-		gutterPreview,
-		preview ? previewOnHover(preview) : [],
 		// only the line a thread BEGINS on. Marking every line a range covered read as four separate
 		// comments on a four-line quote.
 		gutterLineClass.compute([commentRanges], (state) => {
@@ -278,164 +203,19 @@ export function comments({ onSelect, onAdd, addLabel = 'Comment', preview }: Com
 			);
 		}),
 		EditorView.domEventHandlers({
-			mousedown(event, view) {
-				if (!onSelect) return false;
-				const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
-				if (pos === null) return false;
-				const hit = commentAt(view.state, pos);
-				if (!hit) return false;
-				onSelect(hit.id, 'text');
+			// what is drawn under the pointer, not the caret's place: a click just beside a thread is not on it
+			mousedown(event) {
+				const id = threadAtPointer(event.target);
+				if (!onSelect || !id) return false;
+				onSelect(id);
 				// not handled: the click should still place the caret where it landed
 				return false;
 			}
 		}),
-		onAdd ? addButton(onAdd, addLabel) : [],
+		cmSuggestions(),
+		onAdd ? cmSelectionToolbar(onAdd, addLabel) : [],
 		theme
 	];
-}
-
-/** the pill fades in rather than flashing under the pointer for every drag it passes through */
-const SHOW_DELAY = 120;
-
-function svgIcon(body: string) {
-	return `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
-}
-const COMMENT_ICON = svgIcon('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>');
-const X_ICON = svgIcon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>');
-
-/**
- * The Comment affordance for a non-empty selection: an icon pill in the LEFT margin, vertically
- * centred on the cursor's line.
- *
- * This is Overleaf's editor-floating-menu, whose measure is `right: window.innerWidth -
- * contentDOM.left` - the pill's right edge flush against the left edge of the text, so it lands in
- * the gutter and covers nothing. A tooltip above the selection sits ON the line you are reading to
- * decide, and the right margin is already spoken for here by the preview divider and its lozenge.
- *
- * `position: fixed` with a measured `right`, not `absolute` inside the editor: the gutter's width
- * changes with the line count and the pane's own left edge moves when the sidebar resizes, and
- * fixed coordinates read off contentDOM track both without a second source of truth.
- */
-function addButton(onAdd: (from: number, to: number) => void, label: string): Extension {
-	return ViewPlugin.fromClass(
-		class {
-			/** the row: the Comment button, then the control that turns the whole thing off */
-			private readonly dom: HTMLDivElement;
-			private timer: ReturnType<typeof setTimeout> | null = null;
-			private shown = false;
-			private readonly resize: ResizeObserver;
-			private readonly unsub: () => void;
-
-			constructor(private readonly view: EditorView) {
-				this.dom = document.createElement('div');
-				this.dom.className = 'cm-comment-add-row';
-				this.dom.style.display = 'none';
-				const button = (title: string, svg: string, extra: string, onDown: () => void) => {
-					const b = this.dom.appendChild(document.createElement('button'));
-					b.className = `cm-comment-add${extra}`;
-					b.title = title;
-					b.setAttribute('aria-label', title);
-					b.innerHTML = svg;
-					// mousedown, not click: by the time click fires the editor has collapsed the selection
-					// under the pointer and there is nothing left to comment on
-					b.onmousedown = (e) => {
-						e.preventDefault();
-						onDown();
-					};
-				};
-				button(label, COMMENT_ICON, '', () => {
-					const sel = view.state.selection.main;
-					if (!sel.empty) onAdd(sel.from, sel.to);
-				});
-				button(m.comments_pill_off(), X_ICON, ' cm-comment-add-off', () => {
-					updateSettings({ commentPill: false });
-					this.hide(); // the setting keeps it off; this is only so it leaves under the pointer
-				});
-				view.dom.appendChild(this.dom);
-				// scrolling moves the line without changing the viewport, so update() alone would
-				// leave the pill behind; the observer catches pane and window resizes, which move
-				// contentDOM's left edge without any editor update at all
-				view.scrollDOM.addEventListener('scroll', this.schedule);
-				this.resize = new ResizeObserver(this.schedule);
-				this.resize.observe(view.scrollDOM);
-				// the toggle has to bite without waiting for the next selection change, both ways
-				this.unsub = observe(
-					() => settings.current,
-					() => this.schedule()
-				);
-				this.schedule();
-			}
-
-			update() {
-				this.schedule();
-			}
-
-			destroy() {
-				this.view.scrollDOM.removeEventListener('scroll', this.schedule);
-				this.resize.disconnect();
-				this.unsub();
-				if (this.timer) clearTimeout(this.timer);
-				this.dom.remove();
-			}
-
-			/**
-			 * Measuring has to go through requestMeasure.
-			 *
-			 * coordsAtPos reads DOM layout, and CodeMirror forbids that inside update() - it throws
-			 * "Reading the editor layout isn't allowed during an update" and disables the plugin,
-			 * which is why calling it directly meant the pill never appeared at all. The read phase
-			 * runs once the update has settled; write is where the style goes.
-			 */
-			private schedule = () => {
-				this.view.requestMeasure<{ top: number; right: number } | null>({
-					key: 'cm-comment-add',
-					read: (view) => {
-						const sel = view.state.selection.main;
-						// turned off in Preferences: the pill never appears
-						if (settings.current.commentPill === false || sel.empty) return null;
-						const coords = view.coordsAtPos(sel.head);
-						if (!coords) return null;
-						const scroller = view.scrollDOM.getBoundingClientRect();
-						// scrolled out of the pane: hide rather than park the pill at the edge
-						if (coords.top < scroller.top || coords.top > scroller.bottom) return null;
-						const height = this.dom.getBoundingClientRect().height;
-						return {
-							top: (coords.top + coords.bottom) / 2 - height / 2,
-							right: window.innerWidth - view.contentDOM.getBoundingClientRect().left
-						};
-					},
-					// written straight to the DOM: this runs on every scroll frame, and routing it
-					// through state would re-render the whole plugin each time
-					write: (box) => {
-						if (!box) {
-							this.hide();
-							return;
-						}
-						this.dom.style.display = '';
-						this.dom.style.top = `${box.top}px`;
-						this.dom.style.right = `${box.right}px`;
-						if (!this.shown && !this.timer) {
-							this.timer = setTimeout(() => {
-								this.timer = null;
-								this.shown = true;
-								this.dom.classList.add('cm-comment-add-visible');
-							}, SHOW_DELAY);
-						}
-					}
-				});
-			};
-
-			private hide() {
-				if (this.timer) {
-					clearTimeout(this.timer);
-					this.timer = null;
-				}
-				this.shown = false;
-				this.dom.classList.remove('cm-comment-add-visible');
-				this.dom.style.display = 'none';
-			}
-		}
-	);
 }
 
 const theme = EditorView.baseTheme({
@@ -459,46 +239,5 @@ const theme = EditorView.baseTheme({
 	},
 	'.cm-lineNumbers .cm-comment-line:hover': {
 		boxShadow: 'inset 3px 0 0 var(--comment-tint)'
-	},
-	'.cm-comment-preview': {
-		maxWidth: '360px',
-		borderRadius: '4px',
-		whiteSpace: 'pre-wrap',
-		overflowWrap: 'anywhere'
-	},
-	'.cm-comment-preview-message + .cm-comment-preview-message': {
-		marginTop: '6px'
-	},
-	'.cm-comment-preview-by': {
-		fontSize: '0.85em',
-		opacity: '0.7'
-	},
-	// Only geometry lives here. The pill's colours need the app's surface tokens and a dark-mode
-	// branch, which a CodeMirror baseTheme cannot express, so they are in app.css.
-	// the ROW is what gets positioned and faded; the buttons inside it are plain chrome
-	'.cm-comment-add-row': {
-		position: 'fixed',
-		zIndex: '5',
-		display: 'flex',
-		alignItems: 'center',
-		gap: '2px',
-		opacity: '0',
-		transition: 'opacity 0.05s ease-in'
-	},
-	'.cm-comment-add': {
-		display: 'flex',
-		alignItems: 'center',
-		justifyContent: 'center',
-		width: '26px',
-		height: '26px',
-		padding: '0',
-		cursor: 'pointer'
-	},
-	// narrower than the button it dismisses: secondary, and it must not read as a second action
-	'.cm-comment-add-off': {
-		width: '20px'
-	},
-	'.cm-comment-add-visible': {
-		opacity: '1'
 	}
 });

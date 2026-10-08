@@ -28,6 +28,8 @@ export type PaletteActions = {
 	 */
 	canManageTree(): boolean;
 	isHostWorkspace(): boolean;
+	/** a folder open as a project, not a lone file */
+	isProject(): boolean;
 	canSearch(): boolean;
 	/** false in single-file mode, where there is no file explorer to show or hide */
 	hasSidebar(): boolean;
@@ -45,23 +47,41 @@ export type PaletteActions = {
 	openCompileModal(): void;
 	openFormatModal(): void;
 	openGlobalSearch(): void;
+	/** the Source Control panel, keyboard in its message box */
+	openSourceControl(): void;
 	openPreferences(): void;
 	/** undefined when sharing is unavailable (a guest, or the browser build) */
 	openShareSession?: () => void;
 	newFile(ext?: string): void;
+	/** undefined where there is nowhere to keep templates (a guest, or the browser build) */
+	saveAsTemplate?: () => void;
 	openFolder(): void;
+	/** absent where git cannot be run: the web build, an older desktop preload */
+	cloneRepository?: () => void;
+	/** drop the git sign-ins kept in the keychain; absent without the desktop app */
+	forgetSignIns?: () => void;
 	refreshTree(): void;
 	/** open tinymist's incremental viewer for the current .typ, in its own window */
 	openTypstPreview(): void;
 	/** the compile target is Typst: New-file commands offer .typ instead of .tex */
 	isTypstProject(): boolean;
+	/** the Export dialog for a Typst main file: hosts in the desktop app, with tinymist's bridge */
+	canExportTypst?(): boolean;
+	exportTypst?(): void;
 	/** Zotero citation pick: available on hosts in the desktop app, for the matching dialect */
 	canZoteroCite?(): boolean;
 	insertZoteroCitation?(): void;
+	/** Cite by DOI or arXiv ID: the same gate without Zotero */
+	canCiteByDoi?(): boolean;
+	citeByDoi?(): void;
+	/** the symbol picker: a .typ or .tex file open in the visual or source editor */
+	canInsertSymbol?(): boolean;
+	insertSymbol?(): void;
 };
 
-/** 'files' is the picker: files only, listed before anything is typed */
-export type PaletteMode = 'all' | 'files';
+/** 'files' is the picker: files only, listed before anything is typed. 'branches' is Switch
+ *  branch's list of local branches. */
+export type PaletteMode = 'all' | 'files' | 'branches';
 
 class CommandPaletteState {
 	open = $state(false);

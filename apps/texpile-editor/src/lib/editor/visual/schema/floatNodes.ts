@@ -6,16 +6,6 @@ const tableNodeSpecs = tableNodes({
 	tableGroup: 'block',
 	cellContent: 'paragraph+',
 	cellAttributes: {
-		background: {
-			default: null,
-			getFromDOM(dom) {
-				return dom.style.backgroundColor || null;
-			},
-			setDOMAttr(value, attrs) {
-				// eslint-disable-next-line no-param-reassign -- prosemirror-tables collects DOM attrs by mutation
-				if (value) attrs.style = (attrs.style || '') + `background-color: ${value};`;
-			}
-		},
 		// the alignment spec of a source \multicolumn{n}{spec}{...}, re-emitted as written
 		mcAlign: {
 			default: null,
@@ -38,6 +28,8 @@ tableNodeSpecs.table.attrs = {
 	env: { default: null },
 	colspec: { default: null },
 	tabularxWidth: { default: null },
+	// the tabular's [t]/[b] position, a longtable's [l]/[c]/[r]
+	position: { default: null },
 	bottomRules: { default: '' }
 };
 tableNodeSpecs.table_row.attrs = {
@@ -140,6 +132,8 @@ export const tableFamilyNodes = {
 			// caption above (false) or below (true) the tabular, and the size switch on the notes
 			centering: { default: true },
 			captionBelow: { default: false },
+			// the space the source put after the caption ('' for none); null is a new table's \vspace{2mm}
+			captionGap: { default: null },
 			notesSize: { default: null }
 		},
 		parseDOM: [

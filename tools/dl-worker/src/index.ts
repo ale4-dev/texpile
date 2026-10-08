@@ -27,6 +27,14 @@ interface Env {
 // zip is the mac auto-update artifact (Squirrel.Mac); the others serve both web and updater
 const INSTALLER = /\.(exe|dmg|appimage|deb|zip)$/i;
 
+// vendor/<tool>/<version>/: a tool the app installs for itself (tinymist), signed by us. Not Texpile,
+// so never counted as a download of it, and never overwritten, so cached for good
+const VENDOR = /^vendor\/[^/]+\/[^/]+\//;
+
+function isInstaller(key: string): boolean {
+	return INSTALLER.test(key) && !VENDOR.test(key);
+}
+
 const PLATFORM_ALIAS: Record<string, string> = {
 	windows: 'windows',
 	win: 'windows',
@@ -34,11 +42,15 @@ const PLATFORM_ALIAS: Record<string, string> = {
 	macos: 'mac',
 	linux: 'linuxAppImage',
 	appimage: 'linuxAppImage',
-	deb: 'linuxDeb'
+	deb: 'linuxDeb',
+	portable: 'windowsPortable'
 };
 
 function platformOf(key: string): string {
-	const ext = key.toLowerCase().split('.').pop();
+	const lower = key.toLowerCase();
+	// the Windows portable build is a zip too, so it goes by name before the mac zip rule
+	if (lower.endsWith('-portable.zip')) return 'windows-portable';
+	const ext = lower.split('.').pop();
 	return ext === 'exe' ? 'windows' : ext === 'dmg' || ext === 'zip' ? 'mac' : ext === 'appimage' ? 'linux-appimage' : 'linux-deb';
 }
 
@@ -81,6 +93,9 @@ const STATS_QUERIES: Record<string, string> = {
 	// rows written before the channel blob existed have blob7 = '' and show up as 'web' here
 	channels:
 		"SELECT if(blob7 = '', 'web', blob7) AS name, SUM(_sample_interval) AS downloads FROM texpile_downloads GROUP BY name ORDER BY downloads DESC FORMAT JSON",
+	// portable zips written before platformOf knew them carry 'mac'; /_stats moves them across
+	portableAsMac:
+		"SELECT 'windows-portable' AS name, SUM(_sample_interval) AS downloads FROM texpile_downloads WHERE blob2 = 'mac' AND blob1 LIKE '%-portable.zip' FORMAT JSON",
 	daily:
 		"SELECT toStartOfInterval(timestamp, INTERVAL '1' DAY) AS name, SUM(_sample_interval) AS downloads FROM texpile_downloads WHERE timestamp > NOW() - INTERVAL '30' DAY GROUP BY name ORDER BY name FORMAT JSON"
 };
@@ -100,6 +115,17 @@ async function sqlQuery(env: Env, sql: string): Promise<StatRow[]> {
 	if (!res.ok) throw new Error(`SQL API ${res.status}: ${text.slice(0, 200)}`);
 	const parsed = JSON.parse(text) as { data?: { name: string; downloads: number | string }[] };
 	return (parsed.data ?? []).map((r) => ({ name: String(r.name), downloads: Number(r.downloads) }));
+}
+
+function movePortable(platforms: StatRow[], n: number): StatRow[] {
+	if (!n) return platforms;
+	const counts = new Map(platforms.map((r) => [r.name, r.downloads]));
+	counts.set('mac', (counts.get('mac') ?? 0) - n);
+	counts.set('windows-portable', (counts.get('windows-portable') ?? 0) + n);
+	return [...counts]
+		.filter(([, downloads]) => downloads > 0)
+		.map(([name, downloads]) => ({ name, downloads }))
+		.sort((a, b) => b.downloads - a.downloads);
 }
 
 function statsJson(payload: unknown, status = 200): Response {
@@ -125,13 +151,15 @@ async function statsPage(env: Env): Promise<Response> {
 		);
 	}
 	try {
-		const [platforms, versions, agents, channels, daily] = await Promise.all([
+		const [rawPlatforms, portableAsMac, versions, agents, channels, daily] = await Promise.all([
 			sqlQuery(env, STATS_QUERIES.platforms),
+			sqlQuery(env, STATS_QUERIES.portableAsMac).catch(() => []),
 			sqlQuery(env, STATS_QUERIES.versions),
 			sqlQuery(env, STATS_QUERIES.agents),
 			sqlQuery(env, STATS_QUERIES.channels),
 			sqlQuery(env, STATS_QUERIES.daily)
 		]);
+		const platforms = movePortable(rawPlatforms, portableAsMac[0]?.downloads || 0);
 		return statsJson({
 			// Analytics Engine keeps ~92 days of data points
 			retentionDays: 92,
@@ -192,7 +220,7 @@ export default {
 			headers.set('etag', head.httpEtag);
 			headers.set('content-length', String(head.size));
 			headers.set('accept-ranges', 'bytes');
-			if (INSTALLER.test(key)) headers.set('content-disposition', `attachment; filename="${attachmentName(key)}"`);
+			if (isInstaller(key)) headers.set('content-disposition', `attachment; filename="${attachmentName(key)}"`);
 			return new Response(null, { status: 200, headers });
 		}
 
@@ -213,10 +241,10 @@ export default {
 			// the download page fetches these cross-origin; keep them fresh but not hammering
 			headers.set('access-control-allow-origin', '*');
 			headers.set('cache-control', 'public, max-age=300');
-		} else if (/^v\d/.test(key)) {
+		} else if (/^v\d/.test(key) || VENDOR.test(key)) {
 			headers.set('cache-control', 'public, max-age=31536000, immutable'); // versioned copies never change
 		}
-		if (INSTALLER.test(key)) headers.set('content-disposition', `attachment; filename="${attachmentName(key)}"`);
+		if (isInstaller(key)) headers.set('content-disposition', `attachment; filename="${attachmentName(key)}"`);
 
 		// Precondition (If-None-Match) matched: no body comes back.
 		if (!object.body) return new Response(null, { status: 304, headers });
@@ -231,7 +259,7 @@ export default {
 			headers.set('content-length', String(object.size));
 		}
 
-		if (INSTALLER.test(key) && countable(request)) {
+		if (isInstaller(key) && countable(request)) {
 			const ua = request.headers.get('user-agent') ?? '';
 			const country = ((request as unknown as { cf?: { country?: string } }).cf?.country ?? '').toString();
 			// the in-app updater stamps x-texpile-version on every request (electron/src/updates.ts),

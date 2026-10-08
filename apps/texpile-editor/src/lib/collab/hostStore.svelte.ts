@@ -5,9 +5,10 @@ import * as Y from 'yjs';
 import { generateShareCode } from './e2e/shareCode';
 import { deriveSessionKeys, sha256Hex } from './e2e/keys';
 import { CollabSession, manifestOf, locksOf, metaOf, textOf, type PeerInfo } from './session';
-import { isSafeRel, type ControlPayload, type PreviewPayload } from './protocol';
+import type { ControlPayload, PreviewPayload } from './protocol';
 import type { SharedCompileIntel } from './editSession';
-import type { CommentEvent } from '$lib/comments/log';
+import type { RemoteEdit } from '$lib/workspace/suggestions/suggestionStates';
+import { commentLogOf } from './sharedComments';
 import { HostMaterializer, isShared } from './materialize';
 import { RelayTransport, createRelaySession } from './transport';
 import {
@@ -20,9 +21,13 @@ import {
 	relativeTo,
 	joinPath
 } from '$lib/workspace/fileSystem';
+import { resolveRealRelative } from '$lib/workspace/realRelative';
 import { settings } from '$lib/settings';
-import { userData } from '$lib/storage/userData';
+import { presenceIdentity } from './identity';
+import { folderGitName } from '$lib/comments/author';
+import { typedName } from '$lib/identity/ownName.svelte';
 import { flattenShareManifest } from './shareManifest';
+import { resolveSharedTarget } from './sharedPathGuard';
 
 class HostCollabController {
 	active = $state(false);
@@ -45,10 +50,10 @@ class HostCollabController {
 	onSyncRequest: ((payload: ControlPayload, from: number) => void) | null = null;
 	/** WorkspaceView wires this to refresh its own tree after a guest upload/rename/delete. */
 	onFileOp: (() => void) | null = null;
-	/** a guest's review-comment event, for the host's own controller to apply and persist. */
-	onCommentEvent: ((event: CommentEvent) => void) | null = null;
-	/** the whole comment log, served to a guest joining mid-review. */
-	commentLog: (() => string) | null = null;
+	/** a guest's change to a shared file as it applies, with their name and mode, for the host to record */
+	onGuestEdit: ((rel: string, before: string, after: string, edit: RemoteEdit) => void) | null = null;
+	/** awaited before a guest's changes are written to disk, so what they recorded is logged first */
+	beforeGuestWrite: ((rel: string, content: string) => Promise<void>) | null = null;
 	/** one hop of the Typst preview relay from a guest; previewRelay wires this while hosting. */
 	onPreview: ((p: PreviewPayload, from: number) => void) | null = null;
 	/** a guest asked its preview to follow a source position; workspaceSession wires this. */
@@ -85,6 +90,7 @@ class HostCollabController {
 		this.status = 'starting';
 		this.lastError = '';
 		try {
+			this.gitUserName = (await folderGitName(root))?.trim() ?? '';
 			const code = generateShareCode();
 			const keys = await deriveSessionKeys(code);
 			const hostKey = generateShareCode(); // second random secret; the relay only ever stores its hash
@@ -102,7 +108,7 @@ class HostCollabController {
 				transport,
 				key: keys.contentKey,
 				role: 'host',
-				user: { name: userData.current.collabName || 'Host', color: '#2563eb' },
+				user: this.identity(),
 				events: {
 					onPeersChange: (peers) => {
 						this.peers = [...peers.values()];
@@ -113,18 +119,12 @@ class HostCollabController {
 						if (payload.kind === 'compile-request') this.onCompileRequest?.();
 						else if (payload.kind === 'synctex-inverse' || payload.kind === 'synctex-forward') void this.onSyncRequest?.(payload, from);
 						else if (payload.kind === 'file-op') void this.applyGuestFileOp(payload);
-						else if (payload.kind === 'comment-event') this.applyGuestComment(payload.event);
 						else if (payload.kind === 'typst-scroll') this.onTypstScroll?.(payload, from);
 						else if (payload.kind === 'lsp-request') this.onLspRequest?.(payload, from);
 					},
 					onBlobRequest: (name, from) => {
 						if (name === 'pdf') {
 							if (this.pdfBytes) session.sendBlob('pdf', this.pdfRev, this.pdfBytes, from);
-						} else if (name === 'comments') {
-							// a guest joining mid-review needs every thread, which is far more than a
-							// control frame is for; rev 0 because the log has no revision of its own
-							const log = this.commentLog?.() ?? '';
-							session.sendBlob('comments', 0, new TextEncoder().encode(log), from);
 						} else if (name === 'typst-page') {
 							this.onPreviewPageRequest?.(from);
 						} else if (name.startsWith('f:')) {
@@ -154,6 +154,11 @@ class HostCollabController {
 				},
 				joinPath
 			);
+			materializer.onWrite = (rel, content) => this.beforeGuestWrite?.(rel, content) ?? Promise.resolve();
+			materializer.senderOf = (origin) => session.senderOf(origin);
+			materializer.onRemoteChange = (rel, before, after, from, gestures) =>
+				this.onGuestEdit?.(rel, before, after, { ...session.authorOf(from), gestures });
+			session.setSuggesting(this.suggesting);
 			this.oversizedText = (await materializer.seed()).oversizedText;
 
 			this.doc = doc;
@@ -170,6 +175,25 @@ class HostCollabController {
 			this.lastError = e instanceof Error ? e.message : String(e);
 			throw e;
 		}
+	}
+
+	refreshIdentity(): void {
+		this.session?.setIdentity(this.identity());
+	}
+
+	/** the folder's git user.name, which the host goes by when no name is typed in Preferences */
+	private gitUserName = '';
+
+	private identity(): ReturnType<typeof presenceIdentity> {
+		return presenceIdentity('host', 0, typedName() || this.gitUserName);
+	}
+
+	private suggesting = false;
+
+	/** the host's own mode, advertised so guests know this host records suggestions */
+	setSuggesting(on: boolean): void {
+		this.suggesting = on;
+		this.session?.setSuggesting(on);
 	}
 
 	/** stop sharing; tellGuests=false when the teardown came from the far side. */
@@ -204,10 +228,19 @@ class HostCollabController {
 	}
 
 	/** every host edit funnels through here (called from scheduleSave, per keystroke). */
-	edit(absPath: string, content: string): void {
+	edit(absPath: string, content: string, before?: string): void {
 		const rel = this.active ? this.rel(absPath) : null;
+		function lf(s: string) {
+			return s.replace(/\r\n?/g, '\n');
+		}
 		// text-or-not is the manifest's call now (hostEdit checks the entry's kind itself)
-		if (rel && isShared(rel)) this.materializer?.hostEdit(rel, content.replace(/\r\n?/g, '\n'));
+		if (rel && isShared(rel)) this.materializer?.hostEdit(rel, lf(content), before === undefined ? undefined : lf(before));
+	}
+
+	/** what the session last wrote to this file for the guests (LF), once, or null */
+	takeSessionWrite(absPath: string): string | null {
+		const rel = this.active ? this.rel(absPath) : null;
+		return rel ? (this.materializer?.takeWrite(rel) ?? null) : null;
 	}
 
 	/** flush any pending guest-edit write before the host reads the file from disk. */
@@ -246,14 +279,15 @@ class HostCollabController {
 
 	// serve a file's bytes to a guest that requested it (images the guest editor needs to render)
 	private async serveFile(name: string, rel: string, to: number): Promise<void> {
-		if (!this.active || !this.root || !this.session) return;
-		// only ever serve files the session actually shares: never .git, logs, or anything escaping the root
-		if (!isSafeRel(rel) || !isShared(rel)) return;
+		const { root, session, doc, materializer } = this;
+		if (!this.active || !root || !session || !doc || !materializer?.sharesFile(rel)) return;
+		// a short name like GIT~1 spells .git without saying so
+		if (!(await resolveSharedTarget(root, rel, resolveRealRelative))) return;
 		try {
-			const res = await fetch(fileUrl(joinPath(this.root, rel)), { cache: 'no-store' });
+			const res = await fetch(fileUrl(joinPath(root, rel)), { cache: 'no-store' });
 			if (!res.ok) return;
-			const rev = Number(manifestOf(this.doc!).get(rel)?.rev ?? 0);
-			this.session.sendBlob(name, rev, new Uint8Array(await res.arrayBuffer()), to);
+			const rev = Number(manifestOf(doc).get(rel)?.rev ?? 0);
+			session.sendBlob(name, rev, new Uint8Array(await res.arrayBuffer()), to);
 		} catch {
 			/* the guest just won't see this file */
 		}
@@ -261,12 +295,13 @@ class HostCollabController {
 
 	// write a file a guest uploaded (drag/paste), then re-sync so everyone sees it
 	private async receiveUpload(rel: string, bytes: Uint8Array): Promise<void> {
-		if (!this.active || !this.root) return;
+		const root = this.root;
+		if (!this.active || !root) return;
 		const clean = rel.replace(/\\/g, '/').replace(/^\/+/, '');
-		// stay inside the shared set: no traversal, and never let a guest write .git hooks, artifacts, etc.
-		if (!isSafeRel(clean) || !isShared(clean)) return;
+		const target = await resolveSharedTarget(root, clean, resolveRealRelative);
+		if (!target) return;
 		try {
-			await writeBinaryFile(joinPath(this.root, clean), new Blob([bytes as BlobPart]));
+			await writeBinaryFile(joinPath(root, target), new Blob([bytes as BlobPart]));
 			await this.syncTree();
 			this.onFileOp?.(); // the host's own tree UI, not just the manifest
 		} catch {
@@ -276,13 +311,16 @@ class HostCollabController {
 
 	/** a guest's rename/delete, executed against the host's disk after path validation. */
 	private async applyGuestFileOp(p: ControlPayload & { kind: 'file-op' }): Promise<void> {
-		if (!this.active || !this.root) return;
-		if (!isSafeRel(p.from) || !isShared(p.from)) return;
+		const { root, materializer } = this;
+		if (!this.active || !root || !materializer) return;
+		if (!materializer.sharesFile(p.from) && !materializer.sharesFolder(p.from)) return;
+		if (!(await resolveSharedTarget(root, p.from, resolveRealRelative))) return;
 		try {
-			if (p.op === 'delete') await trashEntry(joinPath(this.root, p.from), this.root);
+			if (p.op === 'delete') await trashEntry(joinPath(root, p.from), root);
 			else if (p.op === 'rename') {
-				if (!p.to || !isSafeRel(p.to) || !isShared(p.to)) return;
-				await renameEntry(joinPath(this.root, p.from), joinPath(this.root, p.to));
+				// the spelling a guest gave is kept: a case-only rename resolves to the file it renames
+				if (!p.to || !(await resolveSharedTarget(root, p.to, resolveRealRelative))) return;
+				await renameEntry(joinPath(root, p.from), joinPath(root, p.to));
 			}
 			await this.syncTree();
 			this.onFileOp?.();
@@ -291,27 +329,9 @@ class HostCollabController {
 		}
 	}
 
-	/**
-	 * A guest's review-comment event: apply it here (the host owns the log file) and pass it on to
-	 * everyone else, so the guest that sent it is not the only one who sees it.
-	 *
-	 * `file` is validated even though nothing is written to that path - the write always goes to
-	 * .texpile/comments.jsonl. It ends up in a log the host commits, so a guest must not be able to
-	 * put '../..' in it any more than in a file-op.
-	 */
-	private applyGuestComment(event: CommentEvent): void {
-		if (!this.active) return;
-		if (event.t === 'open' && (!isSafeRel(event.file) || !isShared(event.file))) return;
-		this.onCommentEvent?.(event);
-		// straight back out to everyone, the sender included: PeerInfo carries no client id to
-		// address them individually, and the echo costs that guest one duplicate line in memory
-		// which foldLog is built to absorb. It is never persisted - only the host writes the file.
-		this.session?.sendControl({ kind: 'comment-event', event });
-	}
-
-	/** the host's own comment event, out to every guest. */
-	broadcastComment(event: CommentEvent): void {
-		if (this.active) this.session?.sendControl({ kind: 'comment-event', event });
+	/** the session's comment log, which the host fills from its own and writes back to disk */
+	get sharedComments(): Y.Array<string> | null {
+		return this.doc ? commentLogOf(this.doc) : null;
 	}
 
 	/** host: reply to a specific guest (e.g. a resolved SyncTeX position). */

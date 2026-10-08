@@ -10,11 +10,13 @@ import { readSettings } from '../appSettings';
 type Terminal = typeof import('./terminalIpc.js');
 type Daemon = typeof import('../draft/draftDaemon.js');
 type McpServer = typeof import('../mcp/server.js');
+type Acp = typeof import('../ai/acp/acpIpc.js');
 
 // held for the shutdown hooks: what never loaded has nothing to tear down
 let terminal: Terminal | null = null;
 let daemon: Daemon | null = null;
 let mcpServer: McpServer | null = null;
+let acpIpc: Acp | null = null;
 
 let started: Promise<void> | null = null;
 
@@ -23,13 +25,25 @@ export function registerDeferredIpc(): Promise<void> {
 	return (started ??= load());
 }
 
-// cheapest and most likely to be wanted first; the MCP server last, as nothing in the UI waits on it
+// cheapest and most likely to be wanted first; the MCP server last, as nothing in the UI waits on it.
+// Templates lead: an empty folder opens on the starter picker, which lists the saved ones at once.
 const steps: Array<() => Promise<void>> = [
+	async () => (await import('./templatesIpc.js')).registerTemplatesIpc(),
 	async () => (await import('./gitIpc.js')).registerGitIpc(),
+	async () => (await import('./localHistoryIpc.js')).registerLocalHistoryIpc(),
 	async () => (await import('./pdfSaveIpc.js')).registerPdfSaveIpc(),
+	async () => (await import('./exportTargetIpc.js')).registerExportTargetIpc(),
 	async () => (await import('./typstIpc.js')).registerTypstIpc(),
+	async () => (await import('./toolchainIpc.js')).registerToolchainIpc(),
+	async () => (await import('./tinymistIpc.js')).registerTinymistIpc(),
 	async () => (await import('./typstPreviewIpc.js')).registerTypstPreviewIpc(),
 	async () => (await import('../zotero.js')).registerZotero(),
+	async () => (await import('./doiIpc.js')).registerDoiIpc(),
+	async () => (await import('./agentIpc.js')).registerAgentIpc(),
+	async () => {
+		acpIpc = await import('../ai/acp/acpIpc.js');
+		acpIpc.registerAcpIpc();
+	},
 	async () => {
 		terminal = await import('./terminalIpc.js');
 		terminal.registerTerminalIpc();
@@ -64,6 +78,7 @@ async function load(): Promise<void> {
 /** destructive teardown, for whatever actually loaded */
 export function shutdownDeferred(): void {
 	terminal?.killAllPtys();
+	acpIpc?.closeAllAcp();
 	daemon?.stopDaemon();
 	// takes the endpoint file with it, so a stale port/token is never left on disk for the bridge
 	void mcpServer?.stop();

@@ -7,7 +7,7 @@
 //
 // Deliberately DOM-import-free beyond prosemirror-model: the parse worker loads this module.
 import { updateImageNode, type SchemaImageSettings } from '$lib/editor/visual/extensions/image/updateImageNode';
-import { Schema, type NodeSpec, type MarkSpec } from 'prosemirror-model';
+import { Schema, type NodeSpec, type MarkSpec, type Node as PMNode } from 'prosemirror-model';
 import { baseNodes, baseMarks } from '$lib/editor/visual/schema/basePMSchema';
 
 // mirrors mdSchema: built by hand because the imageplugin.svelte settings creators pull in the DOM (fatal for a
@@ -15,7 +15,7 @@ import { baseNodes, baseMarks } from '$lib/editor/visual/schema/basePMSchema';
 const schemaImageSettings: SchemaImageSettings = {
 	hasTitle: true,
 	isBlock: true,
-	extraAttributes: { width: null, height: null, maxWidth: null, typGap: null }
+	extraAttributes: { width: null, height: null, maxWidth: null, typGap: null, labelGap: null }
 };
 
 // everything the converter can emit, nothing more. Tables and real math nodes arrive with their
@@ -58,10 +58,8 @@ for (const name of TYP_NODES) nodes[name] = base[name];
 // overrides build NEW spec objects — mutating the imported literals would leak into every dialect
 // a code block created without attrs (shared toolbar button, keybind) must be a FENCE here, not
 // tex's verbatim: typst raw fences take an info string, so the language picker works everywhere
-// Spread the base attrs first. ORIG_BLOCKS (baseNodes.ts) adds `orig` to code_block's spec, and
-// replacing attrs wholesale silently dropped it - so a fence could never be recognised as pristine
-// and always regenerated, which forced a blank line between it and its neighbour. `#set page(..)`
-// directly above a ```` fence came back with a blank line inserted on every save.
+// Spread the base attrs first: replacing them wholesale silently drops the ones the shared
+// extensions read.
 nodes.code_block = {
 	...base.code_block,
 	attrs: { ...base.code_block.attrs, lang: { default: '' }, env: { default: 'fence' }, args: { default: '' } }
@@ -93,24 +91,50 @@ nodes.table_row = {
 	...base.table_row,
 	attrs: { ...base.table_row.attrs, typRules: { default: [] } }
 };
-// math nodes hold LATEX content (what MathLive edits); `typst` is the original source and
-// `latexOrig` its parse-time translation - while they agree, the serializer re-emits `typst`
-// byte-for-byte and MathLive is never consulted
-const mathAttrs = { typst: { default: null }, latexOrig: { default: null } };
-nodes.inline_math = { ...base.inline_math, attrs: { ...base.inline_math.attrs, ...mathAttrs } };
-nodes.block_math = { ...base.block_math, attrs: { ...base.block_math.attrs, ...mathAttrs } };
+// math nodes hold the equation's Typst, which MathLive reads and writes as Typst; their HTML says
+// so, for a paste into a LaTeX document to rewrite it (see pastedMath.ts)
+nodes.inline_math = {
+	...base.inline_math,
+	mathSyntax: 'typst',
+	toDOM: () => ['span', { class: 'inline-math', 'data-math-syntax': 'typst' }, 0]
+};
+nodes.block_math = {
+	...base.block_math,
+	mathSyntax: 'typst',
+	toDOM: (node: PMNode) => ['div', { class: 'block-math', 'data-label': node.attrs.label, 'data-math-syntax': 'typst' }, 0]
+};
 // typNumber: the explicit "5." an enum item was written with (null for "+"); order stays the
 // display counter flat-list reads
 nodes.list = { ...base.list, attrs: { ...base.list.attrs, typNumber: { default: null } } };
 // a trailing <label> attaches to the heading in typst, so it lives on the node
-nodes.heading = { ...base.heading, attrs: { ...base.heading.attrs, label: { default: null } } };
+nodes.heading = {
+	...base.heading,
+	attrs: { ...base.heading.attrs, label: { default: null } },
+	// typst nests headings past six where html stops: a deeper one is an h6 holding its level
+	parseDOM: [1, 2, 3, 4, 5, 6].map((level) => ({
+		tag: `h${level}`,
+		getAttrs: (dom: HTMLElement) => ({ level: Number(dom.getAttribute('data-level')) || level })
+	})),
+	toDOM(node) {
+		const level = Number(node.attrs.level);
+		const attrs: Record<string, string> = node.attrs.numbered === false ? { 'data-unnumbered': 'true' } : {};
+		if (level > 6) attrs['data-level'] = String(level);
+		return [`h${Math.min(6, level)}`, attrs, 0];
+	}
+};
+// labelGap: the bytes the source put between a labelled block and its <label> when they held a
+// line end (null = a space, or no label); the serializer writes the label back where it stood
+for (const name of ['heading', 'block_math', 'table_wrapper']) {
+	nodes[name] = { ...nodes[name], attrs: { ...nodes[name].attrs, labelGap: { default: null } } };
+}
+// typCaption: the file gave the figure a caption, which stays when its text is empty: typst still draws "Table 1:"
+nodes.table_wrapper = { ...nodes.table_wrapper, attrs: { ...nodes.table_wrapper.attrs, typCaption: { default: false } } };
 // typFile: what the bytes outside the markup looked like (a leading BOM, CRLF line endings)
 nodes.doc = { ...base.doc, attrs: { ...base.doc.attrs, typFile: { default: null } } };
 
 // Typst-only nodes, declared here the way mdSchema declares its `s` mark: term lists
 // (`/ term: description`) have no tex counterpart. The title is its own child textblock so
-// both halves are directly editable; orig is added by hand since the tex ORIG_BLOCKS loop
-// never saw this spec.
+// both halves are directly editable.
 nodes.term_title = {
 	content: 'inline*',
 	parseDOM: [{ tag: 'div[data-term-title]' }],
@@ -119,26 +143,83 @@ nodes.term_title = {
 // `@target` - one atom for BOTH of typst's meanings (bibliography citation and label
 // cross-reference): the serialization is identical either way, so the doc never has to decide.
 // The node VIEW resolves the target against the loaded bibliography for display.
+//
+// supplement: the markup inside `@target[...]` (a citation's page, a reference's word before the
+// number), verbatim; null for none, which is not the empty `[]`. form: the `form:` of a
+// `#cite(<target>, form: "prose")`, the one spelling that needs the call; null leaves it to the style
 nodes.typ_ref = {
 	inline: true,
 	group: 'inline',
 	atom: true,
 	selectable: true,
-	attrs: { target: {} },
+	attrs: { target: {}, supplement: { default: null }, form: { default: null } },
 	parseDOM: [
 		{
 			tag: 'span[data-typ-ref]',
-			getAttrs: (dom) => ({ target: (dom as HTMLElement).getAttribute('data-typ-ref') || '' })
+			getAttrs: (dom) => {
+				const el = dom as HTMLElement;
+				return {
+					target: el.getAttribute('data-typ-ref') || '',
+					supplement: el.getAttribute('data-supplement'),
+					form: el.getAttribute('data-form') || null
+				};
+			}
 		}
 	],
-	toDOM: (node) => ['span', { 'data-typ-ref': String(node.attrs.target), class: 'typ-ref' }, `@${node.attrs.target}`],
+	toDOM: (node) => [
+		'span',
+		{
+			'data-typ-ref': String(node.attrs.target),
+			'data-supplement': node.attrs.supplement,
+			'data-form': node.attrs.form,
+			class: 'typ-ref'
+		},
+		`@${node.attrs.target}`
+	],
 	leafText: (node) => `@${node.attrs.target}`
+};
+// `#theorem[...]`, `#align(center)[...]`: a call whose last argument is the content block it
+// wraps, standing on its own lines. name is the callee and args the bytes between its
+// parentheses (null: it had none), both verbatim; bodyLead/bodyTrail are the whitespace inside
+// the brackets around the body (null: editor-made, which opens the body on a line of its own),
+// and typIndent the width the call's line stood at, which a container holding it writes itself
+nodes.typ_env = {
+	content: 'block+',
+	group: 'block',
+	definingAsContext: true,
+	allowGapCursor: true,
+	attrs: {
+		name: { default: 'block' },
+		args: { default: null },
+		label: { default: null },
+		labelGap: { default: null },
+		bodyLead: { default: null },
+		bodyTrail: { default: null },
+		typIndent: { default: null }
+	},
+	parseDOM: [
+		{
+			tag: 'div.typ-environment',
+			getAttrs: (dom) => {
+				const el = dom as HTMLElement;
+				return {
+					name: el.getAttribute('data-typ-env') || 'block',
+					args: el.getAttribute('data-args'),
+					label: el.getAttribute('data-label') || null
+				};
+			}
+		}
+	],
+	toDOM: (node) => [
+		'div',
+		{ class: 'typ-environment', 'data-typ-env': node.attrs.name, 'data-args': node.attrs.args, 'data-label': node.attrs.label },
+		0
+	]
 };
 nodes.term_item = {
 	content: 'term_title block+',
 	group: 'block',
 	defining: true,
-	attrs: { orig: { default: null } },
 	parseDOM: [{ tag: 'div[data-term-item]' }],
 	toDOM: () => ['div', { 'data-term-item': '', class: 'term-item' }, 0]
 };

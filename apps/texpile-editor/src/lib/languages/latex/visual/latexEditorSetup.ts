@@ -7,9 +7,9 @@ import { isMac } from '$lib/platform';
 import { keymap } from 'prosemirror-keymap';
 import { baseKeymap, toggleMark } from 'prosemirror-commands';
 import { undo as historyUndo, redo as historyRedo, history } from 'prosemirror-history';
-import { toggleBlockQuote, toggleHeading, cycleParagraphIndent } from '$lib/editor/visual/helperCommands';
+import { toggleBlockQuote, toggleHeading, cycleParagraphIndent, splitBlockWithoutDuplicates } from '$lib/editor/visual/helperCommands';
 import { selectAllScoped } from '$lib/editor/visual/selectAllScoped';
-import { selectDocStart, selectDocEnd } from '$lib/editor/visual/selectDocBoundary';
+import { extendToDocEnd, extendToDocStart, selectDocEnd, selectDocStart } from '$lib/editor/visual/selectDocBoundary';
 import { gapCursor } from 'prosemirror-gapcursor';
 import { createMathField } from '$lib/editor/visual/extensions/mathlivebridge/mlcommands';
 import { createCodeBlock } from '$lib/editor/visual/extensions/codemirrorbridge/cmcommands';
@@ -18,13 +18,19 @@ import { menuUpdatePlugin } from '$lib/editor/visual/extensions/toolbarlistenerp
 import { dropCursor } from 'prosemirror-dropcursor';
 import { tableEditing, goToNextCell } from 'prosemirror-tables';
 import { tableViewOnly } from '$lib/editor/visual/extensions/table/tableViewOnly';
+import { wholeTableEdits } from '$lib/editor/visual/extensions/table/wholeTableEdits';
+import { crossBlockEdits } from '$lib/editor/visual/extensions/crossBlockEdits';
 import { imagePlugin } from '$lib/editor/visual/extensions/image';
 import { createCursorPlugin } from '$lib/editor/visual/extensions/cursor-plugin';
+import { lineBreakPlugins } from '$lib/editor/visual/linebreak/lineBreakPlugin';
 import { remoteCursorsPlugin } from '$lib/editor/visual/extensions/remoteCursors';
 import { pasteUuidFixPlugin } from '$lib/editor/visual/extensions/paste-uuid-fix';
-import { latexClipboardPlugin } from '$lib/editor/visual/extensions/latexClipboard';
+import { latexClipboardPlugin, pasteLatexText } from '$lib/editor/visual/extensions/latexClipboard';
+import { visualSmartPaste } from '$lib/editor/paste/visualSmartPaste';
 import { createListPlugins, listInputRules, listKeymap, createIndentListCommand, createDedentListCommand } from 'prosemirror-flat-list';
 import { inputRules, InputRule, smartQuotes, ellipsis, undoInputRule } from 'prosemirror-inputrules';
+import { selectFigureBackward, selectFigureForward } from '$lib/editor/visual/figureDeleteGuard';
+import { deleteEmptyBlockForward, deleteEmptyFirstBlock } from '$lib/editor/visual/emptyBlockDelete';
 import { placeholderPlugin } from '$lib/editor/visual/extensions/placeholderplugin';
 import { tablePlaceholderPlugin } from '$lib/editor/visual/extensions/table/tablePlaceholderPlugin';
 import { search } from 'prosemirror-search';
@@ -34,16 +40,15 @@ import { LabelView } from '$lib/languages/latex/visual/extensions/label/labelVie
 import { createTocPlugin } from '$lib/editor/visual/extensions/tableofcontents/tocPlugin';
 import { createPersistentSelectionPlugin } from '$lib/editor/visual/extensions/persistentSelection/persistentSelectionPlugin';
 import { createSuggestPlugin } from '$lib/editor/visual/extensions/suggest/suggestPlugin';
-import { proofreadPlugin, spellClickBoundaryPlugin } from '$lib/editor/spellcheck/spellcheckplugin';
+import { proofreadPlugin, spellChipPlugin, spellClickBoundaryPlugin, spellProblemKeymap } from '$lib/editor/spellcheck/spellcheckplugin';
 import { createTemplateEditorSettings, createLocalImageSettings } from '$lib/editor/visual/extensions/image/imageplugin.svelte';
 import { createWordCountPlugin } from '$lib/editor/visual/extensions/wordcount/wordCountPlugin';
+import { latexProse } from '$lib/workspace/wordCount/proseWords';
 import { emDashRule, enDashRule, emDashUpgradeRule } from '$lib/editor/visual/extensions/inputrules/dashRules';
 import { tableWrapperView } from '$lib/editor/visual/extensions/table/tableWrapperView.svelte';
 import { CodeBlockView } from '$lib/editor/visual/extensions/codemirrorbridge/cmview.svelte';
-import { RawLatexView } from '$lib/editor/visual/extensions/raw-latex/rawLatexView';
 import { RawFigureView, isRawFigure } from '$lib/editor/visual/extensions/raw-latex/rawFigureView';
 import { IeeeAuthorView, isIeeeAuthorBlock } from '$lib/languages/latex/visual/extensions/template-specific/ieeeAuthorView';
-import { InlineLatexView } from '$lib/editor/visual/extensions/raw-latex/inlineLatexView';
 import { inlinePlaceholder, InlinePlaceholderView } from '$lib/editor/visual/extensions/raw-latex/inlinePlaceholderView';
 import {
 	FrontmatterRawView,
@@ -55,11 +60,25 @@ import { BibliographyNodeView } from '$lib/editor/visual/extensions/bibliography
 import { environmentView } from '$lib/languages/latex/visual/extensions/environment/environmentView.svelte';
 import { IncludeDocView } from '$lib/editor/visual/extensions/includedoc/includeDocView.svelte';
 import { createBoundaryClickPlugin } from '$lib/editor/visual/extensions/boundary-click-plugin';
+import { wordSelectionTrim } from '$lib/editor/visual/extensions/wordSelectionTrim';
+import { dragSelectionPlugin } from '$lib/editor/visual/extensions/dragSelection/dragSelectionPlugin';
 import { createBlockHandlePlugin } from '$lib/editor/visual/extensions/block-handle-plugin.svelte';
+import { wholeBlockDragPlugin } from '$lib/editor/visual/extensions/wholeBlockDrag';
+import { dropPastNodeViewsPlugin } from '$lib/editor/visual/extensions/dropPastNodeViews';
 import { createNodeFlashPlugin } from '$lib/editor/visual/extensions/flash-plugin';
+import { drawnOrSource } from '$lib/editor/visual/extensions/drawnChips/DrawnChipView';
+import { drawnChipAtomsPlugin } from '$lib/editor/visual/extensions/drawnChips/drawnChipAtoms';
+import { shiftArrowsPlugin } from '$lib/editor/visual/extensions/shiftArrows/shiftArrowsPlugin';
+import { latexChipKind } from '$lib/languages/latex/visual/extensions/drawn/latexChipKind';
+import { footnoteNumbersPlugin } from '$lib/editor/visual/extensions/drawnChips/footnoteNumbers';
+import { latexFootnoteMarks } from '$lib/languages/latex/visual/extensions/drawn/latexFootnoteMarks';
 import { createLinkPlugin } from '$lib/editor/visual/extensions/link';
 import { pmComments } from '$lib/editor/visual/extensions/pmComments';
+import { listRuleWithoutIndent } from './listItemIndent';
 import type { CommentAnchor } from '$lib/comments/anchor';
+import type { SourceAnchorFn } from '$lib/editor/visual/extensions/pmComments';
+import { parseCarryPlugin } from '$lib/editor/visual/parseCarry';
+import { labelRenameUndo } from '$lib/editor/visual/repointRefs';
 
 export type LatexEditorSetup = {
 	/** resolved by the caller's dynamic import so mathlive stays off the critical path */
@@ -68,29 +87,56 @@ export type LatexEditorSetup = {
 	imageDir?: () => string;
 	placeholder: string;
 	onHistoryBoundary?: (dir: 'undo' | 'redo') => boolean;
-	onSelectComment?: (id: string, from: 'visual') => void;
+	onSelectComment?: (id: string) => void;
 	onAddComment?: (anchor: CommentAnchor | null) => void;
+	/** the selection as a range of the file; see pmComments */
+	sourceAnchor?: SourceAnchorFn;
 	addCommentLabel: string;
 };
 
 export function latexEditorPlugins(setup: LatexEditorSetup): Plugin[] {
-	const { mathlivePlugin, mlarrowHandlers, imageDir, placeholder, onHistoryBoundary, onSelectComment, onAddComment, addCommentLabel } =
-		setup;
+	const {
+		mathlivePlugin,
+		mlarrowHandlers,
+		imageDir,
+		placeholder,
+		onHistoryBoundary,
+		onSelectComment,
+		onAddComment,
+		sourceAnchor,
+		addCommentLabel
+	} = setup;
 	return [
+		parseCarryPlugin,
+		labelRenameUndo,
 		gapCursor(),
 		// drop cursor is inline-styled (not CSS-targetable) and its default black vanishes on dark
-		dropCursor({ color: 'var(--color-primary-500)', width: 2 }),
+		dropCursor({ color: 'var(--color-primary-500)', width: 2, class: 'pm-drop-cursor' }),
 		// TableView without the drag: a LaTeX column width lives in the colspec and only exists
 		// for p{}/tabularx columns, so a dragged l/c/r column had nowhere to be written and was
 		// discarded on the next parse. See tableViewOnly.
 		tableViewOnly,
 		tableEditing(),
+		wholeTableEdits,
+		crossBlockEdits,
 		...createListPlugins({ schema }),
 		history(),
 		...createSuggestPlugin(),
+		drawnChipAtomsPlugin(),
+		shiftArrowsPlugin(),
+		// before the list keymap, whose Backspace and Delete act at a block edge: they would join the block after an empty one into it, and a block into a figure
+		keymap({ Backspace: deleteEmptyFirstBlock, Delete: deleteEmptyBlockForward }),
+		keymap({ Backspace: selectFigureBackward, Delete: selectFigureForward }),
 		keymap(listKeymap),
 		inputRules({
-			rules: [...listInputRules, ...smartQuotes, emDashRule, enDashRule, emDashUpgradeRule, ellipsis] as readonly InputRule[]
+			rules: [
+				...listInputRules.map(listRuleWithoutIndent),
+				...smartQuotes,
+				emDashRule,
+				enDashRule,
+				emDashUpgradeRule,
+				ellipsis
+			] as readonly InputRule[]
 		}),
 		keymap({
 			// PM history first, then the workspace snapshot history (survives mode switches).
@@ -102,6 +148,8 @@ export function latexEditorPlugins(setup: LatexEditorSetup): Plugin[] {
 			'Mod-a': selectAllScoped,
 			'Mod-Home': selectDocStart,
 			'Mod-End': selectDocEnd,
+			'Shift-Mod-Home': extendToDocStart,
+			'Shift-Mod-End': extendToDocEnd,
 			'Mod-b': toggleMark(schema.marks.strong),
 			'Mod-i': toggleMark(schema.marks.em),
 			'Mod-`': toggleMark(schema.marks.code),
@@ -119,6 +167,7 @@ export function latexEditorPlugins(setup: LatexEditorSetup): Plugin[] {
 			'Mod-Alt-2': toggleHeading(2),
 			'Mod-Alt-3': toggleHeading(3),
 			...(isMac ? {} : { 'Mod-Shift-1': toggleHeading(1), 'Mod-Shift-2': toggleHeading(2), 'Mod-Shift-3': toggleHeading(3) }),
+			Enter: splitBlockWithoutDuplicates,
 			'Mod-m': createMathField(),
 			'Mod-Shift-m': createMathField(true),
 			// table cell, then list nesting (as markdown and typst do), and only outside both does Tab
@@ -144,24 +193,34 @@ export function latexEditorPlugins(setup: LatexEditorSetup): Plugin[] {
 		imagePlugin(imageDir ? createLocalImageSettings(imageDir) : createTemplateEditorSettings()),
 		menuUpdatePlugin(),
 		createCursorPlugin(),
+		...lineBreakPlugins(),
 		remoteCursorsPlugin,
 		createLinkPlugin(),
+		visualSmartPaste('latex', schema, pasteLatexText),
 		latexClipboardPlugin,
 		pasteUuidFixPlugin,
 		search(),
 		placeholderPlugin(placeholder),
 		tablePlaceholderPlugin(),
-		createWordCountPlugin(),
+		createWordCountPlugin((raw) => latexProse(raw, false)),
 		createTocPlugin(),
 		createPersistentSelectionPlugin(),
 		spellClickBoundaryPlugin, // must precede proofreadPlugin; see its comment
 		proofreadPlugin,
+		spellProblemKeymap,
+		spellChipPlugin,
 		createBoundaryClickPlugin(),
+		wordSelectionTrim(),
+		dragSelectionPlugin(),
 		createBlockHandlePlugin(),
+		wholeBlockDragPlugin(),
+		dropPastNodeViewsPlugin(),
+		footnoteNumbersPlugin(latexFootnoteMarks),
 		createNodeFlashPlugin(),
 		...pmComments({
-			onSelect: (id) => onSelectComment?.(id, 'visual'),
+			onSelect: (id) => onSelectComment?.(id),
 			onAdd: onAddComment,
+			sourceAnchor,
 			addLabel: addCommentLabel
 		})
 	];
@@ -169,10 +228,14 @@ export function latexEditorPlugins(setup: LatexEditorSetup): Plugin[] {
 
 // PM types getPos as possibly undefined (unmounted), but these views only call it while
 // mounted, so cast instead of threading the optionality through every constructor
-export function latexNodeViews(imageDir: () => string, onJumpToLabel?: (name: string) => boolean): NonNullable<EditorProps['nodeViews']> {
+export function latexNodeViews(
+	imageDir: () => string,
+	onJumpToLabel?: (name: string) => boolean,
+	onJumpToDefinition?: (name: string) => boolean
+): NonNullable<EditorProps['nodeViews']> {
 	return {
 		code_block: (node, view, getPos) => new CodeBlockView(node, view, getPos as () => number),
-		raw_latex: (node, view, getPos) =>
+		raw_latex: (node, view, getPos, decorations) =>
 			simpleFrontmatter(node.textContent)
 				? new FrontmatterRawView(node, view, getPos as () => number)
 				: placeholderCommand(node.textContent)?.command === 'printbibliography'
@@ -183,11 +246,17 @@ export function latexNodeViews(imageDir: () => string, onJumpToLabel?: (name: st
 							? new IeeeAuthorView(node, view, getPos as () => number)
 							: isRawFigure(node.textContent)
 								? new RawFigureView(node, view, getPos as () => number, imageDir)
-								: new RawLatexView(node, view, getPos as () => number),
-		inline_latex: (node, view, getPos) =>
+								: drawnOrSource(
+										node,
+										view,
+										getPos as () => number,
+										decorations,
+										latexChipKind(view, true, onJumpToLabel, onJumpToDefinition)
+									),
+		inline_latex: (node, view, getPos, decorations) =>
 			inlinePlaceholder(node.textContent)
 				? new InlinePlaceholderView(node, view, getPos as () => number)
-				: new InlineLatexView(node, view, getPos as () => number),
+				: drawnOrSource(node, view, getPos as () => number, decorations, latexChipKind(view, false, onJumpToLabel, onJumpToDefinition)),
 		includedoc: (node, view, getPos) => new IncludeDocView(node, view, getPos as () => number, imageDir),
 		environment: environmentView,
 		table_wrapper: tableWrapperView,

@@ -7,11 +7,10 @@
 	import type { Node as PMNode } from 'prosemirror-model';
 	import type { Dialect } from '$lib/editor/visual/dialect';
 	import { sanitizeLabel } from '$lib/editor/visual/label';
-	import { DEFAULT_FIGURE_FRACTION } from './figureDefaults';
+	import { DEFAULT_FIGURE_FRACTION, FIGURE_SIZE_STEP } from './figureDefaults';
 	import { labelTaken } from '$lib/editor/visual/labelTaken';
-	import { repointRefs } from '$lib/editor/visual/repointRefs';
+	import { announceLabelRenamed, repointRefs } from '$lib/editor/visual/repointRefs';
 	import { templateFeaturesStore } from '$lib/stores/editorStore';
-	import { settings } from '$lib/settings';
 	import { m } from '$lib/paraglide/messages';
 
 	type Props = {
@@ -66,12 +65,12 @@
 		// renaming the label follows every reference to it, in the same transaction (one undo
 		// step). This panel had no such branch at all, in either dialect, so a renamed figure left
 		// each \ref to it pointing at a name that no longer existed.
-		if ('label' in attrs) repointRefs(tr, view.state.doc, String(node.attrs.label ?? ''), String(attrs.label ?? ''));
+		const renamedFrom = 'label' in attrs ? String(node.attrs.label ?? '') : null;
+		if (renamedFrom !== null) repointRefs(tr, view.state.doc, renamedFrom, String(attrs.label ?? ''));
 		view.dispatch(tr);
+		if (renamedFrom !== null) announceLabelRenamed(renamedFrom, String(attrs.label ?? ''));
 	}
 
-	// size slider: width as a fraction of \textwidth
-	const sizeStep = $derived(settings.current.figureResizeStep || 0.25);
 	// fraction from a prior resize (width/maxWidth), else parsed \includegraphics options, else full width
 	const sizePercent = $derived(Math.round(currentFraction() * 100));
 
@@ -139,6 +138,10 @@
 	function handleLabelBlur(e: Event) {
 		const input = e.target as HTMLInputElement;
 		const newLabel = sanitizeLabel(input.value);
+		if (dialect === 'typst') {
+			commitTypstLabel(newLabel);
+			return;
+		}
 
 		// a name another anchor already holds is refused, not merged: the references would survive,
 		// pointing at whichever of the two LaTeX numbered last
@@ -150,6 +153,23 @@
 		}
 
 		updateAttrs({ label: newLabel });
+	}
+
+	// a typst figure's label is optional, so emptying the field takes it away. A label is what makes
+	// a bare #image a #figure (typst references nothing else), so the image is numbered from then on,
+	// as it reads back
+	function commitTypstLabel(newLabel: string) {
+		const current = node.attrs.label || '';
+		const pos = getPos();
+		if (newLabel === current) {
+			labelInput = current;
+			return;
+		}
+		if (newLabel && pos !== undefined && labelTaken(view.state.doc, newLabel, pos)) {
+			labelInput = current;
+			return;
+		}
+		updateAttrs(newLabel ? { label: newLabel, numbered: true } : { label: null });
 	}
 </script>
 
@@ -163,9 +183,9 @@
 			<input
 				type="range"
 				class="accent-primary-500 w-full"
-				min={Math.round(sizeStep * 100)}
+				min={Math.round(FIGURE_SIZE_STEP * 100)}
 				max={100}
-				step={Math.round(sizeStep * 100)}
+				step={Math.round(FIGURE_SIZE_STEP * 100)}
 				value={sizePercent}
 				oninput={(e) => setSizePercent(Number((e.currentTarget as HTMLInputElement).value))}
 			/>
@@ -255,10 +275,11 @@
 		</div>
 	{/if}
 
-	<!-- the only thing under Advanced is the \label for \ref, so the whole disclosure is
-	     LaTeX-only; gated on the dialect as well as on numbering, so an image carrying
-	     numbered=true (pasted from a tex doc) still can't offer it in markdown -->
-	{#if latexControls && numberedInput}
+	<!-- the only thing under Advanced is the label for references, so the whole disclosure is
+	     LaTeX and typst only; gated on the dialect as well as on numbering, so an image carrying
+	     numbered=true (pasted from a tex doc) still can't offer it in markdown. A typst image
+	     offers it numbered or not: labeling a bare #image makes it a figure -->
+	{#if (latexControls && numberedInput) || dialect === 'typst'}
 		<button
 			type="button"
 			class="text-muted hover:text-surface-900-100 my-3 flex w-full items-center gap-2 text-sm transition-colors"
@@ -272,8 +293,10 @@
 			<div class="border-surface-300-700 space-y-4 pl-6">
 				<label class="label">
 					<span>
-						{m.imageoverlay_latex_label()}
-						<span class="text-muted text-sm">{m.imageoverlay_latex_label_hint()}</span>
+						{dialect === 'typst' ? m.imageoverlay_typst_label() : m.imageoverlay_latex_label()}
+						<span class="text-muted text-sm"
+							>{dialect === 'typst' ? m.imageoverlay_typst_label_hint() : m.imageoverlay_latex_label_hint()}</span
+						>
 					</span>
 					<input
 						type="text"

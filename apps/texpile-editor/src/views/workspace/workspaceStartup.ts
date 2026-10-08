@@ -4,7 +4,7 @@ import { fileMode } from '$lib/workspace/fileMode.svelte';
 import { navigate } from '$lib/router.svelte';
 import { tabs } from '$lib/workspace/tabs.svelte';
 import { docPositions } from '$lib/workspace/docPositions';
-import { initSpellcheckConfig } from '$lib/editor/spellcheck/spellcheckConfig';
+import { initSpellcheckConfig } from '$lib/editor/spellcheck/config/spellcheckConfig';
 import { attachWindowListeners, attachCloseGuard } from '$lib/workspace/workspaceMount';
 import { projectConfigSync as projectConfig } from '$lib/workspace/projectConfigSync.svelte';
 import { workspaceRoot } from '$lib/workspace/workspaceStore';
@@ -85,7 +85,11 @@ export function startWorkspace(d: StartupDeps): (() => void) | undefined {
 		isHost: () => hostMode,
 		checkExternalChange: () => void editFlow.external.check(),
 		runCompile: () => d.compiler.runCompile(),
-		onWindowResize: layout.reclampPdf,
+		loadExternalPdf: () => void d.compiler.loadExternalPdf(),
+		onWindowResize: () => {
+			layout.reclampPdf();
+			termDock.reclamp();
+		},
 		reloadProjectState: () => {
 			// both live in .texpile/ and both are committed, so both arrive by pull
 			void d.commentsCtl.refresh();

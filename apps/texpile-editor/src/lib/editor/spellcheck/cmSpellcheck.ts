@@ -1,14 +1,16 @@
 // harper spell/grammar check for SOURCE mode: mask LaTeX markup (texMask), lint the prose with
 // the same harper worker + dictionary the visual editor uses, underline with the same
 // proofread-* styles, and open the shared SuggestionBox on click.
-import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from '@codemirror/view';
+import { Decoration, EditorView, ViewPlugin, keymap, type DecorationSet, type ViewUpdate } from '@codemirror/view';
 import { Facet, RangeSetBuilder } from '@codemirror/state';
-import { lintText } from '$lib/editor/spellcheck/linter';
+import { lintText, onLintRulesChanged } from '$lib/editor/spellcheck/linter';
 import { createHarperSuggestionBox, type Problem } from '$lib/editor/spellcheck/suggestionBoxFactory';
 import { editorConfigStore } from '$lib/stores/editorStore';
 import { observe } from '$lib/runes/observe.svelte';
 import { docText } from '$lib/editor/source/docText';
 import { maskTex, overlapsMask, type TexMask } from './texMask';
+import { clearOfOldWords, liveSuggestionRanges } from '$lib/editor/source/cmSuggestions';
+import { nextProblem, type Span } from './problemNav';
 import './suggestion.css';
 
 /**
@@ -69,11 +71,13 @@ function splitParagraphs(masked: string): Paragraph[] {
 
 class SpellPlugin {
 	decorations: DecorationSet = Decoration.none;
+	shown: DecorationSet = Decoration.none;
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private gen = 0;
 	private enabled = false;
 	private ignored = new Set<string>();
 	private unsubscribe: () => void;
+	private stopRules: () => void;
 	// lint results per paragraph text (offsets paragraph-relative); text-keyed, so results survive
 	// edits elsewhere in the doc and only changed paragraphs get re-linted
 	private cache = new Map<string, LintMatch[]>();
@@ -93,10 +97,13 @@ class SpellPlugin {
 				else {
 					this.gen++;
 					this.decorations = Decoration.none;
+					this.shown = Decoration.none;
 					this.view.dispatch({});
 				}
 			}
 		);
+		// another English or another set of rules: what was found is out of date
+		this.stopRules = onLintRulesChanged(() => this.invalidate());
 	}
 
 	update(u: ViewUpdate) {
@@ -106,10 +113,14 @@ class SpellPlugin {
 			this.decorations = this.decorations.map(u.changes);
 			this.schedule(DEBOUNCE_MS);
 		}
+		if (u.docChanged || liveSuggestionRanges(u.startState) !== liveSuggestionRanges(u.state)) {
+			this.shown = clearOfOldWords(this.decorations, u.state);
+		}
 	}
 
 	destroy() {
 		this.unsubscribe();
+		this.stopRules();
 		if (this.timer) clearTimeout(this.timer);
 		this.gen++;
 	}
@@ -228,7 +239,8 @@ class SpellPlugin {
 					shortmsg: m.shortMessage || m.message,
 					type: m.type.typeName,
 					replacements: m.replacements ?? [],
-					text: src.slice(from, to)
+					text: src.slice(from, to),
+					rule: m.rule
 				};
 				if (this.ignored.has(`${problem.type}:${problem.text}`)) continue;
 				builder.add(from, to, Decoration.mark({ class: `proofread-${cssType(problem.type)}`, problem }));
@@ -243,12 +255,13 @@ class SpellPlugin {
 			return;
 		}
 		this.decorations = builder.finish();
+		this.shown = clearOfOldWords(this.decorations, this.view.state);
 		this.view.dispatch({});
 	}
 }
 
 const spellPlugin = ViewPlugin.fromClass(SpellPlugin, {
-	decorations: (p) => p.decorations,
+	decorations: (p) => p.shown,
 	eventHandlers: {
 		click(e, view) {
 			const plugin = view.plugin(spellPlugin);
@@ -287,8 +300,23 @@ const spellPlugin = ViewPlugin.fromClass(SpellPlugin, {
 	}
 });
 
+/** select the next (1) or previous (-1) problem the plugin is showing */
+export function jumpToProblem(view: EditorView, dir: 1 | -1): boolean {
+	const spans: Span[] = [];
+	view.plugin(spellPlugin)?.shown.between(0, view.state.doc.length, (from, to) => void spans.push({ from, to }));
+	const target = nextProblem(spans, view.state.selection.main, dir);
+	if (!target) return false;
+	view.dispatch({ selection: { anchor: target.from, head: target.to }, scrollIntoView: true, userEvent: 'select' });
+	return true;
+}
+
+const problemKeymap = keymap.of([
+	{ key: 'F8', run: (view) => jumpToProblem(view, 1), preventDefault: true },
+	{ key: 'Shift-F8', run: (view) => jumpToProblem(view, -1), preventDefault: true }
+]);
+
 /** harper proofreading for LaTeX source mode; obeys the shared spell-check setting. */
 /** `language` selects Harper's parser; omit it for LaTeX/plain prose (see spellLanguage). */
 export function cmSpellcheck(language?: 'plaintext' | 'typst') {
-	return language ? [spellPlugin, spellLanguage.of(language)] : spellPlugin;
+	return language ? [spellPlugin, problemKeymap, spellLanguage.of(language)] : [spellPlugin, problemKeymap];
 }

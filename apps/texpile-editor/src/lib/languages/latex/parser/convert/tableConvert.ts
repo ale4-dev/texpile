@@ -5,7 +5,6 @@ import { printRaw } from '@unified-latex/unified-latex-util-print-raw';
 import { getTextContent, getMacroFirstArg } from '../ast-utils';
 import {
 	buildNode,
-	textNode,
 	nodeToLatexString,
 	createDefaultContext,
 	type PmNode,
@@ -16,7 +15,32 @@ import { SCOPED_SWITCHES, FONT_SIZE_SWITCHES } from '../macros';
 import { convertNodesToBlocks } from '../converter';
 import { convertNodesToInline } from './inlineConvert';
 import { macroHasStar } from './macroHandlers';
-import { nodeRawSource } from './origCapture';
+import { extentOf, nodeExtent, nodeRawSource, nodeRawSpan, rawTextNode, repairExtentTail, startOf } from './origCapture';
+import { blockSpanOf, noteBlockSpan, type BlockSpan } from '$lib/editor/visual/sourceSpans';
+
+/** the bytes `nodes` cover, or null when they are not placed in the source */
+function spanOfNodes(nodes: Node[]): BlockSpan | null {
+	let min = Infinity;
+	let max = -Infinity;
+	for (const n of nodes) {
+		const e = extentOf(n, 0);
+		if (Number.isFinite(e.min) && e.min < min) min = e.min;
+		if (Number.isFinite(e.max) && e.max > max) max = e.max;
+		// an attached argument's closer has no positioned node of its own
+		const own = (n as Macro).args?.length ? repairExtentTail(n, nodeExtent(n, 0)) : null;
+		if (own && Number.isFinite(own.max) && own.max > max) max = own.max;
+	}
+	return Number.isFinite(min) && Number.isFinite(max) && min < max ? { srcFrom: min, srcTo: max, size: 1 } : null;
+}
+
+/** `nodes` without the blank ones at either edge */
+function trimBlank(nodes: Node[]): Node[] {
+	let start = 0;
+	let end = nodes.length;
+	while (start < end && isBlankCellNode(nodes[start])) start++;
+	while (end > start && isBlankCellNode(nodes[end - 1])) end--;
+	return nodes.slice(start, end);
+}
 
 function extractTableComponents(content: Node[], ctx: ConversionContext) {
 	let caption: PmNode | null = null;
@@ -39,6 +63,10 @@ function extractTableComponents(content: Node[], ctx: ConversionContext) {
 	let centering = content.some((n) => n.type === 'environment' && (n as Environment).env === 'center' && containsTabular([n]));
 	let captionBelow = false;
 	let notesSize: string | null = null;
+	// the \vspace the source put right after its \caption ('' for none), written back in place of the
+	// gap a new table gets; a \label between them sets nothing apart on the page
+	let captionGap = '';
+	let afterCaption = false;
 
 	// see through the wrappers papers put around the tabular - \begin{center} instead of
 	// \centering, and {\small ...} groups scoping a size switch (BERT-era arXiv especially).
@@ -52,12 +80,17 @@ function extractTableComponents(content: Node[], ctx: ConversionContext) {
 			const arg = getMacroFirstArg(node as Macro);
 			const captionText = convertNodesToInline(arg, ctx);
 			const optArg = (node as Macro).args?.find((a) => a.openMark === '[');
-			caption = buildNode(
+			const built = buildNode(
 				'table_caption',
 				{ starred: macroHasStar(node as Macro), captionOpt: optArg ? printRaw(optArg.content) : null },
 				captionText
 			);
+			// the caption's bytes are the words inside the braces: \caption{ and } are the float's frame.
+			// one below the tabular comes after it in the file but before it in the wrapper, and placing
+			// it would leave the tabular unplaced; it rides along in the frame instead
+			caption = sawTabular ? built : noteBlockSpan(built, spanOfNodes(arg));
 			captionBelow = sawTabular;
+			afterCaption = true;
 		} else if (node.type === 'macro' && node.content === 'label') {
 			const text = getTextContent(getMacroFirstArg(node as Macro));
 			if (text) labels.push(text);
@@ -68,7 +101,9 @@ function extractTableComponents(content: Node[], ctx: ConversionContext) {
 			// tabular* included: createTable already reads its width arg, and leaving it out sent
 			// the whole float down the generic path with the caption collapsing to a raw chip
 			sawTabular = true;
-			tables.push(...createTable(node as Environment));
+			const made = createTable(node as Environment);
+			if (made.length === 1) noteBlockSpan(made[0], spanOfNodes([node]));
+			tables.push(...made);
 		} else {
 			// whitespace BEFORE the tabular is just separation (preBody re-joins with spaces);
 			// whitespace AFTER is preserved (word spacing in notes prose matters).
@@ -77,9 +112,16 @@ function extractTableComponents(content: Node[], ctx: ConversionContext) {
 				centering = true;
 				continue;
 			}
+			// a caption above the tabular has its gap before it, not after the tabular
+			if (afterCaption && (captionBelow || !sawTabular) && node.type === 'macro' && node.content === 'vspace') captionGap += printRaw(node);
 			if (node.type === 'macro' && (node.content === 'vspace' || node.content === 'raggedright')) continue;
 			// the notes wrapper emits its own \par\smallskip; a skip leading the notes would compound
-			if (sawTabular && noteNodes.every(isBlankCellNode) && node.type === 'macro' && /^(small|med|big)skip$/.test(String(node.content)))
+			if (
+				sawTabular &&
+				noteNodes.every(isBlankCellNode) &&
+				node.type === 'macro' &&
+				/^(par|(small|med|big)skip)$/.test(String(node.content))
+			)
 				continue;
 			// the notes serializer emits its own {\<size> ...}, so a size switch in the NOTES
 			// position is redundant and compounds each save: strip a bare one, unwrap a group led
@@ -105,18 +147,13 @@ function extractTableComponents(content: Node[], ctx: ConversionContext) {
 				}
 			}
 
+			if (node.type !== 'whitespace' && node.type !== 'comment') afterCaption = false;
 			(sawTabular ? noteNodes : preNodes).push(node);
 		}
 	}
 
 	// preBody is plumbing, not prose the user edits: round-trip raw (byte-sliced when possible)
-	const preBody =
-		preNodes.length > 0
-			? preNodes
-					.map((n) => nodeRawSource(n) ?? printRaw(n))
-					.join(' ')
-					.trim() || null
-			: null;
+	const preBody = preNodes.length > 0 ? joinRaw(preNodes) : null;
 
 	// trim whitespace-only edges before deciding notes exist, or the near-universal newline
 	// between \end{tabular} and \end{table} earns every table a spurious empty {\small } wrapper
@@ -131,29 +168,40 @@ function extractTableComponents(content: Node[], ctx: ConversionContext) {
 	// STARTS the post-tabular content; real notes after a leading switch keep the \small treatment.
 	let postBody: string | null = null;
 	const firstNote = noteNodes.find((n) => n.type !== 'whitespace' && n.type !== 'parbreak');
-	if (leadsWithSkip(firstNote)) {
-		postBody =
-			noteNodes
-				.map((n) => nodeRawSource(n) ?? printRaw(n))
-				.join(' ')
-				.trim() || null;
+	if (
+		leadsWithSkip(firstNote) ||
+		(firstNote && noteNodes.every((n) => n.type === 'whitespace' || n.type === 'parbreak' || n.type === 'comment'))
+	) {
+		postBody = joinRaw(noteNodes);
 		noteNodes = [];
 	}
 
 	if (noteNodes.length > 0) {
 		const convertedNotes = convertNodesToInline(noteNodes, ctx);
 		if (convertedNotes.length > 0) {
-			notes.push(buildNode('table_notes', null, convertedNotes));
+			// the span covers every node that became content, a comment at either edge included: a
+			// block whose leaf runs lie outside it is not believed (see soundLeaves)
+			notes.push(noteBlockSpan(buildNode('table_notes', null, convertedNotes), spanOfNodes(noteNodes)));
 		}
 	}
 
 	const label = labels.length > 0 ? labels[labels.length - 1] : null;
 	const extraLabels = labels.length > 1 ? labels.slice(0, -1) : null;
 
-	return { caption, label, extraLabels, tables, notes, preBody, postBody, centering, captionBelow, notesSize };
+	return { caption, label, extraLabels, tables, notes, preBody, postBody, centering, captionBelow, captionGap, notesSize };
 }
 
 /** a bare \vskip, a scoped switch, or a group led by a skip: setup after the tabular, not notes */
+function joinRaw(nodes: Node[]): string | null {
+	let out = '';
+	for (const n of nodes) {
+		const raw = (nodeRawSource(n) ?? printRaw(n)).replace(/\n$/, '');
+		if (out) out += /(^|[^\\])(\\\\)*%[^\n]*$/.test(out) ? '\n' : ' ';
+		out += raw;
+	}
+	return out.trim() || null;
+}
+
 function leadsWithSkip(n: Node | undefined): boolean {
 	if (!n) return false;
 	if (n.type === 'macro') {
@@ -190,10 +238,8 @@ export function containsTabular(nodes: Node[]): boolean {
 }
 
 export function createTableWrapper(env: Environment, ctx: ConversionContext, options: ConversionOptions): PmNode[] {
-	const { caption, label, extraLabels, tables, notes, preBody, postBody, centering, captionBelow, notesSize } = extractTableComponents(
-		env.content,
-		ctx
-	);
+	const { caption, label, extraLabels, tables, notes, preBody, postBody, centering, captionBelow, captionGap, notesSize } =
+		extractTableComponents(env.content, ctx);
 
 	const tableNode = tables[0];
 	// the wrapper models exactly one tabular; a float holding several (side by side, or stacked
@@ -209,7 +255,7 @@ export function createTableWrapper(env: Environment, ctx: ConversionContext, opt
 		}
 		// genuinely unmodellable (tabulary, tabu, ...): block-parsing would inject an illegal
 		// \par and mangle the column spec, so preserve the whole float verbatim.
-		return [buildNode('raw_latex', null, [textNode(nodeRawSource(env) ?? nodeToLatexString(env))])];
+		return [buildNode('raw_latex', null, [rawTextNode(nodeRawSpan(env), nodeToLatexString(env))])];
 	}
 
 	// the float's own placement specifier ([t], [H], or '' when the source had none), round-
@@ -229,6 +275,7 @@ export function createTableWrapper(env: Environment, ctx: ConversionContext, opt
 				placement,
 				centering,
 				captionBelow,
+				captionGap: caption ? captionGap : null,
 				notesSize,
 				hasHeaderRow: true, // simplified assumption
 				hasHeaderColumn: true,
@@ -277,8 +324,12 @@ export function createTable(env: Environment): PmNode[] {
 	const tabularxWidth = takesWidth && mandatory.length >= 2 ? printRaw(mandatory[0].content) : null;
 	const colspecArg = takesWidth ? mandatory[1] : mandatory[mandatory.length - 1];
 	const colspec = colspecArg ? printRaw(colspecArg.content) : null;
+	const positionArg = (env.args ?? []).find((a) => a.openMark === '[');
+	const position = positionArg ? printRaw(positionArg.content) : null;
 
 	const rows: PmNode[] = [];
+	// each row's bytes: from its first cell's to its last cell's, the row break left to the frame
+	const rowSpans: (BlockSpan | null)[] = [];
 	let currentRowCells: PmNode[] = [];
 	let currentCellContent: Node[] = [];
 	let pendingRules = ''; // rules seen since the last row, not yet assigned
@@ -295,6 +346,12 @@ export function createTable(env: Environment): PmNode[] {
 	}
 	function flushRow(cells: PmNode[], rowBreakSuffix = '') {
 		rows.push(buildNode('table_row', { topRules: rowTop, rowBreakSuffix }, cells.length > 0 ? cells : [createTableCell([])]));
+		const placed = cells.map((c) => blockSpanOf(c)).filter((s): s is BlockSpan => !!s);
+		rowSpans.push(
+			placed.length > 0 && placed.length === cells.length
+				? { srcFrom: Math.min(...placed.map((s) => s.srcFrom)), srcTo: Math.max(...placed.map((s) => s.srcTo)), size: 1 }
+				: null
+		);
 		rowTop = '';
 		rowStarted = false;
 	}
@@ -302,11 +359,11 @@ export function createTable(env: Environment): PmNode[] {
 	for (const node of env.content) {
 		if (node.type === 'string' && node.content === '&') {
 			startRow();
-			currentRowCells.push(createTableCell(currentCellContent));
+			currentRowCells.push(createTableCell(currentCellContent, startOf(node)));
 			currentCellContent = [];
 		} else if (node.type === 'macro' && isRowBreak(node as Macro)) {
 			startRow();
-			currentRowCells.push(createTableCell(currentCellContent));
+			currentRowCells.push(createTableCell(currentCellContent, startOf(node)));
 			const args = (node as Macro).args;
 			flushRow(currentRowCells, args && args.length ? printRaw(args) : '');
 			currentRowCells = [];
@@ -347,7 +404,9 @@ export function createTable(env: Environment): PmNode[] {
 		rows.push(buildNode('table_row', null, [createTableCell([])]));
 	}
 
-	return [buildNode('table', { env: env.env, colspec, tabularxWidth, bottomRules }, resolveSpans(rows))];
+	const resolved = resolveSpans(rows);
+	if (resolved.length === rows.length) resolved.forEach((row, i) => noteBlockSpan(row, rowSpans[i]));
+	return [buildNode('table', { env: env.env, colspec, tabularxWidth, position, bottomRules }, resolved)];
 }
 
 // a node that contributes no cell content (whitespace / comments / empty strings)
@@ -404,19 +463,33 @@ export function unwrapSpans(content: Node[]): { colspan: number; rowspan: number
 	return { colspan, rowspan, inner, mcAlign };
 }
 
-export function createTableCell(content: Node[]): PmNode {
+/** `emptyAt`: where an empty cell's bytes would be, the offset of the `&` or `\\\\` that ends it */
+export function createTableCell(content: Node[], emptyAt?: number): PmNode {
 	const { colspan, rowspan, inner, mcAlign } = unwrapSpans(content);
-	// trim blank AST nodes BEFORE conversion, not the merged text string after: a macro that
-	// produces literal spaces as real content (\quad row-label indents) is indistinguishable from
-	// incidental whitespace once flattened, and a string-level trim silently eats it.
-	let start = 0;
-	let end = inner.length;
-	while (start < end && isBlankCellNode(inner[start])) start++;
-	while (end > start && isBlankCellNode(inner[end - 1])) end--;
-	const ctx = createDefaultContext();
-	const inlineContent = convertNodesToInline(inner.slice(start, end), ctx);
-
-	return buildNode('table_cell', { colspan, rowspan, colwidth: null, mcAlign }, [buildNode('paragraph', null, inlineContent)]);
+	const pieces: Node[][] = [[]];
+	for (const n of inner) {
+		if (isMacroNamed(n, 'par')) pieces.push([]);
+		else pieces[pieces.length - 1].push(n);
+	}
+	const paragraphs: PmNode[] = [];
+	for (const piece of pieces) {
+		// trim blank AST nodes BEFORE conversion, not the merged text string after: a macro that
+		// produces literal spaces as real content (\quad row-label indents) is indistinguishable from
+		// incidental whitespace once flattened, and a string-level trim silently eats it.
+		let start = 0;
+		let end = piece.length;
+		while (start < end && isBlankCellNode(piece[start])) start++;
+		while (end > start && isBlankCellNode(piece[end - 1])) end--;
+		if (start === end && paragraphs.length > 0) continue;
+		const inlineContent = convertNodesToInline(piece.slice(start, end), createDefaultContext());
+		if (inlineContent.length === 0 && paragraphs.length > 0) continue;
+		paragraphs.push(noteBlockSpan(buildNode('paragraph', null, inlineContent), spanOfNodes(piece.slice(start, end))));
+	}
+	const kept = paragraphs.length > 1 && paragraphs[0].content.size === 0 ? paragraphs.slice(1) : paragraphs;
+	// the cell's bytes: its content, a \multicolumn or \multirow wrapper included; an empty cell
+	// stands at the delimiter that ends it, with nothing of its own
+	const own = spanOfNodes(trimBlank(content)) ?? (typeof emptyAt === 'number' ? { srcFrom: emptyAt, srcTo: emptyAt, size: 1 } : null);
+	return noteBlockSpan(buildNode('table_cell', { colspan, rowspan, colwidth: null, mcAlign }, kept), own);
 }
 
 // drop the placeholder cells LaTeX writes UNDER a \multirow so the prosemirror-tables covered-

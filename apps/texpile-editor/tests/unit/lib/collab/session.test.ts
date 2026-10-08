@@ -4,16 +4,24 @@ import { describe, it, expect } from 'vitest';
 import * as Y from 'yjs';
 import { deriveSessionKeys } from '$lib/collab/e2e/keys';
 import { generateShareCode } from '$lib/collab/e2e/shareCode';
-import type { RelayNotice } from '$lib/collab/protocol';
+import { BROADCAST, FrameType, decodeFrame, encodeFrame, type Frame, type RelayNotice } from '$lib/collab/protocol';
+import { seal, unseal } from '$lib/collab/e2e/seal';
+import * as encoding from 'lib0/encoding';
+import * as syncProtocol from 'y-protocols/sync';
 import type { Transport, TransportStatus } from '$lib/collab/transport';
 import { CollabSession, manifestOf, locksOf, textOf } from '$lib/collab/session';
-import { HostMaterializer, spliceDiff, isShared, isGeneratedArtifact, decodeIfText, EDIT_ORIGIN } from '$lib/collab/materialize';
+import type { SessionVersion } from '$lib/collab/compatibility';
+import { HostMaterializer, isShared, isGeneratedArtifact, decodeIfText, EDIT_ORIGIN } from '$lib/collab/materialize';
+import { spliceDiff } from '$lib/collab/spliceDiff';
 
 class FakeHub {
 	transports = new Set<FakeTransport>();
 	/** random extra delay per delivery, to shake out ordering assumptions. */
 	chaosMs = 0;
+	/** frames the relay has been handed */
+	sent = 0;
 	deliver(from: FakeTransport, data: Uint8Array): void {
+		this.sent++;
 		// mirror the real relay: stamp the sender's origin role so receivers get fromHost
 		const fromHost = from.role === 'host';
 		for (const t of this.transports) {
@@ -78,18 +86,22 @@ function fakeFs(files: Record<string, string>) {
 }
 const join = (root: string, rel: string) => `${root}/${rel}`;
 
-async function makeParty(hub: FakeHub, role: 'host' | 'guest', name: string, key: CryptoKey) {
+async function makeParty(hub: FakeHub, role: 'host' | 'guest', name: string, key: CryptoKey, version?: SessionVersion) {
 	const doc = new Y.Doc();
 	const transport = new FakeTransport(hub, role);
-	const events: { ended?: string; blobs: { name: string; rev: number; bytes: Uint8Array }[] } = { blobs: [] };
+	const events: { ended?: string; endedDetail?: string; blobs: { name: string; rev: number; bytes: Uint8Array }[] } = { blobs: [] };
 	const session = new CollabSession({
 		doc,
 		transport,
 		key,
 		role,
 		user: { name, color: '#123456' },
+		version,
 		events: {
-			onSessionEnd: (reason) => (events.ended = reason),
+			onSessionEnd: (reason, detail) => {
+				events.ended = reason;
+				events.endedDetail = detail;
+			},
 			onBlob: (name_, rev, bytes) => events.blobs.push({ name: name_, rev, bytes })
 		}
 	});
@@ -129,7 +141,7 @@ describe('sharing filters', () => {
 		expect(decodeIfText(new Uint8Array([0xc3, 0x28]))).toBeNull(); // invalid UTF-8 sequence
 	});
 
-	it('keeps compile artifacts out of the CRDT, hides only VCS and deps', () => {
+	it('keeps compile artifacts out of the CRDT, hides only VCS, deps and hidden files', () => {
 		for (const p of ['main.log', 'output/main.aux', 'main.synctex.gz', 'main.fdb_latexmk', 'main.bbl']) {
 			expect(isShared(p), p).toBe(true); // still fetchable as bytes
 			expect(isGeneratedArtifact(p), p).toBe(true); // never co-edited
@@ -137,9 +149,30 @@ describe('sharing filters', () => {
 		for (const p of ['main.tex', 'refs.bib', 'typst/main.typ', 'chapters/01-basics.typ', 'fig/plot.png']) {
 			expect(isGeneratedArtifact(p), p).toBe(false);
 		}
-		for (const p of ['.git/config', '.svn/entries', 'node_modules/x/index.js', '__pycache__/y.pyc']) {
+		for (const p of ['.git/config', '.svn/entries', 'node_modules/x/index.js', '__pycache__/y.pyc', '.env', 'sub/.texpile/config.json']) {
 			expect(isShared(p), p).toBe(false);
 		}
+	});
+
+	it('shares only what the host listed, whatever a guest writes into the manifest', async () => {
+		const doc = new Y.Doc();
+		const mat = new HostMaterializer(doc, 'root', fakeFs({ 'main.tex': 'x', 'figures/plot.png': 'png' }).fs, join);
+		await mat.seed();
+		manifestOf(doc).set('.texpile/config.json', { kind: 'binary', size: 1, rev: 0 });
+		expect(mat.sharesFile('main.tex')).toBe(true);
+		expect(mat.sharesFolder('figures')).toBe(true);
+		expect(mat.sharesFile('.texpile/config.json')).toBe(false);
+		expect(mat.sharesFolder('.texpile')).toBe(false);
+		mat.destroy();
+	});
+
+	it('leaves hidden files out of the manifest', async () => {
+		const doc = new Y.Doc();
+		const files = { 'main.tex': 'x', '.env': 'TOKEN=1', 'sub/.npmrc': '//registry/:_authToken=1', '.latexmkrc': '$pdf_mode = 1;' };
+		const mat = new HostMaterializer(doc, 'root', fakeFs(files).fs, join);
+		await mat.seed();
+		expect([...manifestOf(doc).keys()]).toEqual(['main.tex']);
+		mat.destroy();
 	});
 });
 
@@ -168,6 +201,49 @@ describe('collab session end-to-end', () => {
 		await until(() => disk.get('main.tex')!.content.includes('G: ') && disk.get('main.tex')!.content.includes('H-line'));
 
 		mat.destroy();
+		host.session.destroy();
+		guest.session.destroy();
+	});
+
+	it('goes quiet once a guest has joined and both sides have caught up', async () => {
+		const key = (await deriveSessionKeys(generateShareCode())).contentKey;
+		const hub = new FakeHub();
+		const host = await makeParty(hub, 'host', 'Host', key);
+		const guest = await makeParty(hub, 'guest', 'Guest', key);
+		await until(() => host.session.peers.size === 1 && guest.session.peers.size === 1);
+		await new Promise((r) => setTimeout(r, 200));
+		const settled = hub.sent;
+		await new Promise((r) => setTimeout(r, 500));
+		expect(hub.sent - settled).toBe(0);
+
+		host.session.destroy();
+		guest.session.destroy();
+	});
+
+	it("shows a guest who joins later the host's presence at once, not at the next awareness renewal", async () => {
+		const key = (await deriveSessionKeys(generateShareCode())).contentKey;
+		const hub = new FakeHub();
+		const host = await makeParty(hub, 'host', 'Host', key);
+		host.session.setSuggesting(true);
+		await new Promise((r) => setTimeout(r, 100));
+		const guest = await makeParty(hub, 'guest', 'Guest', key);
+		await until(() => [...guest.session.peers.values()].some((p) => p.role === 'host' && p.suggesting === true), 1000);
+
+		host.session.destroy();
+		guest.session.destroy();
+	});
+
+	it('carries a renamed profile to the peers of a running session', async () => {
+		const key = (await deriveSessionKeys(generateShareCode())).contentKey;
+		const hub = new FakeHub();
+		const host = await makeParty(hub, 'host', 'Host', key);
+		const guest = await makeParty(hub, 'guest', 'Guest', key);
+		await until(() => [...guest.session.peers.values()].some((p) => p.name === 'Host'));
+
+		host.session.setIdentity({ name: 'Mei', color: '#059669' });
+		await until(() => [...guest.session.peers.values()].some((p) => p.name === 'Mei' && p.color === '#059669'));
+		expect([...guest.session.peers.values()].find((p) => p.name === 'Mei')?.role).toBe('host');
+
 		host.session.destroy();
 		guest.session.destroy();
 	});
@@ -320,6 +396,41 @@ describe('collab session end-to-end', () => {
 		for (const p of [host, g1, g2]) p.session.destroy();
 	});
 
+	it("keeps a guest's words the host's editor has not taken in yet when the host types", async () => {
+		const key = (await deriveSessionKeys(generateShareCode())).contentKey;
+		const hub = new FakeHub();
+		const shown = 'one two three\n\nfour five six\n';
+		const { fs } = fakeFs({ 'main.tex': shown });
+		const host = await makeParty(hub, 'host', 'Host', key);
+		const mat = new HostMaterializer(host.doc, 'root', fs, join);
+		await mat.seed();
+		const guest = await makeParty(hub, 'guest', 'Guest', key);
+		await until(() => textOf(guest.doc, 'main.tex').toString() === shown);
+
+		textOf(guest.doc, 'main.tex').insert(3, ' GUEST');
+		await until(() => textOf(host.doc, 'main.tex').toString().includes('GUEST'));
+		// keystrokes from the text the host's visual editor still shows, before its re-parse lands
+		let before = shown;
+		for (const word of [' H1', ' H2']) {
+			const next = before.slice(0, -1) + word + '\n';
+			mat.hostEdit('main.tex', next, before);
+			before = next;
+		}
+		await until(() => textOf(guest.doc, 'main.tex').toString().includes('H2'));
+		expect(textOf(host.doc, 'main.tex').toString()).toBe('one GUEST two three\n\nfour five six H1 H2\n');
+		expect(textOf(guest.doc, 'main.tex').toString()).toBe(textOf(host.doc, 'main.tex').toString());
+
+		// the re-parse lands, then the host types again
+		const adopted = textOf(host.doc, 'main.tex').toString();
+		mat.hostEdit('main.tex', adopted);
+		mat.hostEdit('main.tex', adopted.replace('one', 'one!'), adopted);
+		expect(textOf(host.doc, 'main.tex').toString()).toBe('one! GUEST two three\n\nfour five six H1 H2\n');
+
+		mat.destroy();
+		host.session.destroy();
+		guest.session.destroy();
+	});
+
 	it('preserves CRLF on write-back while sharing LF internally', async () => {
 		const key = (await deriveSessionKeys(generateShareCode())).contentKey;
 		const hub = new FakeHub();
@@ -332,9 +443,23 @@ describe('collab session end-to-end', () => {
 		await until(() => textOf(guest.doc, 'win.tex').toString() === 'a\nb\n');
 		textOf(guest.doc, 'win.tex').insert(2, 'x\n');
 		await until(() => disk.get('win.tex')!.content === 'a\r\nx\r\nb\r\n');
+		// what it wrote, in LF, goes once to the host's check for changes made outside
+		expect(mat.takeWrite('win.tex')).toBe('a\nx\nb\n');
+		expect(mat.takeWrite('win.tex')).toBeNull();
 		mat.destroy();
 		host.session.destroy();
 		guest.session.destroy();
+	});
+
+	it('keeps the endings of the lines an edit left alone in a file that mixes them', async () => {
+		const doc = new Y.Doc();
+		const { disk, fs } = fakeFs({ 'mixed.tex': 'a\r\nb\nc\r\n' });
+		const mat = new HostMaterializer(doc, 'root', fs, join);
+		await mat.seed();
+		textOf(doc, 'mixed.tex').insert(2, 'x\n');
+		await until(() => disk.get('mixed.tex')!.content !== 'a\r\nb\nc\r\n');
+		expect(disk.get('mixed.tex')!.content).toBe('a\r\nx\r\nb\nc\r\n');
+		mat.destroy();
 	});
 
 	it('propagates locks, blobs, and session-end', async () => {
@@ -395,6 +520,97 @@ describe('collab session end-to-end', () => {
 		mat.destroy();
 	});
 
+	it('turns away a guest on a version the host cannot share with, and tells a guest its host is outdated', async () => {
+		const key = (await deriveSessionKeys(generateShareCode())).contentKey;
+		const hub = new FakeHub();
+		const { fs, disk } = fakeFs({ 'main.tex': 'shared' });
+		const host = await makeParty(hub, 'host', 'Host', key, { version: '1.3.0', oldest: '1.3.0' });
+		const mat = new HostMaterializer(host.doc, 'root', fs, join);
+		await mat.seed();
+		const current = await makeParty(hub, 'guest', 'Current', key, { version: '1.3.0', oldest: '1.3.0' });
+		await until(() => manifestOf(current.doc).has('main.tex'));
+
+		// a build from before the check: a HELLO without a version, then an edit
+		const legacy = new FakeTransport(hub, 'guest');
+		const legacyDoc = new Y.Doc();
+		const received: Frame[] = [];
+		const send = async (frame: Frame) => legacy.send(await seal(key, Uint8Array.of(0, ...encodeFrame(frame))));
+		legacy.onMessage = (data) => void unseal(key, data).then((plain) => received.push(decodeFrame(plain.subarray(1))));
+		legacy.start();
+		await send({
+			type: FrameType.HELLO,
+			from: legacyDoc.clientID,
+			to: BROADCAST,
+			payload: { name: 'Legacy', color: '#654321', role: 'guest' }
+		});
+		legacyDoc.getText('f:main.tex').insert(0, 'stale ');
+		const update = encoding.createEncoder();
+		syncProtocol.writeUpdate(update, Y.encodeStateAsUpdate(legacyDoc));
+		await send({ type: FrameType.SYNC, from: legacyDoc.clientID, to: BROADCAST, payload: encoding.toUint8Array(update) });
+		await until(() =>
+			received.some((f) => f.type === FrameType.CONTROL && f.to === legacyDoc.clientID && f.payload.kind === 'session-end')
+		);
+		await new Promise((r) => setTimeout(r, 60));
+		expect(textOf(host.doc, 'main.tex').toString()).toBe('shared');
+
+		const older = await makeParty(hub, 'guest', 'Older', key, { version: '1.2.0', oldest: '1.1.0' });
+		await until(() => older.events.ended !== undefined);
+		expect([older.events.ended, older.events.endedDetail]).toEqual(['app-outdated', '1.3.0']);
+		expect([...host.session.peers.values()].map((p) => p.name)).toEqual(['Current']);
+
+		const hub2 = new FakeHub();
+		const oldHost = await makeParty(hub2, 'host', 'Old host', key, { version: '1.2.0', oldest: '1.1.0' });
+		const newGuest = await makeParty(hub2, 'guest', 'New guest', key, { version: '1.3.0', oldest: '1.3.0' });
+		await until(() => newGuest.events.ended !== undefined);
+		expect([newGuest.events.ended, newGuest.events.endedDetail]).toEqual(['host-outdated', '1.2.0']);
+		expect(disk.get('main.tex')?.content).toBe('shared');
+		mat.destroy();
+		oldHost.session.destroy();
+	});
+
+	it('turns away a guest that cannot share a session with a guest already in it, whichever joins second', async () => {
+		const key = (await deriveSessionKeys(generateShareCode())).contentKey;
+		const hostVersion = { version: '1.3.0', oldest: '1.2.0' };
+		const older = { version: '1.2.0', oldest: '1.2.0' };
+		const newer = { version: '1.4.0', oldest: '1.3.0' };
+
+		const hub = new FakeHub();
+		const { fs } = fakeFs({ 'main.tex': 'base' });
+		const host = await makeParty(hub, 'host', 'Host', key, hostVersion);
+		const mat = new HostMaterializer(host.doc, 'root', fs, join);
+		await mat.seed();
+		const a = await makeParty(hub, 'guest', 'A', key, older);
+		await until(() => textOf(a.doc, 'main.tex').toString() === 'base' && host.session.peers.has(a.doc.clientID));
+		const b = await makeParty(hub, 'guest', 'B', key, newer);
+		await until(() => b.events.ended !== undefined);
+		// the host itself takes B: what B cannot share with is a guest, and B says so rather than blame the host
+		expect([b.events.ended, b.events.endedDetail]).toEqual(['guest-outdated', '1.2.0']);
+		// one that takes both still joins, and the rest keep editing together
+		const c = await makeParty(hub, 'guest', 'C', key, hostVersion);
+		await until(() => textOf(c.doc, 'main.tex').toString() === 'base');
+		textOf(a.doc, 'main.tex').insert(4, ' from A');
+		textOf(c.doc, 'main.tex').insert(0, 'C: ');
+		await until(() => [host, a, c].every((p) => textOf(p.doc, 'main.tex').toString() === 'C: base from A'));
+		expect(a.events.ended).toBeUndefined();
+		expect(c.events.ended).toBeUndefined();
+		expect([...host.session.peers.values()].map((p) => p.name).sort()).toEqual(['A', 'C']);
+		mat.destroy();
+		for (const p of [host, a, c]) p.session.destroy();
+
+		const hub2 = new FakeHub();
+		const host2 = await makeParty(hub2, 'host', 'Host', key, hostVersion);
+		const mat2 = new HostMaterializer(host2.doc, 'root', fakeFs({ 'main.tex': 'base' }).fs, join);
+		await mat2.seed();
+		const b2 = await makeParty(hub2, 'guest', 'B', key, newer);
+		await until(() => textOf(b2.doc, 'main.tex').toString() === 'base' && host2.session.peers.has(b2.doc.clientID));
+		const a2 = await makeParty(hub2, 'guest', 'A', key, older);
+		await until(() => a2.events.ended !== undefined);
+		expect([a2.events.ended, a2.events.endedDetail]).toEqual(['app-outdated', '1.3.0']);
+		expect(b2.events.ended).toBeUndefined();
+		mat2.destroy();
+		for (const p of [host2, b2]) p.session.destroy();
+	});
+
 	it('a reconnect re-handshake heals a gap in delivery', async () => {
 		const key = (await deriveSessionKeys(generateShareCode())).contentKey;
 		const hub = new FakeHub();
@@ -413,6 +629,52 @@ describe('collab session end-to-end', () => {
 		hub.transports.add(guest.transport);
 		(guest.transport.onStatus as (s: TransportStatus) => void)('connected'); // what RelayTransport does on reopen
 		await until(() => textOf(guest.doc, 'main.tex').toString() === 'base + offline host edit');
+
+		mat.destroy();
+		host.session.destroy();
+		guest.session.destroy();
+	});
+
+	it('counts only the first sync after its own reconnect as a catch-up, not a guest who comes back later', async () => {
+		const key = (await deriveSessionKeys(generateShareCode())).contentKey;
+		const hub = new FakeHub();
+		const { fs } = fakeFs({ 'main.tex': 'one two three' });
+		const host = await makeParty(hub, 'host', 'Host', key);
+		const mat = new HostMaterializer(host.doc, 'root', fs, join);
+		await mat.seed();
+		const guest = await makeParty(hub, 'guest', 'Guest', key);
+		await until(() => textOf(guest.doc, 'main.tex').toString() === 'one two three' && host.session.peers.has(guest.doc.clientID));
+		const modes: string[] = [];
+		textOf(host.doc, 'main.tex').observe((ev) => {
+			const from = host.session.senderOf(ev.transaction.origin);
+			if (from !== null) modes.push(host.session.authorOf(from).mode);
+		});
+		function away(t: FakeTransport) {
+			t.closed = true;
+			hub.transports.delete(t);
+		}
+		function back(t: FakeTransport) {
+			t.closed = false;
+			hub.transports.add(t);
+			(t.onStatus as (s: TransportStatus) => void)('connected');
+		}
+
+		// the host drops off while the guest edits: its catch-up says nothing of who did what
+		away(host.transport);
+		textOf(guest.doc, 'main.tex').delete(0, 4);
+		await new Promise((r) => setTimeout(r, 50));
+		back(host.transport);
+		await until(() => textOf(host.doc, 'main.tex').toString() === 'two three');
+		await new Promise((r) => setTimeout(r, 50));
+
+		// later the guest, editing, drops off and comes back with an edit of its own
+		away(guest.transport);
+		textOf(guest.doc, 'main.tex').delete(3, 6);
+		await new Promise((r) => setTimeout(r, 50));
+		expect(textOf(host.doc, 'main.tex').toString()).toBe('two three');
+		back(guest.transport);
+		await until(() => textOf(host.doc, 'main.tex').toString() === 'two');
+		expect(modes).toEqual(['suggesting', 'editing']);
 
 		mat.destroy();
 		host.session.destroy();

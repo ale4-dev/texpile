@@ -19,7 +19,9 @@
 	import ContextMenu from '$lib/editor/visual/toolbar/ContextMenu.svelte';
 	import { syncPmComments } from '$lib/editor/visual/extensions/pmCommentsSync.svelte';
 	import type { CommentAnchor } from '$lib/comments/anchor';
-	import type { CommentThread } from '$lib/comments/log';
+	import type { SourceAnchorFn } from '$lib/editor/visual/extensions/pmComments';
+	import type { CommentRange } from '$lib/editor/visual/extensions/comments';
+	import type { RegionParser, SourceMap } from '$lib/editor/visual/sourceSpans';
 	import 'prosemirror-view/style/prosemirror.css';
 	import 'prosemirror-tables/style/tables.css';
 	import 'prosemirror-gapcursor/style/gapcursor.css';
@@ -43,12 +45,21 @@
 		/** the project's bibliography; @target chips resolve against it for display */
 		localReferences?: BiblatexReference[];
 		/** review comments, same contract as the latex EditorView; see extensions/pmComments */
-		commentThreads?: CommentThread[];
+		commentRanges?: CommentRange[];
+		sourceMap?: SourceMap;
+		/** the file's text, the stretch of it the document is, and its parser: what suggestions are drawn from */
+		texSource?: string;
+		bodyRange?: { from: number; to: number };
+		regionParser?: RegionParser | null;
+		/** the selection as a range of the file; see pmComments */
+		sourceAnchor?: SourceAnchorFn;
 		selectedComment?: string | null;
-		onSelectComment?: (id: string, from: 'visual') => void;
+		onSelectComment?: (id: string) => void;
 		onAddComment?: (anchor: CommentAnchor | null) => void;
 		/** pick citations from Zotero, offered in the context menu when present */
 		onInsertCitation?: () => void;
+		/** cite by DOI or arXiv ID, offered in the context menu when present */
+		onCiteByDoi?: () => void;
 		onCommentsPlaced?: (lost: string[]) => void;
 		addCommentLabel?: string;
 		/** a composer is open for a selection here; false clears the pending selection tint */
@@ -66,11 +77,17 @@
 		docDir = '',
 		docPath = null,
 		localReferences = [],
-		commentThreads = [],
+		commentRanges = [],
+		sourceMap = { leaves: [], blocks: [] },
+		texSource = '',
+		bodyRange = { from: 0, to: 0 },
+		regionParser = null,
+		sourceAnchor,
 		selectedComment = null,
 		onSelectComment,
 		onAddComment,
 		onInsertCitation,
+		onCiteByDoi,
 		onCommentsPlaced,
 		addCommentLabel = 'Comment',
 		commentPendingActive = false
@@ -84,9 +101,13 @@
 	let editorView: EditorView | null = $state(null);
 
 	onMount(async () => {
-		// MathLive edits the math nodes' LaTeX content; the serializer's mathTypstOf round-trips
-		// it back to typst through MathLive's own typst serializer (see latexToTypst.ts)
-		const { mathlivePlugin, mlarrowHandlers } = await import('$lib/editor/visual/extensions/mathlivebridge/mlplugin');
+		// the math fields read and write each equation's Typst, parsed by Typst's own parser
+		const [{ mathlivePlugin, mlarrowHandlers }, { configureTypst }, { parseTypstMath }] = await Promise.all([
+			import('$lib/editor/visual/extensions/mathlivebridge/mlplugin'),
+			import('mathlive'),
+			import('texpile-typst-syntax-wasm')
+		]);
+		configureTypst({ parse: parseTypstMath });
 
 		const plugins = typstEditorPlugins({
 			mathlivePlugin,
@@ -97,6 +118,7 @@
 			onOpenLink,
 			onSelectComment,
 			onAddComment,
+			sourceAnchor,
 			addCommentLabel
 		});
 
@@ -117,6 +139,7 @@
 				// collabRemotePatch: a collaborator's edit patched in from the shared doc. It is
 				// already IN the shared doc, so reporting it as a local change would echo it back
 				if (onLocalChange && transaction.docChanged && !transaction.getMeta('collabRemotePatch')) onLocalChange(newState.doc);
+				if (transaction.getMeta('collabRemotePatch')) remotePatches++;
 				if (onSelectionChange && (transaction.selectionSet || transaction.docChanged)) onSelectionChange();
 			}
 		});
@@ -133,6 +156,7 @@
 	let mountedPath: string | null = null;
 	/** bumped only on doc SWAPS (see pmCommentsSync); typing maps ranges instead */
 	let docEpoch = $state(0);
+	let remotePatches = $state(0);
 	$effect(() => {
 		const next = localValue;
 		const path = docPath;
@@ -155,9 +179,13 @@
 	// after the swap effect, so the sync reads the newly-installed document
 	syncPmComments({
 		view: () => editorView,
-		threads: () => commentThreads,
-		dialect: 'typ',
+		ranges: () => commentRanges,
+		map: () => sourceMap,
+		text: () => texSource,
+		body: () => bodyRange,
+		parse: () => regionParser,
 		epoch: () => docEpoch,
+		patched: () => remotePatches,
 		selected: () => selectedComment,
 		onPlaced: (lost) => onCommentsPlaced?.(lost),
 		pendingActive: () => commentPendingActive
@@ -179,7 +207,7 @@
      nothing, so the viewport upgrades could not run until after it was already on screen -->
 <main bind:this={editor} class={BUILDING_CLASS}></main>
 
-<ContextMenu dialect="typst" {onAddComment} {onInsertCitation} />
+<ContextMenu dialect="typst" {onAddComment} {sourceAnchor} {onInsertCitation} {onCiteByDoi} />
 
 <style lang="postcss">
 	@reference "../../../../app.css";
@@ -216,7 +244,7 @@
 		font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 		font-size: 0.85em;
 		background: color-mix(in srgb, var(--color-surface-500) 14%, transparent);
-		cursor: default;
+		cursor: pointer;
 	}
 	:global(.TypstEditor .typ-ref-known) {
 		background: color-mix(in srgb, var(--color-primary-500) 16%, transparent);

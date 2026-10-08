@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { tip } from '$lib/components/tooltip.svelte';
 	import { navigate } from '$lib/router.svelte';
-	import { AppWindow, Folder, FolderOpen, Loader2, Settings, Users } from '@lucide/svelte';
-	import { modKey } from '$lib/platform';
+	import { AppWindow, Folder, FolderGit2, FolderOpen, Loader2, Settings, Users } from '@lucide/svelte';
+	import { combo } from '$lib/chrome/shortcutText';
 	import { whatsNewOpen, hasUnseenWhatsNew } from '$lib/whatsNew';
 	import AppFrame from '$lib/chrome/AppFrame.svelte';
 	import RecentFoldersModal from '$lib/modals/start/RecentFoldersModal.svelte';
@@ -14,9 +14,14 @@
 	import { onMount } from 'svelte';
 	import { mark } from '$lib/debug/startupDoctor';
 	import { openFolderInWindow } from '$lib/workspace/openWorkspace';
+	import { warnMissingFolder } from '$lib/workspace/missingFolder';
 	import { openTutorialProject } from '$lib/workspace/starters';
 	import { m } from '$lib/paraglide/messages';
+	import { takePreferencesReopen } from '$lib/stores/dialogStore';
 	import { RecentsFit } from './startRecentsFit.svelte';
+	import GitDialogsHost from '$lib/modals/workspace/GitDialogsHost.svelte';
+	import { startClone } from '$lib/workspace/scm/remote/cloneFlow';
+	import { canClone } from '$lib/workspace/scm/remote/gitClone';
 
 	let busy = $state(false);
 	let error = $state<string | null>(null);
@@ -46,8 +51,7 @@
 	}
 
 	// every entry on this screen is the same row: muted icon, label, optional shortcut on the right
-	const rowClass =
-		'hover:bg-surface-200-800 rounded-base flex w-full items-center gap-2.5 px-2 py-1.5 text-left text-sm disabled:opacity-50';
+	const rowClass = 'hover:preset-tonal rounded-base flex w-full items-center gap-2.5 px-2 py-1.5 text-left text-sm disabled:opacity-50';
 
 	// WorkspaceView is route-split (App.svelte); kick its chunk off as soon as an open begins so
 	// it streams while the folder scans. failures are non-fatal here: App's own loader retries
@@ -81,7 +85,8 @@
 		busy = true;
 		try {
 			// 'elsewhere' means another window already had it and was focused: stay on the start screen
-			if ((await openFolderInWindow(root)) === 'missing') error = m.start_error_open_folder();
+			// not awaited: the prompt is modal on its own, and awaiting it kept the busy spinner up behind it
+			if ((await openFolderInWindow(root)) === 'missing') void warnMissingFolder(root);
 		} catch (e) {
 			error = e instanceof Error ? e.message : m.start_error_open_folder();
 		} finally {
@@ -89,14 +94,39 @@
 		}
 	}
 
+	// the clone dialog stays up until the folder exists, then this opens it like any other
+	function cloneRepository() {
+		preloadWorkspace();
+		error = null;
+		void startClone(async (path) => {
+			busy = true;
+			try {
+				if ((await openFolderInWindow(path)) === 'missing') error = m.start_error_open_folder();
+			} finally {
+				busy = false;
+			}
+		});
+	}
+
 	// NOTE: session restore no longer lives here. The main process remembers the open folders
 	// (settings.openFolders) and pushes a main:open-folder to each restored window at launch;
 	// App.svelte handles it. A StartView-side auto-reopen would make every NEW window reopen
 	// the last folder too.
 
-	onMount(() => mark('start-screen'));
+	onMount(() => {
+		mark('start-screen');
+		if (takePreferencesReopen()) void showPrefs();
+	});
+
+	// Ctrl+O off macOS, where no native menu carries it; a Mac's start screen menu takes Cmd+O first
+	function onKeydown(e: KeyboardEvent) {
+		if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== 'o' || busy) return;
+		e.preventDefault();
+		void openFolder();
+	}
 </script>
 
+<svelte:window onkeydown={onKeydown} />
 <svelte:head><title>Texpile</title></svelte:head>
 
 <!-- my-auto rather than centering the container: a tall list on a short window would otherwise
@@ -116,6 +146,12 @@
 				{#if busy}<Loader2 class="text-muted size-4 shrink-0 animate-spin" />{:else}<FolderOpen class="text-muted size-4 shrink-0" />{/if}
 				<span>{m.start_open_folder()}</span>
 			</button>
+			{#if canClone()}
+				<button class={rowClass} onclick={cloneRepository} disabled={busy}>
+					<FolderGit2 class="text-muted size-4 shrink-0" />
+					<span>{m.start_clone_repository()}</span>
+				</button>
+			{/if}
 			<button class={rowClass} onclick={() => navigate('/session')}>
 				<Users class="text-muted size-4 shrink-0" />
 				<span>{m.start_join_session()}</span>
@@ -124,7 +160,7 @@
 				<button class={rowClass} onclick={openNewWindow}>
 					<AppWindow class="text-muted size-4 shrink-0" />
 					<span>{m.start_new_window()}</span>
-					<span class="text-faint ml-auto shrink-0 pl-4 text-xs">{modKey('Shift', 'N')}</span>
+					<span class="text-faint ml-auto shrink-0 pl-4 text-xs">{combo('N', { shift: true })}</span>
 				</button>
 			{/if}
 			<button class={rowClass} onclick={showPrefs}>
@@ -183,6 +219,9 @@
 		</div>
 	</div>
 </AppFrame>
+
+<!-- the clone dialog, and git's sign-in questions while it runs -->
+<GitDialogsHost />
 
 <RecentFoldersModal bind:open={recentModalOpen} folders={recentFolders.current} onPick={(folder) => openFolder(folder)} />
 

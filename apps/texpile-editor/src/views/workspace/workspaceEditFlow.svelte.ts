@@ -1,16 +1,19 @@
 // The edit-persistence flow around the open document: the debounced save pipeline, the
 // unsaved-edit gate, on-disk change detection, tab activation/closing, and the load-the-
 // active-file effect that ties them together.
+import { addLocalHistory } from '$lib/workspace/localHistory/localHistory.svelte';
 import { untrack } from 'svelte';
+import { noParse, parseOf } from '$lib/editor/visual/parseOrigins';
 import { SavePipeline } from '$lib/workspace/savePipeline.svelte';
 import { ExternalChangeWatcher } from '$lib/workspace/externalChange.svelte';
+import { collabHost } from '$lib/collab/hostStore.svelte';
 import { UnsavedGuard } from '$lib/workspace/unsavedGuard.svelte';
 import { diskChangedSince, recordDiskStamp } from '$lib/workspace/diskStamp';
-import { activeFilePath, activeCompare, isDirty } from '$lib/workspace/workspaceStore';
+import { activeFilePath, activeCompare, isDirty, fileTree } from '$lib/workspace/workspaceStore';
+import { flatFiles } from '$lib/workspace/treeRefresh';
 import { tabs, tabKey, type Tab } from '$lib/workspace/tabs.svelte';
 import { visualDocCache } from '$lib/workspace/visualDocCache';
 import { saveVisualPosition } from '$lib/workspace/visualPositions';
-import { bodyOffsetOf } from '$lib/workspace/latexRoundtrip';
 import { editorViewStore } from '$lib/stores/editorStore';
 import { hasVisualMode, isRawTextKind } from '$lib/workspace/documentBuffer.svelte';
 import { compileConfig } from '$lib/workspace/projectConfigSync.svelte';
@@ -41,7 +44,7 @@ export class WorkspaceEditFlow {
 		const { doc, modes } = d.wsdoc;
 		// debounced autosave + serial write chain live in lib/workspace/savePipeline.svelte.ts
 		this.saver = new SavePipeline({
-			sessionEdit: (path, content) => d.session().edit(path, content),
+			sessionEdit: (path, content, before) => d.session().edit(path, content, before),
 			isGuest: d.guest,
 			autosaveActive: () => this.autosaveActive(),
 			// autosave stands down for this file: writing would recreate a name the user did not ask
@@ -61,6 +64,8 @@ export class WorkspaceEditFlow {
 			// and raises its conflict modal; "keep mine" comes back through saveNow with force
 			raiseConflict: (_path, deliberate) => void this.external.check(deliberate)
 		});
+		// every save keeps a copy in Local History, as VS Code does; a guest has no disk to keep from
+		if (!d.guest()) this.saver.afterWrite = (path, content) => void addLocalHistory(path, content);
 		// on-disk change detection + conflict resolution live in lib/workspace/externalChange.svelte.ts
 		this.external = new ExternalChangeWatcher({
 			getLoadedPath: () => doc.path,
@@ -73,12 +78,19 @@ export class WorkspaceEditFlow {
 			getDiskBaseline: () => doc.diskBaseline,
 			setDiskBaseline: (t) => (doc.diskBaseline = t),
 			getBuffer: () => (hasVisualMode(doc.kind) ? doc.texSource : doc.rawContent),
-			setTexSource: (t) => (doc.texSource = t),
-			setRawContent: (t) => (doc.rawContent = t),
+			setTexSource: (t) => {
+				doc.texSource = t;
+				doc.noteConflicts(t);
+			},
+			setRawContent: (t) => {
+				doc.rawContent = t;
+				doc.noteConflicts(t);
+			},
 			setEol: (e) => (doc.eol = e),
 			rebuildVisual: () => d.wsdoc.rebuildVisualFromSource(),
 			discardQueuedSave: () => this.saver.discard(),
 			sessionEdit: (path, content) => d.session().edit(path, content),
+			takeSessionWrite: (path) => collabHost.takeSessionWrite(path),
 			saveNow: () => doc.save(true) // force: the user chose "keep mine" knowing disk differs
 		});
 		// unsaved-edit gate for both file switches and workspace-level exits
@@ -124,7 +136,7 @@ export class WorkspaceEditFlow {
 					this.cacheOutgoingDoc();
 					const v = editorViewStore.current;
 					if (!v || modes.mode !== 'visual' || !doc.path || d.session().collabFor(doc.path)) return;
-					saveVisualPosition(v, doc.path, doc.texSource, doc.docMeta ? bodyOffsetOf(doc.docMeta) : 0);
+					saveVisualPosition(v, doc.path, doc.texSource, doc.sourceMap);
 				})
 			)
 		);
@@ -174,7 +186,10 @@ export class WorkspaceEditFlow {
 			preamble: doc.docMeta.preamble,
 			postamble: doc.docMeta.postamble,
 			hadDocumentEnv: doc.docMeta.hadDocumentEnv,
-			warnings: []
+			warnings: [],
+			map: doc.sourceMap,
+			// the parse the edited document still answers to, handed on by the editor's own plugin
+			origins: parseOf(doc.lastDoc) ?? noParse()
 		});
 	}
 
@@ -222,6 +237,12 @@ export class WorkspaceEditFlow {
 		tabs.close(key);
 		// a comparison shares the file's tab; only the last real tab for a path ends its history
 		if (!tabs.list.some((t) => samePath(t.path, tab.path))) this.d.wsdoc.modes.history.forget(tab.path);
+	}
+
+	reopenTab(): void {
+		const live = flatFiles(fileTree.current);
+		const tab = tabs.reopen((p) => live.some((f) => samePath(f, p)));
+		if (tab) this.activateTab(tab);
 	}
 
 	/** is this exact tab the focused one: same file AND the same version, or the lack of one */

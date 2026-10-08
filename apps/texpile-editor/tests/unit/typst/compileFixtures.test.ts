@@ -13,6 +13,9 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { CORPUS } from './visualRoundtrip.test';
 import { BLOCKS } from './labelledBlocks.test';
+import { DRAWN_CORPUS } from './drawnChips.test';
+import { ENVIRONMENTS } from './environments.test';
+import { CITATIONS } from './citations.test';
 
 function hasTinymist(): boolean {
 	try {
@@ -50,7 +53,9 @@ const COMPANIONS: Record<string, string | Buffer> = {
 const NOT_STANDALONE: Record<string, string> = {
 	// exercises the parser's handling of a dangling reference; typst rejects one at compile time,
 	// which is the point - the editor must not choke on source that does not yet compile
-	refsLabels: 'cites @intro, a label the fixture deliberately never defines'
+	refsLabels: 'cites @intro, a label the fixture deliberately never defines',
+	// the editor must keep an equation the reader is still typing, which typst cannot compile yet
+	eqUnparsed: 'holds an equation with a syntax error, which the editor keeps as written'
 };
 
 let root = '';
@@ -80,7 +85,7 @@ function compile(name: string, src: string): { ok: true } | { ok: false; err: st
 }
 
 describe.skipIf(!AVAILABLE)('every fixture is real Typst', () => {
-	for (const [name, src] of Object.entries({ ...CORPUS, ...BLOCKS })) {
+	for (const [name, src] of Object.entries({ ...CORPUS, ...BLOCKS, ...DRAWN_CORPUS, ...ENVIRONMENTS, ...CITATIONS })) {
 		const reason = NOT_STANDALONE[name];
 		it(`${name}${reason ? ` (expected to fail: ${reason})` : ''}`, () => {
 			const result = compile(name, src.endsWith('\n') ? src : `${src}\n`);

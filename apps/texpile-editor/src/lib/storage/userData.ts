@@ -1,6 +1,6 @@
 // texpile:users - the user's own data, one versioned blob: identity (session name, comment
-// author), personal word list, the recent-folders MRU, completion frecency, and the onboarding
-// flags. Renderer-only and personal, which is what separates it from settings.json (machine/app
+// author), personal word list, the recent-folders MRU, completion frecency, and a dismissal
+// flag. Renderer-only and personal, which is what separates it from settings.json (machine/app
 // configuration the MAIN process reads) and texpile:layout (how the window looks).
 //
 // Reactive via one svelte store; frecency is the hot writer here (a write per accepted
@@ -10,7 +10,7 @@ import { box } from '$lib/runes/box.svelte';
 
 export type UserData = {
 	v: 1;
-	/** name shown to peers in shared sessions */
+	/** name shown to peers in shared sessions; the color beside it is derived from it */
 	collabName: string;
 	/** name put on review comments; blank falls back to the repo's git user.name */
 	commentAuthor: string;
@@ -20,8 +20,9 @@ export type UserData = {
 	recentFolders: string[];
 	/** completion frecency: label -> { s: decayed accept score, t: last accept ms epoch } */
 	completionUsage: Record<string, { s: number; t: number }>;
-	onboardingCompleted: boolean;
-	tourCompleted: boolean;
+	/** the symbol picker's picks by id, most recent first, one list per language */
+	recentTypstSymbols: string[];
+	recentLatexSymbols: string[];
 	advancedWarningDismissed: boolean;
 };
 
@@ -35,33 +36,45 @@ const DEFAULTS: UserData = {
 	dictionary: [],
 	recentFolders: [],
 	completionUsage: {},
-	onboardingCompleted: false,
-	tourCompleted: false,
+	recentTypstSymbols: [],
+	recentLatexSymbols: [],
 	advancedWarningDismissed: false
 };
 
-function read(): UserData {
-	if (typeof localStorage === 'undefined') return { ...DEFAULTS };
+function stringsOf(list: unknown): string[] {
+	return Array.isArray(list) ? list.filter((s): s is string => typeof s === 'string') : [];
+}
+
+function read(fallback: UserData = DEFAULTS): UserData {
+	if (typeof localStorage === 'undefined') return { ...fallback };
 	try {
 		const raw = JSON.parse(localStorage.getItem(KEY) || 'null') as Partial<UserData> | null;
 		if (raw && raw.v === 1) {
 			const merged = { ...DEFAULTS, ...raw, v: 1 as const };
 			// cap on read as well as write: a hand-edited entry must not render an unbounded list
 			merged.recentFolders = merged.recentFolders.filter((p): p is string => typeof p === 'string').slice(0, MAX_RECENT);
+			merged.recentTypstSymbols = stringsOf(merged.recentTypstSymbols);
+			merged.recentLatexSymbols = stringsOf(merged.recentLatexSymbols);
 			return merged;
 		}
 	} catch {
 		/* corrupted: defaults */
 	}
-	return { ...DEFAULTS };
+	return { ...fallback };
 }
 
 /** reactive user data, hydrated synchronously at module load. */
 export const userData = box<UserData>(read());
 
+// every window keeps its own copy of the one blob they all write
+if (typeof window !== 'undefined')
+	window.addEventListener('storage', (e) => {
+		if (e.key === KEY) userData.current = read(userData.current);
+	});
+
 /** merge a partial update and persist it. */
 export function updateUserData(partial: Partial<Omit<UserData, 'v'>>): void {
-	const next = { ...userData.current, ...partial, v: 1 as const };
+	const next = { ...read(userData.current), ...partial, v: 1 as const };
 	userData.current = next;
 	if (typeof localStorage === 'undefined') return;
 	try {
@@ -73,6 +86,12 @@ export function updateUserData(partial: Partial<Omit<UserData, 'v'>>): void {
 
 /** move `path` to the front of the recents MRU. */
 export function addRecentFolder(path: string): void {
-	const list = userData.current.recentFolders;
+	const list = read(userData.current).recentFolders;
 	updateUserData({ recentFolders: [path, ...list.filter((p) => p !== path)].slice(0, MAX_RECENT) });
+}
+
+/** drop `path` from the recents MRU (a folder that was moved or deleted). */
+export function removeRecentFolder(path: string): void {
+	const list = read(userData.current).recentFolders;
+	if (list.includes(path)) updateUserData({ recentFolders: list.filter((p) => p !== path) });
 }

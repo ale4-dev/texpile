@@ -139,11 +139,11 @@
 
 {#if zoteroPicker.open}
 	<div
-		class="app-scrim fixed inset-0 z-1300 flex items-start justify-center bg-black/40 p-4 pt-[8vh]"
+		class="app-scrim fixed inset-0 z-1300 flex items-start justify-center bg-black/40 p-4 [--scrim-top:8vh]"
 		role="presentation"
 		onmousedown={(e) => e.target === e.currentTarget && zoteroPicker.hide()}
 	>
-		<div class="card bg-surface-50-950 border-surface-300-700 flex max-h-[70vh] w-full max-w-xl flex-col overflow-hidden border shadow-2xl">
+		<div class="card bg-surface-50-950 border-surface-300-700 flex max-h-[70vh] w-full max-w-xl flex-col overflow-clip border shadow-2xl">
 			<Combobox
 				class="flex min-h-0 w-full flex-col"
 				{collection}
@@ -171,7 +171,7 @@
 				{#if selected.size > 0}
 					<div class="border-surface-200-800 flex flex-wrap gap-1.5 border-b px-3 py-2">
 						{#each [...selected.values()] as hit (hit.citekey)}
-							<span class="preset-tonal flex max-w-60 items-center gap-1 rounded-base px-1.5 py-0.5 text-xs">
+							<span class="preset-tonal rounded-base flex max-w-60 items-center gap-1 px-1.5 py-0.5 text-xs">
 								<span class="truncate">{hit.title || hit.citekey}</span>
 								<button
 									class="hover:text-error-ink shrink-0"
@@ -191,7 +191,7 @@
 						{searched && query.trim() ? m.zotero_dialog_empty() : m.zotero_dialog_type_hint()}
 					</div>
 				{:else}
-					<Combobox.Content class="min-h-0 overflow-y-auto border-none bg-transparent p-1.5">
+					<Combobox.Content class="min-h-0 [scrollbar-gutter:stable] overflow-y-auto border-none bg-transparent p-1.5">
 						{#each shown as hit, i (hit.citekey)}
 							{@const header = headerOf(i)}
 							{#if header}
@@ -215,8 +215,10 @@
 				{/if}
 
 				<div class="border-surface-200-800 text-muted flex items-center gap-3 border-t px-3 py-1.5 text-xs">
-					<span><Kbd cap keys="enter" /> {m.zotero_dialog_hint_toggle()}</span>
-					<span><Kbd cap keys="esc" /> {m.palette_hint_close()}</span>
+					<span class="flex items-center gap-1"
+						><Kbd cap keys="enter" /> <span class="cap-center">{m.zotero_dialog_hint_toggle()}</span></span
+					>
+					<span class="flex items-center gap-1"><Kbd cap keys="esc" /> <span class="cap-center">{m.palette_hint_close()}</span></span>
 					<span class="flex-1"></span>
 					<button class="btn btn-xs preset-filled-primary-500" disabled={selected.size === 0} onclick={insert}>
 						{m.zotero_dialog_insert()}{selected.size ? ` (${selected.size})` : ''}

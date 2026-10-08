@@ -1,32 +1,21 @@
 ---
 nav: Typst
-description: Install tinymist so Texpile can compile Typst: winget on Windows, Homebrew on macOS, and the installer script on Linux.
-blurb: One program, tinymist.
+description: Install tinymist so Texpile can compile Typst, in one click from inside Texpile, or yourself with winget on Windows, Homebrew on macOS, and the installer script on Linux.
+blurb: tinymist. Texpile can install it for you.
 icon: type
 order: 2
 ---
 
 # Typst
 
-Typst needs one program, tinymist. It compiles the document and provides completion, hover, and the errors shown as you type. You do not need to install typst as well.
+Texpile compiles and previews Typst with tinymist. You do not need the typst program itself.
 
-- [Windows](windows.md)
-- [macOS](macos.md)
-- [Linux](linux.md)
+## From Texpile
 
-> [!NOTE]
-> tinymist is a separate project. Every command on these pages installs from that project's own releases or from a third-party package repository, none of which Texpile controls. Check that a command and where it points look right to you before running it.
+Open any `.typ` file and click **Set Up Typst** in the bar above it.
 
-## Check it worked
+![The bar over a Typst file saying tinymist is not installed, with a Set Up Typst button](../../../landing/src/lib/assets/showcase/docs/app/typst-missing-bar.png)
 
-This prints tinymist's own version and the Typst version it compiles with:
+## Yourself
 
-```bash
-tinymist --version
-```
-
-> [!NOTE]
-> Every route puts tinymist on your PATH, and Texpile only looks for programs when it starts. So a terminal or a copy of Texpile that was already open will not see it until you close and reopen it. Preferences › Toolchain lists every program Texpile runs and whether it was found.
-
-[Back to installation](../README.md)
-[Compiling, in full](../../latex/compiling.md)
+On [Windows](windows.md), [macOS](macos.md), or [Linux](linux.md).

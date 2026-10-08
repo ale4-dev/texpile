@@ -2,6 +2,7 @@
 	// Grid placement + drag-resize around BottomDock. Stays mounted while hidden so the shells
 	// survive; shrunk it sits under the editor column so the preview keeps full height.
 	import BottomDock from './BottomDock.svelte';
+	import type { DockView } from './dockView';
 	import type { CommentMessage, CommentThread } from '$lib/comments/log';
 	import { m } from '$lib/paraglide/messages';
 
@@ -13,7 +14,7 @@
 		cwd: string;
 		pdfPaneOpen: boolean;
 		terminalEnabled?: boolean;
-		view: 'terminal' | 'problems' | 'comments';
+		view: DockView;
 		dock?: BottomDock;
 		onStartResize: (e: MouseEvent) => void;
 		onResizeByKey: (e: KeyboardEvent) => void;
@@ -32,14 +33,12 @@
 		commentFilesPresent?: Set<string> | null;
 		commentSelected?: string | null;
 		onCommentOpen?: (thread: CommentThread) => void;
-		onCommentReply?: (thread: CommentThread, body: string) => void;
+		onCommentReply?: (thread: CommentThread, body: string) => Promise<string | null> | void;
 		onCommentResolve?: (thread: CommentThread, resolved: boolean) => void;
-		onCommentDelete?: (thread: CommentThread) => void;
 		onCommentEditMessage?: (message: CommentMessage, body: string) => void;
 		onCommentDeleteMessage?: (thread: CommentThread, message: CommentMessage) => void;
-		commentPending?: { quote: string } | null;
-		onCommentSubmitPending?: (body: string) => void;
-		onCommentCancelPending?: () => void;
+		commentBeside?: Set<string>;
+		onCommentAttach?: (thread: CommentThread) => void;
 	};
 	let {
 		visible,
@@ -66,12 +65,10 @@
 		onCommentOpen,
 		onCommentReply,
 		onCommentResolve,
-		onCommentDelete,
 		onCommentEditMessage,
 		onCommentDeleteMessage,
-		commentPending = null,
-		onCommentSubmitPending,
-		onCommentCancelPending
+		commentBeside = new Set<string>(),
+		onCommentAttach
 	}: Props = $props();
 </script>
 
@@ -113,11 +110,9 @@
 		{onCommentOpen}
 		{onCommentReply}
 		{onCommentResolve}
-		{onCommentDelete}
 		{onCommentEditMessage}
 		{onCommentDeleteMessage}
-		{commentPending}
-		{onCommentSubmitPending}
-		{onCommentCancelPending}
+		{commentBeside}
+		{onCommentAttach}
 	/>
 </section>

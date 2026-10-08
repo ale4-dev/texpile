@@ -3,10 +3,16 @@ import { app, ipcMain } from 'electron';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as typstService from '../typstService';
-import * as toolchain from '../toolchain';
+import { withPathDirs } from '../shell/pathDirs';
+import { CWD_LOOKUP_OFF } from '../shell/findProgram';
 import { shellEnvReady } from '../shell/shellEnv';
+import { loginShellStart } from '../shell/loginShellStart';
+import { toolDirsInFront } from '../shell/toolDirs';
+import { killTree } from '../shell/killTree';
+import { windowsPtyFor } from '../shell/windowsPty';
 import { timeSync } from '../startupStats';
 
 // node-pty is a native module: if it isn't built for this Electron ABI the require throws,
@@ -21,6 +27,7 @@ try {
 	console.error('node-pty unavailable, run `pnpm electron:rebuild`:', e instanceof Error ? e.message : e);
 }
 const ptys = new Map<string, PtyProcess>();
+const windowsPty = windowsPtyFor(process.platform, os.release());
 const execFileP = promisify(execFile);
 
 /** pids of the shell's direct children: the foreground job a Stop should end */
@@ -43,24 +50,6 @@ async function childPids(pid: number): Promise<number[]> {
 	}
 }
 
-/** a job and everything it spawned */
-function killTree(pid: number): void {
-	if (process.platform === 'win32') {
-		execFile('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true }, () => {});
-		return;
-	}
-	// an interactive shell gives each job its own process group, so the group is the tree
-	try {
-		process.kill(-pid, 'SIGTERM');
-	} catch {
-		try {
-			process.kill(pid, 'SIGTERM');
-		} catch {
-			/* already gone */
-		}
-	}
-}
-
 function defaultShell(): string {
 	if (process.platform === 'win32') return process.env.COMSPEC || 'powershell.exe';
 	// Finder-launched apps may lack SHELL, so fall back to the platform default
@@ -77,16 +66,16 @@ function defaultShell(): string {
  *
  * Nothing else needs adding: the user's own installs are on PATH, and shellEnvReady() has already
  * recovered the login-shell PATH this process was launched without.
+ *
+ * LAST on PATH, as resolveTinymist tries it last: a tinymist of the user's own must compile what
+ * it also serves intellisense for. Added even before it exists, so a terminal opened before the
+ * one-click install finds the copy the install puts there.
  */
 function terminalEnv(): NodeJS.ProcessEnv {
-	const dirs: string[] = [];
-	try {
-		const managed = typstService.managedTinymistPath(app.getPath('userData'));
-		if (fs.existsSync(managed)) dirs.push(path.dirname(managed));
-	} catch {
-		// an unreadable userData dir must never stop a terminal from opening
-	}
-	return toolchain.withPathDirs(process.env, dirs);
+	const env = withPathDirs(process.env, [path.dirname(typstService.managedTinymistPath(app.getPath('userData')))], true);
+	// a command typed or set for the project may name a script in its folder, which cmd finds there
+	delete env[CWD_LOOKUP_OFF];
+	return env;
 }
 
 type TerminalSpawnOpts = {
@@ -120,15 +109,12 @@ export function registerTerminalIpc(): void {
 		// (cmd wants `&`, everything else `;`)
 		const shellPath = defaultShell();
 		const shell = shellPath.split(/[\\/]/).pop() ?? shellPath;
-		if (ptys.has(id)) return { ok: true, shell };
+		if (ptys.has(id)) return { ok: true, shell, windowsPty };
 		let proc: PtyProcess;
 		try {
-			// macOS: login shell, so /etc/zprofile runs path_helper and picks up /etc/paths.d
-			// (MacTeX registers /Library/TeX/texbin there). A Finder-launched app only has
-			// launchd's bare PATH, and a non-login zsh never repairs it - Terminal.app,
-			// iTerm and VS Code all spawn login shells for the same reason.
+			const start = loginShellStart(shellPath, toolDirsInFront(), path.join(app.getPath('userData'), 'terminal-shell'));
 			proc = timeSync('spawn terminal shell', () =>
-				pty.spawn(shellPath, process.platform === 'darwin' ? ['-l'] : [], {
+				pty.spawn(shellPath, start.args, {
 					name: 'xterm-color',
 					cwd: cwd && fs.existsSync(cwd) ? cwd : app.getPath('home'),
 					cols: Math.max(1, cols! | 0) || 80,
@@ -136,13 +122,28 @@ export function registerTerminalIpc(): void {
 					// the shell must be able to find the tools Preferences says are installed; without this a
 					// configured tinymist works for intellisense and for the Toolchain tab, then fails at the
 					// compile command with "not recognized" (see withPathDirs)
-					env: terminalEnv() as Record<string, string>
+					env: { ...(terminalEnv() as Record<string, string>), ...start.env }
 				})
 			);
 		} catch (err) {
 			return { ok: false, error: String(err instanceof Error ? err.message : err) };
 		}
 		const wc = e.sender;
+		// a closing or reloading window runs none of its own teardown, so its shells end here
+		function endWithWindow(): void {
+			if (id == null || ptys.get(id) !== proc) return;
+			ptys.delete(id);
+			try {
+				proc.kill();
+			} catch {
+				/* already gone */
+			}
+		}
+		function endOnReload(details: { isMainFrame: boolean; isSameDocument: boolean }): void {
+			if (details.isMainFrame && !details.isSameDocument) endWithWindow();
+		}
+		wc.once('destroyed', endWithWindow);
+		wc.on('did-start-navigation', endOnReload);
 		// coalesce pty output: one renderer message per ~16ms tick (or 64KB burst) instead of
 		// one per chunk -- a fast compile can emit thousands of tiny chunks per second
 		let buf = '';
@@ -163,12 +164,14 @@ export function registerTerminalIpc(): void {
 			else if (!flushTimer) flushTimer = setTimeout(flush, 16);
 		});
 		proc.onExit(({ exitCode }) => {
+			wc.removeListener('destroyed', endWithWindow);
+			wc.removeListener('did-start-navigation', endOnReload);
 			ptys.delete(id);
 			flush(); // pending output must land before the exit message, or the tail is lost
 			if (!wc.isDestroyed()) wc.send('terminal:exit', { id, code: exitCode });
 		});
 		ptys.set(id, proc);
-		return { ok: true, shell };
+		return { ok: true, shell, windowsPty };
 	});
 
 	ipcMain.on('terminal:input', (_e, { id, data } = {} as { id?: string; data?: string }) => {

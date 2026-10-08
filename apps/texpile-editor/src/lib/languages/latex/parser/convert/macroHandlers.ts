@@ -15,7 +15,7 @@ import {
 } from '../builders';
 import { convertNodesToInline } from './inlineConvert';
 import { plainArgText } from './plainArgText';
-import { nodeRawSource } from './origCapture';
+import { nodeRawSpan, rawTextNode } from './origCapture';
 
 export type MacroHandler = (macro: Macro, ctx: ConversionContext) => PmNode[] | null;
 
@@ -30,7 +30,10 @@ export const macroHandlers: Record<string, MacroHandler> = {
 	texpileItemLabel: (macro, ctx) => {
 		const content = getMacroFirstArg(macro);
 		const newCtx = { ...ctx, marks: [...ctx.marks, { type: 'strong' }, { type: 'item_label' }] };
-		return convertNodesToInline(content, newCtx);
+		// math has no text for the mark to ride on, so it wears it: a label of math alone (\item[$\star$]) went back as body
+		return convertNodesToInline(content, newCtx).map((n) =>
+			n.type.name === 'inline_math' ? n.mark(n.type.schema.marks.item_label.create().addToSet(n.marks)) : n
+		);
 	},
 
 	textbf: (macro, ctx) => {
@@ -45,7 +48,7 @@ export const macroHandlers: Record<string, MacroHandler> = {
 	},
 	emph: (macro, ctx) => {
 		const content = getMacroFirstArg(macro);
-		const newCtx = { ...ctx, marks: [...ctx.marks, { type: 'em' }] };
+		const newCtx = { ...ctx, marks: [...ctx.marks, { type: 'em', attrs: { cmd: 'emph' } }] };
 		return convertNodesToInline(content, newCtx);
 	},
 	underline: (macro, ctx) => {
@@ -91,13 +94,21 @@ export const macroHandlers: Record<string, MacroHandler> = {
 		const newCtx = { ...ctx, marks: [...ctx.marks, { type: 'textcolor', attrs: { color, model } }] };
 		return convertNodesToInline(content, newCtx);
 	},
+	// no color of its own: the document's \sethlcolor applies, and the serializer writes it bare again
+	hl: (macro, ctx) => {
+		if (!macro.args?.length) return null;
+		const newCtx = { ...ctx, marks: [...ctx.marks, { type: 'highlight', attrs: { color: null } }] };
+		return convertNodesToInline(getMacroFirstArg(macro), newCtx);
+	},
 	colorbox: (macro, ctx) => {
 		if (!macro.args || macro.args.length < 2) return null;
 		const mandatoryArgs = macro.args.filter((arg) => arg.openMark === '{');
 		if (mandatoryArgs.length < 2) return null;
 		const color = getTextContent(mandatoryArgs[0].content);
 		const content = mandatoryArgs[1].content;
-		const newCtx = { ...ctx, marks: [...ctx.marks, { type: 'highlight', attrs: { color } }] };
+		const modelArg = macro.args.find((arg) => arg.openMark === '[');
+		const model = modelArg ? printRaw(modelArg.content) : null;
+		const newCtx = { ...ctx, marks: [...ctx.marks, { type: 'highlight', attrs: { color, cmd: 'colorbox', model } }] };
 		return convertNodesToInline(content, newCtx);
 	},
 
@@ -108,7 +119,7 @@ export const macroHandlers: Record<string, MacroHandler> = {
 	},
 	href: (macro, ctx) => {
 		const mandatoryArgs = macro.args?.filter((arg) => arg.openMark === '{') || [];
-		const href = mandatoryArgs[0] ? getTextContent(mandatoryArgs[0].content) : '';
+		const href = mandatoryArgs[0] ? getTextContent(mandatoryArgs[0].content).replace(/\\([%#])/g, '$1') : '';
 		const marks = [...ctx.marks, { type: 'link', attrs: { href, title: null } }];
 		// the text is ordinary inline LaTeX: converted like any other, so \_ comes back as \_
 		// rather than growing an escape on every save
@@ -128,8 +139,8 @@ export const macroHandlers: Record<string, MacroHandler> = {
 	// inside \textbf{...} (\textbf{90.1\%}); without this the enclosing mark silently dropped
 	// for exactly that token.
 	// the logos stay chips: as plain text they came back as the words, not the logos
-	LaTeX: (macro, ctx) => [markChip(buildNode('inline_latex', null, [textNode(nodeRawSource(macro) ?? printRaw(macro))]), ctx)],
-	TeX: (macro, ctx) => [markChip(buildNode('inline_latex', null, [textNode(nodeRawSource(macro) ?? printRaw(macro))]), ctx)],
+	LaTeX: (macro, ctx) => [markChip(buildNode('inline_latex', null, [rawTextNode(nodeRawSpan(macro), printRaw(macro))]), ctx)],
+	TeX: (macro, ctx) => [markChip(buildNode('inline_latex', null, [rawTextNode(nodeRawSpan(macro), printRaw(macro))]), ctx)],
 	// suffix keeps \\* and \\[2ex] as written; command tells \newline from \\ (in a p{} cell
 	// \\ ends the row, \newline does not)
 	'\\': (macro) => [buildNode('hard_break', { lineBreak: true, suffix: macro.args?.length ? printRaw(macro.args) : '' })],
@@ -142,8 +153,12 @@ export const macroHandlers: Record<string, MacroHandler> = {
 	'{': (_m, ctx) => textNodes('{', ctx.marks.length > 0 ? ctx.marks : null),
 	'}': (_m, ctx) => textNodes('}', ctx.marks.length > 0 ? ctx.marks : null),
 	textbackslash: (_m, ctx) => textNodes('\\', ctx.marks.length > 0 ? ctx.marks : null),
-	// no '~' entry: a tie is a STRING node in unified-latex, never a macro, so one here could never
-	// fire. it is converted with the other ligatures, in latexLigaturesToUnicode.
+	textasciitilde: (_m, ctx) => textNodes('~', ctx.marks.length > 0 ? ctx.marks : null),
+	textasciicircum: (_m, ctx) => textNodes('^', ctx.marks.length > 0 ? ctx.marks : null),
+	// what the serializer writes for a typed < > |, which the default font encoding draws as ¡ ¿ and a dash
+	textless: (_m, ctx) => textNodes('<', ctx.marks.length > 0 ? ctx.marks : null),
+	textgreater: (_m, ctx) => textNodes('>', ctx.marks.length > 0 ? ctx.marks : null),
+	textbar: (_m, ctx) => textNodes('|', ctx.marks.length > 0 ? ctx.marks : null),
 	ldots: (_m, ctx) => textNodes('…', ctx.marks.length > 0 ? ctx.marks : null),
 	dots: (_m, ctx) => textNodes('…', ctx.marks.length > 0 ? ctx.marks : null),
 	textendash: (_m, ctx) => textNodes('–', ctx.marks.length > 0 ? ctx.marks : null),
@@ -285,6 +300,8 @@ export function createIncludeDoc(macro: Macro): PmNode[] | null {
 }
 
 export function createCitation(macro: Macro): PmNode[] {
+	// a chip has no word for the star (\citet* lists every author), so a starred call stays as written
+	if (macroHasStar(macro)) return [buildNode('inline_latex', null, [rawTextNode(nodeRawSpan(macro), printRaw(macro))])];
 	const optionalArgs = macro.args?.filter((arg) => arg.openMark === '[') || [];
 	const mandatoryArgs = macro.args?.filter((arg) => arg.openMark === '{') || [];
 
@@ -308,6 +325,8 @@ export function createCitation(macro: Macro): PmNode[] {
 export type EnvHandler = (env: Environment, ctx: ConversionContext, options: ConversionOptions) => PmNode[];
 
 export function createRef(macro: Macro, refType: string | null): PmNode[] {
+	// \ref* prints the number without a link, which the chip has no word for
+	if (macroHasStar(macro)) return [buildNode('inline_latex', null, [rawTextNode(nodeRawSpan(macro), printRaw(macro))])];
 	const mandatoryArgs = macro.args?.filter((arg) => arg.openMark === '{') || [];
 	// a name with structure in it keeps its source, the way \label's does: flattening dropped the
 	// delimiters from \ref{Remark:$ethf$} and saved a reference that no longer matched its label

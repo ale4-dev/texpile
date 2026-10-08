@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { Popover, Portal } from '@skeletonlabs/skeleton-svelte';
+	import { inEditorPane } from '$lib/editor/visual/editorPanePositioning';
 	import type { Node as PMNode } from 'prosemirror-model';
 	import { referenceStore } from '$lib/stores/editorStore';
 	import { splitCitationKeys } from './citationKeys';
-	import { citationText } from './citationText';
+	import { citationText } from '$lib/editor/visual/extensions/citation/citationText';
 	import { bibAuthorShort } from '$lib/languages/bib/biblatex';
 	import CitationEditForm from './CitationEditForm.svelte';
 
@@ -65,7 +66,7 @@
 <Popover
 	open={dropdownOpen}
 	onOpenChange={(e) => (dropdownOpen = e.open)}
-	positioning={{ placement: 'bottom-start', offset: { mainAxis: 4 } }}
+	positioning={inEditorPane({ placement: 'bottom-start', offset: { mainAxis: 4 } })}
 >
 	<Popover.Trigger class="inline-flex cursor-pointer items-center" style="font-size: 1rem;">
 		<span
@@ -87,7 +88,7 @@
 	<Portal>
 		<Popover.Positioner class="z-floating-ui">
 			<Popover.Content
-				class="card bg-surface-50-950 border-surface-300-700 z-[200] min-w-[300px] max-w-[min(90vw,28rem)] border p-4 shadow-lg"
+				class="card bg-surface-50-950 border-surface-300-700 z-[200] max-w-[min(90vw,28rem)] min-w-[300px] border p-4 shadow-lg"
 			>
 				<!-- mounted on open only: the form lists the whole bibliography, and a survey with
 				     hundreds of citations kept hundreds of copies of it in the DOM -->

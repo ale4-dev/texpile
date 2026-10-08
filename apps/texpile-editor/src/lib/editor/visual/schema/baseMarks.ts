@@ -36,6 +36,10 @@ export const baseMarks = {
 	} as MarkSpec,
 
 	em: {
+		// which command wrote it, when the file said \emph rather than \textit. They are not the same
+		// thing to LaTeX (\emph toggles inside italic text) and rewriting one as the other churns the
+		// file on the first edit anywhere in the block
+		attrs: { cmd: { default: null } },
 		parseDOM: [
 			{ tag: 'i' },
 			{ tag: 'em' },
@@ -89,6 +93,8 @@ export const baseMarks = {
 		}
 	} as MarkSpec,
 
+	// colors come only from the editor's own spans: a web page's text color or a spreadsheet's cell
+	// fill is how that app drew it, not part of the writing
 	textcolor: {
 		attrs: {
 			color: { default: 'black' },
@@ -99,46 +105,41 @@ export const baseMarks = {
 			{
 				tag: 'span[data-textcolor]',
 				getAttrs(dom: HTMLElement) {
-					return { color: dom.getAttribute('data-textcolor') || 'black' };
-				}
-			},
-			{
-				style: 'color',
-				getAttrs(value: string) {
-					return { color: value };
+					return { color: dom.getAttribute('data-textcolor') || 'black', model: dom.getAttribute('data-color-model') };
 				}
 			}
 		],
 		toDOM(node) {
-			return ['span', { 'data-textcolor': node.attrs.color, style: `color: ${node.attrs.color}` }, 0];
+			const { color, model } = node.attrs;
+			return ['span', { 'data-textcolor': color, ...(model ? { 'data-color-model': model } : {}), style: `color: ${color}` }, 0];
 		}
 	} as MarkSpec,
 
 	highlight: {
 		attrs: {
-			color: { default: 'yellow' }
+			// null: the color the document sets itself (a bare \hl in LaTeX)
+			color: { default: 'yellow' },
+			// 'colorbox' when LaTeX's \colorbox wrote it, a box rather than soul's \hl, and its color model
+			cmd: { default: null },
+			model: { default: null }
 		},
 		parseDOM: [
 			{
 				tag: 'span[data-highlight]',
 				getAttrs(dom: HTMLElement) {
-					return { color: dom.getAttribute('data-highlight') || 'yellow' };
-				}
-			},
-			{
-				style: 'background-color',
-				getAttrs(value: string) {
-					return { color: value };
+					return { color: dom.getAttribute('data-highlight') || null };
 				}
 			}
 		],
 		toDOM(node) {
-			return ['span', { 'data-highlight': node.attrs.color, style: `background-color: ${node.attrs.color}; padding: 0 2px;` }, 0];
+			const color = node.attrs.color;
+			return ['span', { 'data-highlight': color ?? '', style: `background-color: ${color ?? 'yellow'}; padding: 0 2px;` }, 0];
 		}
 	} as MarkSpec,
 
 	code: {
-		parseDOM: [{ tag: 'code' }],
+		// an inline raw chip is a <code> too, and mark rules are tried before node rules
+		parseDOM: [{ tag: 'code', getAttrs: (dom: HTMLElement) => (dom.classList.contains('inline-latex') ? false : null) }],
 		toDOM() {
 			return codeDom;
 		}

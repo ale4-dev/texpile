@@ -5,8 +5,14 @@
 //
 // A tab is now a file OR a comparison of that file against a version, so the store is keyed by
 // tabKey rather than by path. Everything below is the same behaviour expressed through that key.
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { tabs, tabKey } from '$lib/workspace/tabs.svelte';
+
+const platform = vi.hoisted(() => ({ isMac: false, isWindows: false }));
+vi.mock('$lib/platform', () => platform);
+afterEach(() => {
+	platform.isWindows = false;
+});
 
 /** open a file and edit it: the way a tab becomes permanent */
 function openAndEdit(path: string) {
@@ -19,7 +25,8 @@ const paths = () => tabs.list.map((t) => t.path);
 describe('tabs store', () => {
 	beforeEach(() => tabs.bind(null, false));
 
-	it('dedupes opens case-insensitively and cycles in order', () => {
+	it('dedupes opens case-insensitively on Windows and cycles in order', () => {
+		platform.isWindows = true;
 		openAndEdit('C:\\p\\main.tex');
 		openAndEdit('C:\\p\\intro.tex');
 		tabs.noteOpened('C:\\P\\MAIN.TEX'); // same file, Windows casing
@@ -128,6 +135,16 @@ describe('comparison tabs', () => {
 		expect(tabs.list.filter((t) => t.compare)).toHaveLength(2);
 	});
 
+	it('turns a comparison to another version in its own slot, as picking another copy does', () => {
+		openAndEdit('C:\\p\\main.tex');
+		const k1 = tabs.openCompare('C:\\p\\main.tex', V1);
+		tabs.keep(k1);
+		openAndEdit('C:\\p\\other.tex');
+		const k2 = tabs.replaceCompare('C:\\p\\main.tex', V1.hash, V2);
+		expect(tabs.list.map((t) => t.compare?.hash ?? t.path)).toEqual(['C:\\p\\main.tex', 'bbb222', 'C:\\p\\other.tex']);
+		expect(tabs.find(k2)?.compare).toEqual(V2);
+	});
+
 	it('re-opening the same comparison focuses it instead of duplicating', () => {
 		openAndEdit('C:\\p\\main.tex');
 		tabs.openCompare('C:\\p\\main.tex', V1);
@@ -143,8 +160,8 @@ describe('comparison tabs', () => {
 		expect(paths()).toEqual(['C:\\p\\other.tex']);
 	});
 
-	it('a comparison never reaches the persisted set', () => {
-		// paths is what persist() writes and what the MCP surface reports: files only
+	it('a comparison is not listed among the open documents', () => {
+		// paths is what the MCP surface reports: files only
 		openAndEdit('C:\\p\\main.tex');
 		tabs.openCompare('C:\\p\\main.tex', V1);
 		expect(tabs.paths).toEqual(['C:\\p\\main.tex']);
@@ -158,5 +175,21 @@ describe('comparison tabs', () => {
 		expect(moved.compare).toEqual(V1);
 		// the preview slot holds a KEY built from the path, so it has to have been re-derived
 		expect(tabs.isPreview(tabKey(moved))).toBe(true);
+	});
+});
+
+describe('reopening closed tabs', () => {
+	beforeEach(() => tabs.bind(null, false));
+
+	it('brings back the last closed tab first, skipping one that is open again or gone', () => {
+		for (const f of ['a.tex', 'b.tex', 'c.tex']) openAndEdit(`C:\\p\\${f}`);
+		tabs.close('C:\\p\\a.tex');
+		tabs.close('C:\\p\\c.tex');
+		tabs.close('C:\\p\\b.tex');
+		openAndEdit('C:\\p\\b.tex');
+		expect(tabs.reopen((p) => !p.endsWith('c.tex'))?.path).toBe('C:\\p\\a.tex');
+		expect(paths()).toEqual(['C:\\p\\b.tex', 'C:\\p\\a.tex']);
+		expect(tabs.isPreview('C:\\p\\a.tex')).toBe(false);
+		expect(tabs.reopen(() => true)).toBeNull();
 	});
 });

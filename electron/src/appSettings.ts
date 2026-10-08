@@ -8,17 +8,24 @@
 import { app, ipcMain } from 'electron';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { setToolDirs } from './shell/toolDirs';
+import { upgradeAgentSettings } from './ai/agentSettingsUpgrade';
 
 const DEFAULT_SETTINGS = {
 	v: 1,
 	reopenLastFolder: true,
 	autosave: true, // off = manual save, warn before switching files
 	spellcheck: false,
+	englishVariant: '', // the English spelling and grammar follow: 'american', 'british', ...; '' = the system's own
+	grammarRules: {} as Record<string, boolean>, // grammar rules turned on or off by hand, over the defaults
 	checkForUpdates: true,
 	uiZoom: 1, // whole-window zoom factor (webContents.setZoomFactor); the View menu adjusts it
+	transparentWindow: false, // the window's grounds let the blurred desktop through (windowGlass.ts)
 	mathPreview: true, // live math preview tooltip in source mode
 	sourceLineWrap: true, // soft-wrap long lines in Source mode
-	visualMaxWidth: 768, // widest the visual editor's text column may grow, in px
+	visualJustify: true, // paragraphs in the visual editor fill the column edge to edge
+	visualHyphenate: true, // long words may split at line ends in justified text
+	smartPaste: true, // formatting, tables and Markdown from other apps come in converted on paste
 	typstPreviewFollow: false,
 	editorKeymap: 'default', // modal keybindings for the source editor: 'default' | 'vim' | 'emacs'
 	uiLocale: 'en', // UI display language, not the LaTeX document language. Overridden per-read by
@@ -28,18 +35,28 @@ const DEFAULT_SETTINGS = {
 	// default: connecting also requires pasting a config snippet into the client, so defaulting this
 	// on would open a loopback port for everyone while buying nothing until they act anyway.
 	mcpEnabled: false,
-	// Whether a connected client may rewrite the compile command, which is a shell command line and
-	// so amounts to running anything this user can. A separate permission from mcpEnabled, and off
-	// even when that is on; retargeting only the output DIRECTORY does not need it.
-	mcpAllowCompileCommand: false,
 	// 0 = use the channel default (mcp.PORT_DEFAULT / PORT_DEFAULT_DEV). Fixed rather than
 	// ephemeral so a client config keeps working across restarts; overridable for a port clash.
 	mcpPort: 0,
-	openFolders: [] as string[] // folders open across windows; maintained here for session restore
+	// the reader's own command-line agent that Refine may run: 'claude', 'codex', 'agy' or 'custom'; null = none chosen
+	// yet. Kept here and not in a folder's .texpile/config.json, which travels with the folder: a downloaded
+	// project must never pick the program that runs, and no MCP tool writes this file. A run names one of these
+	refineAgents: null as string[] | null,
+	aiAgentCommand: '', // the command line for the 'custom' agent; the prompt goes on its stdin
+	aiAgentModels: {} as Record<string, string>, // each preset's --model, from the list it gives (agentModels.ts); '' = its own default
+	// the agent the panel in the dock talks to over ACP ('' = not chosen yet, a preset, or 'custom'). Here
+	// for the same reason as refineAgents: a project's own config must never pick the program that runs
+	agentPanel: '',
+	agentPanelAgents: null as string[] | null, // the agents the panel's menu offers; null = the installed ones, [] = off
+	agentPanelCommand: '', // the command line when agentPanel is 'custom'; it speaks ACP on stdin and stdout
+	openFolders: [] as string[], // folders open across windows; maintained here for session restore
+	toolDirs: [] as string[], // searched before PATH by every program Texpile starts; see shell/toolDirs.ts
+	checkForNewVersions: true, // fetch co-authors' versions every few minutes while focused (renderer scmAutoCheck)
+	localHistory: true // keep a copy of each file as it is saved (localHistory.ts); the renderer asks before each save
 };
 
 // The UI languages we ship. Anything else, or a failed probe, falls back to English.
-type UiLocale = 'en' | 'de' | 'zh-Hans' | 'zh-Hant';
+type UiLocale = 'en' | 'de' | 'zh-Hans' | 'zh-Hant' | 'pt-BR';
 let cachedLocale: UiLocale | null = null;
 /** first-run UI language from the OS. A stored uiLocale always wins (readSettings' merge order),
  *  so a deliberate choice is never overridden on a later launch. */
@@ -57,6 +74,8 @@ function systemUiLocale(): UiLocale {
 	for (const raw of tags) {
 		const tag = raw.toLowerCase();
 		if (tag.startsWith('de')) return (cachedLocale = 'de');
+		// the only Portuguese we ship, so pt-PT lands here rather than in English
+		if (tag.startsWith('pt')) return (cachedLocale = 'pt-BR');
 		// an explicit script subtag wins over region: zh-Hans-HK is Simplified despite the HK region.
 		// Only when no script is present do TW/HK/MO imply Traditional; everything else is Simplified.
 		if (tag.startsWith('zh')) {
@@ -73,11 +92,16 @@ function settingsFile(): string {
 	return path.join(app.getPath('userData'), 'settings.json');
 }
 
+// settings nothing reads any more: left out of what is read, so the next write drops them from the file
+const RETIRED_SETTINGS = ['setupSeen'];
+
 function storedSettings(): Record<string, unknown> {
 	try {
 		// tolerate a UTF-8 BOM (an externally-edited file): JSON.parse rejects it, and the silent
 		// catch below would then reset EVERY setting to defaults
-		return JSON.parse(fs.readFileSync(settingsFile(), 'utf8').replace(/^\uFEFF/, '')) as Record<string, unknown>;
+		const stored = JSON.parse(fs.readFileSync(settingsFile(), 'utf8').replace(/^\uFEFF/, '')) as Record<string, unknown>;
+		for (const k of RETIRED_SETTINGS) delete stored[k];
+		return upgradeAgentSettings(stored);
 	} catch {
 		return {}; // no file yet (genuine first run) or unreadable: fall back to defaults + detection
 	}
@@ -117,11 +141,16 @@ function replaceSettings(full: Record<string, unknown>): void {
 
 export function registerSettingsIpc(): void {
 	ipcMain.handle('settings:get', () => readSettings());
-	ipcMain.handle('settings:set', (_e, partial: Record<string, unknown>) => writeSettings(partial));
+	ipcMain.handle('settings:set', (_e, partial: Record<string, unknown>) => {
+		const next = writeSettings(partial);
+		if (partial && 'toolDirs' in partial) setToolDirs(next.toolDirs);
+		return next;
+	});
 	// replace the file WHOLE - the migration's write. Merge-writes cannot delete keys, and deleting
 	// keys is most of what a migration does.
 	ipcMain.handle('settings:replace', (_e, full: Record<string, unknown>) => {
 		if (typeof full !== 'object' || full === null || Array.isArray(full)) return;
 		replaceSettings(full);
+		setToolDirs(full.toolDirs);
 	});
 }

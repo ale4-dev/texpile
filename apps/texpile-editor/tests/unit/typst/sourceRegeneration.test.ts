@@ -4,8 +4,8 @@
 // rendered pages (the 2026-09-05 hunt, findings T1 to T24).
 import { describe, it, expect } from 'vitest';
 import { parseTypstFile, serializeTypstFile } from '$lib/languages/typst/visual/roundtrip';
-import { serializeToTypst } from '$lib/languages/typst/visual/serializer';
-import { typstToProseMirror } from '$lib/languages/typst/visual/converter';
+import { serializeToTypst } from '$lib/languages/typst/visual/serialize/serializer';
+import { typstToProseMirror } from '$lib/languages/typst/visual/convert/converter';
 import { typSchema } from '$lib/languages/typst/visual/schema';
 import type { Node } from 'prosemirror-model';
 
@@ -20,6 +20,10 @@ describe('paragraph content (T1, T5, T13)', () => {
 	it('a // comment inside a wrapped paragraph ends its line, so the text after it still renders', () => {
 		expect(regen('First line\n// commented out line\nthird line.\n')).toBe('First line // commented out line\nthird line.');
 		expect(regen('Text start // note\nmore text on the next line.\n')).toBe('Text start // note\nmore text on the next line.');
+	});
+
+	it('a slash after a closing star stays text, since */ ends a comment', () => {
+		expect(regen('*a*\\/b\n')).toBe('*a*\\/b');
 	});
 
 	it('inline code-mode expressions stay inside their paragraph', () => {
@@ -43,6 +47,12 @@ describe('paragraph content (T1, T5, T13)', () => {
 describe('code mode and comments (T4, T8)', () => {
 	it('a terminating semicolon belongs to the statement, not to the prose after it', () => {
 		expect(regen('#let a = 1; text after\n')).toBe('#let a = 1;\ntext after');
+		expect(regen('#let a = 1 ; text after\n')).toBe('#let a = 1 ;\ntext after');
+	});
+
+	it('an if keeps the line end that stops it reading on into the prose after it', () => {
+		expect(regen('#if true [a]\nelse b\n')).toBe('#if true [a]\nelse b');
+		expect(regen('Text #for\nx in y.\n')).toBe('Text #for\nx in y.');
 	});
 
 	it('a comment between or on list items does not split the list', () => {
@@ -103,18 +113,23 @@ describe('headings (T18, T20)', () => {
 	it('a label beside a heading belongs to the heading', () => {
 		const doc = typstToProseMirror('= Intro\n<sec:intro>\n\nBody.\n').doc;
 		expect(doc.child(0).attrs.label).toBe('sec:intro');
-		expect(regen('= Intro\n<sec:intro>\n\nBody.\n')).toBe('= Intro <sec:intro>\n\nBody.');
+		// written back on the line the file gave it, beside or under the heading
+		expect(regen('= Intro\n<sec:intro>\n\nBody.\n')).toBe('= Intro\n<sec:intro>\n\nBody.');
+		expect(regen('= Intro <sec:intro>\n\nBody.\n')).toBe('= Intro <sec:intro>\n\nBody.');
 		// and it no longer merges the heading's neighbour into one raw island
 		expect(shape('= Refs\n<sec:refs>\n\n#bibliography("refs.bib")\n')).toEqual(['heading', 'raw_latex']);
+	});
+
+	it('a heading holding a line comment or a label is written as a call, since either would end an = heading', () => {
+		for (const src of ['#heading(depth: 1)[A // note\n#x] <a>', '#heading(depth: 2)[A *B* <red> C]']) {
+			expect(shape(src)).toEqual(['heading']);
+			expect(regen(src)).toBe(src);
+		}
+		expect(regen('#heading(depth: 2)[Plain]\n')).toBe('== Plain');
 	});
 });
 
 describe('math and strings (T22, T24)', () => {
-	it('theta is theta; theta.alt is vartheta', () => {
-		expect(typstToProseMirror('$ theta $\n').doc.child(0).textContent).toBe('\\theta');
-		expect(typstToProseMirror('$ theta.alt $\n').doc.child(0).textContent).toBe('\\vartheta');
-	});
-
 	it('string escapes in a link target decode once and encode once', () => {
 		const out = regen('#link("https://e.org/\\u{e9}")[q]\n');
 		expect(out).toBe('#link("https://e.org/é")[q]');

@@ -8,7 +8,12 @@
 	import IconRepeat from '@lucide/svelte/icons/repeat';
 	import IconHelpCircle from '@lucide/svelte/icons/help-circle';
 	import IconBookPlus from '@lucide/svelte/icons/book-plus';
+	import IconCircleOff from '@lucide/svelte/icons/circle-off';
 	import { addWordToDocumentDictionary } from '$lib/editor/spellcheck/harper';
+	import { ruleName, SPELLING_RULE } from '$lib/editor/spellcheck/config/grammarRules';
+	import { setGrammarRule } from '$lib/editor/spellcheck/config/spellcheckConfig';
+	import { settings } from '$lib/settings';
+	import { toaster } from '$lib/modals/toaster-svelte';
 	import { diffChars } from 'diff';
 	import { fly } from 'svelte/transition';
 	import { quintOut } from 'svelte/easing';
@@ -22,6 +27,7 @@
 		type: string;
 		replacements: string[];
 		text: string; // the error text itself
+		rule?: string; // the Harper rule that found it
 	};
 
 	type Props = {
@@ -81,8 +87,9 @@
 				adjustedY = 10;
 			}
 
-			boxElement.style.left = `${adjustedX}px`;
-			boxElement.style.top = `${adjustedY}px`;
+			// whole pixels: from a fractional start its icons and labels round to the pixel grid apart
+			boxElement.style.left = `${Math.round(adjustedX)}px`;
+			boxElement.style.top = `${Math.round(adjustedY)}px`;
 		}
 	});
 
@@ -140,6 +147,19 @@
 		} catch (error) {
 			console.error('[Harper] Failed to add word to dictionary:', error);
 		}
+	}
+
+	// a grammar rule can be turned off from here; spelling cannot, since one word would take all of them
+	const offRule = $derived(error.rule && error.rule !== SPELLING_RULE ? error.rule : null);
+
+	function turnOffRule(rule: string) {
+		const before = settings.current.grammarRules?.[rule];
+		setGrammarRule(rule, false);
+		toaster.success({
+			title: m.harper_rule_turned_off({ rule: ruleName(rule) }),
+			action: { label: m.menubar_undo(), onClick: () => setGrammarRule(rule, before) }
+		});
+		onClose();
 	}
 
 	function handleClick(e: MouseEvent) {
@@ -203,7 +223,7 @@
 
 <div
 	bind:this={boxElement}
-	class="card border-surface-300-700 bg-surface-50-950 pointer-events-auto fixed z-[999999] min-w-[200px] max-w-[280px] space-y-1.5 border p-2 shadow-2xl"
+	class="card border-surface-300-700 bg-surface-50-950 pointer-events-auto fixed z-[999999] max-w-[280px] min-w-[200px] space-y-1.5 border p-2 shadow-2xl"
 	onclick={handleClick}
 	onkeydown={handleKeydown}
 	role="dialog"
@@ -227,7 +247,7 @@
 			{:else}
 				<IconHelpCircle size={14} class="text-primary-ink" />
 			{/if}
-			<span class="text-xs font-semibold capitalize opacity-75">
+			<span class="cap-center text-xs font-semibold capitalize opacity-75">
 				{sanitizedType()}
 			</span>
 		</div>
@@ -237,7 +257,7 @@
 	</div>
 
 	<div class="space-y-1.5">
-		<p class="text-xs leading-snug">
+		<p class="text-xs [overflow-wrap:anywhere]">
 			{error.shortmsg || error.msg}
 		</p>
 
@@ -245,11 +265,11 @@
 			{#if error.text}
 				{@const diffParts = getDiffParts(error.text, error.replacements[0])}
 				<button
-					class="bg-surface-100-900 hover:preset-tonal border-surface-300-700 w-full cursor-pointer rounded-base border px-2 py-1.5 text-left transition-colors"
+					class="bg-surface-100-900 hover:preset-tonal border-surface-300-700 rounded-base w-full cursor-pointer border px-2 py-1.5 text-left transition-colors"
 					onclick={() => handleReplace(error.replacements[0])}
 					use:tip={m.harper_apply_suggestion_title()}
 				>
-					<div class="font-mono text-xs leading-snug">
+					<div class="font-mono text-xs [overflow-wrap:anywhere]">
 						{#each diffParts as part, i (i)}
 							{#if part.removed}
 								<del class="text-error-ink line-through opacity-60">{part.value === ' ' ? '␣' : part.value}</del>
@@ -265,7 +285,7 @@
 
 			{#if error.replacements.length > 1}
 				<div class="space-y-1">
-					<p class="text-[10px] font-semibold uppercase tracking-wider opacity-60">
+					<p class="text-[10px] font-semibold tracking-wider uppercase opacity-60">
 						{m.harper_additional_suggestions_heading()}
 					</p>
 					<div class="space-y-1">
@@ -291,7 +311,17 @@
 				use:tip={m.harper_add_to_dictionary_title({ word: error.text })}
 			>
 				<IconBookPlus size={13} />
-				<span>{m.harper_add_to_dictionary_button()}</span>
+				<span class="cap-center">{m.harper_add_to_dictionary_button()}</span>
+			</button>
+		{/if}
+		{#if offRule}
+			<button
+				class="btn btn-xs preset-outlined-surface-200-800 hover:preset-tonal flex-1 justify-center gap-1 text-xs"
+				onclick={() => turnOffRule(offRule)}
+				use:tip={m.harper_turn_off_rule_title({ rule: ruleName(offRule) })}
+			>
+				<IconCircleOff size={13} />
+				<span class="cap-center">{m.harper_turn_off_rule_button()}</span>
 			</button>
 		{/if}
 		<button class="btn btn-xs preset-tonal hover:preset-filled flex-1 text-xs" onclick={handleIgnore}>

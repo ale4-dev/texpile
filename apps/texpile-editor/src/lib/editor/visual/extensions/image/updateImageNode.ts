@@ -16,6 +16,7 @@ export function updateImageNode(nodes: Schema['spec']['nodes'], pluginSettings: 
 		.reduce((acc, curr) => ({ ...acc, ...curr }), {});
 
 	const attributeKeys = [...Object.keys(extraAttributes), 'src', 'alt', 'label', 'numbered', 'showCaption', 'spanning', 'options'];
+	const flags = new Set(['numbered', 'showCaption', 'spanning']);
 	// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 	// @ts-ignore
 	return nodes.update('image', {
@@ -39,9 +40,6 @@ export function updateImageNode(nodes: Schema['spec']['nodes'], pluginSettings: 
 			bareOriginal: { default: false },
 			// verbatim \caption[short] optional arg; see schema.ts
 			captionOpt: { default: null },
-			// see ORIG_BLOCKS in schema.ts. this spec replaces the base attrs wholesale,
-			// so orig must be declared here too.
-			orig: { default: null },
 			...attributesUpdate
 		},
 		atom: true,
@@ -66,10 +64,19 @@ export function updateImageNode(nodes: Schema['spec']['nodes'], pluginSettings: 
 				getAttrs(dom) {
 					if (typeof dom === 'string') return {};
 					return attributeKeys
-						.map((attrKey) => ({
-							[attrKey]: dom.getAttribute(`imageplugin-${attrKey}`)
-						}))
+						.map((attrKey) => {
+							const value = dom.getAttribute(`imageplugin-${attrKey}`);
+							return { [attrKey]: flags.has(attrKey) && value !== null ? value === 'true' : value };
+						})
 						.reduce((acc, curr) => ({ ...acc, ...curr }), {});
+				}
+			},
+			// a picture pasted from another app, which never had a caption; editor/paste decides whether it can stay
+			{
+				tag: 'img[src]',
+				getAttrs(dom) {
+					if (typeof dom === 'string') return {};
+					return { src: dom.getAttribute('src'), alt: dom.getAttribute('alt') || null, numbered: false, showCaption: false };
 				}
 			}
 		]

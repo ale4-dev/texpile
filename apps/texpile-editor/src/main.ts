@@ -7,7 +7,9 @@ import '$lib/collab/joinLink.svelte';
 import { mount } from 'svelte';
 import './app.css';
 import '$lib/theme'; // side-effect: applies the saved appearance and watches OS changes
+import '$lib/menus/selectEscape'; // side-effect: Escape in an open select's list closes only the list
 import { loadSettings } from '$lib/settings';
+import { watchWindowGlass } from '$lib/chrome/windowGlass.svelte';
 import { adoptBootOpen, bootOpen } from '$lib/workspace/openWorkspace';
 import { focusDoctor } from '$lib/debug/focusDoctor';
 import { mark, startupDoctor } from '$lib/debug/startupDoctor';
@@ -45,6 +47,7 @@ if (boot) {
 // isn't available at this app's build target, hence the .then() instead of an await here.
 loadSettings().then(() => {
 	mark('settings');
+	void watchWindowGlass();
 	mount(App, { target: document.getElementById('app')! });
 	if (!bootOpen()) warmEditor(); // a restored folder opens a file at once; EditorPane warms after it
 });

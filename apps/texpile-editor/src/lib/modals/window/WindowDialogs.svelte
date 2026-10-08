@@ -11,11 +11,13 @@
 	// Mounted outside the guest/host branch, driven by dialogStore, so who opens them is no longer
 	// tangled up with who renders them.
 	import PreferencesDialog from './PreferencesDialog.svelte';
-	import SpellcheckDictionary from './SpellcheckDictionary.svelte';
 	import ShortcutsDialog from './ShortcutsDialog.svelte';
-	import { preferencesOpen, dictionaryOpen } from '$lib/stores/dialogStore';
+	import NamePrompt from '$lib/identity/NamePrompt.svelte';
+	import { preferencesOpen, takePreferencesReopen } from '$lib/stores/dialogStore';
+
+	if (takePreferencesReopen()) preferencesOpen.current = true;
 </script>
 
 <PreferencesDialog bind:open={preferencesOpen.current} />
-<SpellcheckDictionary bind:open={dictionaryOpen.current} />
 <ShortcutsDialog />
+<NamePrompt />

@@ -11,9 +11,15 @@
 	import { untrack } from 'svelte';
 	import { fade } from 'svelte/transition';
 	import { ZoomIn, ZoomOut, MoveHorizontal, ChevronUp, ChevronDown, Crosshair, Download, PictureInPicture2 } from '@lucide/svelte';
-	import PreviewToolbar from '$lib/preview/PreviewToolbar.svelte';
+	import PreviewToolbar, { type PreviewToolbarPlace } from '$lib/preview/PreviewToolbar.svelte';
+	import ColorVisionMenu from '$lib/preview/colorVision/ColorVisionMenu.svelte';
+	import ColorVisionFilter from '$lib/preview/colorVision/ColorVisionFilter.svelte';
+	import { wheelZoomFactor } from '$lib/preview/wheelZoom';
+	import ProgressLine from '$lib/components/progress/ProgressLine.svelte';
 	import { DraftSession } from './draftSession.svelte';
 	import type { PatchReq } from './patch/patch.types';
+	import { openToolchainPrefs } from '$lib/stores/dialogStore';
+	import { askForProgram } from '$lib/modals/window/missingProgram/missingProgram.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	type Props = {
@@ -30,6 +36,10 @@
 		onSettled?: () => void;
 		/** a compile landed: its log is at this path, for the Problems panel to parse. */
 		onDiagnostics?: (logPath: string) => void;
+		/** Save PDF: the buffer on disk and no debounced pass pending, before its own full pass. */
+		settleEdits?: () => Promise<void>;
+		/** the preview is paused and its engine stopped; a pass it still runs stops the engine again */
+		paused?: boolean;
 		/** docked in the pane, where this row stands in for a tab strip; false in the popped-out window */
 		asTabStrip?: boolean;
 		/** move the preview into its own window; null in the popped-out body, which needs no button */
@@ -43,6 +53,8 @@
 		onInverseSync,
 		onSettled,
 		onDiagnostics,
+		settleEdits,
+		paused = false,
 		asTabStrip = true,
 		onPopout = null
 	}: Props = $props();
@@ -52,7 +64,9 @@
 		mainFile: () => mainFile,
 		onInverseSync: () => onInverseSync,
 		onSettled: () => onSettled,
-		onDiagnostics: () => onDiagnostics
+		onDiagnostics: () => onDiagnostics,
+		settleEdits: () => settleEdits,
+		paused: () => paused
 	});
 	const vp = ctrl.vp;
 	const compiler = ctrl.compiler;
@@ -104,7 +118,7 @@
 		function onWheel(e: WheelEvent) {
 			if (!(e.ctrlKey || e.metaKey)) return;
 			e.preventDefault();
-			untrack(() => vp.setZoom(vp.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+			untrack(() => vp.setZoom(vp.zoom * wheelZoomFactor(e)));
 		}
 		el.addEventListener('wheel', onWheel, { passive: false });
 		return () => el.removeEventListener('wheel', onWheel);
@@ -204,6 +218,9 @@
 			<Download size={16} />
 		</button>
 	{/snippet}
+	{#snippet vision(place: PreviewToolbarPlace)}
+		<ColorVisionMenu {place} />
+	{/snippet}
 	{#snippet popout()}
 		<button onclick={() => onPopout?.()} use:tip={m.wsview_popout_preview()} aria-label={m.wsview_popout_preview()}>
 			<PictureInPicture2 size={16} />
@@ -218,12 +235,14 @@
 			...(ctrl.pages.length ? [{ id: 'pages', render: pages }] : []),
 			{ id: 'zoom', render: zoom },
 			{ id: 'follow', render: follow },
+			{ id: 'vision', render: vision },
 			{ id: 'save', render: save }
 		]}
 	/>
+	<ProgressLine active={ctrl.savingPdf && compiler.compiling} label={m.draft_status_compiling_export()} />
 	{#if compiler.busyElsewhere}
 		<div
-			class="border-surface-300-700 bg-surface-50-950 m-3 flex shrink-0 items-center justify-between gap-3 rounded-container border p-3 text-sm"
+			class="border-surface-300-700 bg-surface-50-950 rounded-container m-3 flex shrink-0 items-center justify-between gap-3 border p-3 text-sm"
 		>
 			<span class="text-muted">{m.draft_busy_other_window()}</span>
 			<button class="btn btn-xs preset-filled-primary-500 shrink-0" onclick={() => compiler.takeoverEngine()}
@@ -231,48 +250,59 @@
 			>
 		</div>
 	{/if}
-	{#if compiler.error}
+	{#if compiler.missingTool}
+		<div class="text-error-ink bg-surface-50-950 rounded-container m-3 flex shrink-0 items-center gap-3 p-3 text-xs">
+			<span class="min-w-0 flex-1">{compiler.error}</span>
+			<button
+				class="btn btn-sm preset-tonal shrink-0"
+				onclick={() => compiler.missingTool && !askForProgram(compiler.missingTool) && openToolchainPrefs()}
+				>{m.compile_tool_missing_action()}</button
+			>
+		</div>
+	{:else if compiler.error}
 		<!-- Now a single line in the normal case (the log tail moved to Problems), but the cap stays
 		     as a backstop: `error` can also be a thrown exception's message, and overflow-auto cannot
 		     scroll a box that is free to grow. Without a height constraint this took its full content
 		     height and the flex-1 scroller below it got whatever was left. -->
 		<pre
-			class="text-error-ink bg-surface-50-950 m-3 max-h-40 shrink-0 overflow-auto rounded-container p-3 text-xs whitespace-pre-wrap">{compiler.error}</pre>
+			class="text-error-ink bg-surface-50-950 rounded-container m-3 max-h-40 shrink-0 [scrollbar-gutter:stable] overflow-auto p-3 text-xs whitespace-pre-wrap">{compiler.error}</pre>
 	{/if}
-	<div
-		bind:this={vp.scroller}
-		bind:clientWidth={vp.containerW}
-		onscroll={() => vp.onScroll()}
-		class="flex flex-1 flex-col items-center gap-4 overflow-auto p-4"
-	>
-		{#each ctrl.pages as p (p.n)}
-			<div class="relative shadow-lg">
-				<canvas bind:this={ctrl.canvasEls[p.n - 1]} ondblclick={(e) => ctrl.onCanvasDblClick(p.n, e)}></canvas>
-				{#if vp.editBand && vp.editBand.page === p.n}
-					<!-- the located band of the paragraph being edited; fades shortly after typing stops -->
-					<div
-						class="pointer-events-none absolute rounded-base bg-draft-band/30"
-						transition:fade={{ duration: 300 }}
-						style="left:{(ctrl.paper.mx + vp.editBand.colL) * vp.dispScale}px; top:{(ctrl.paper.my + vp.editBand.top - 2) *
-							vp.dispScale}px; width:{(vp.editBand.colR - vp.editBand.colL) * vp.dispScale}px; height:{(vp.editBand.bottom -
-							vp.editBand.top +
-							4) *
-							vp.dispScale}px"
-					></div>
-				{/if}
-				{#if vp.clickMark && vp.clickMark.page === p.n}
-					<!-- where the sync double-click landed -->
-					<div
-						class="pointer-events-none absolute"
-						transition:fade={{ duration: 200 }}
-						style="left:{vp.clickMark.x * vp.dispScale}px; top:{vp.clickMark.y * vp.dispScale}px"
-					>
-						<span class="border-primary-500 absolute size-6 -translate-x-1/2 -translate-y-1/2 animate-ping rounded-full border-2"></span>
-						<span class="bg-primary-500 absolute size-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full"></span>
-					</div>
-				{/if}
-			</div>
-			<div class="text-muted -mt-3 text-[10px]">{m.draft_page_label({ n: p.n })}</div>
-		{/each}
-	</div>
+	<ColorVisionFilter class="flex min-h-0 flex-1 flex-col">
+		<div
+			bind:this={vp.scroller}
+			bind:clientWidth={vp.containerW}
+			onscroll={() => vp.onScroll()}
+			class="flex flex-1 [scrollbar-gutter:stable] flex-col items-center gap-4 overflow-auto p-4"
+		>
+			{#each ctrl.pages as p (p.n)}
+				<div class="relative shadow-lg">
+					<canvas bind:this={ctrl.canvasEls[p.n - 1]} ondblclick={(e) => ctrl.onCanvasDblClick(p.n, e)}></canvas>
+					{#if vp.editBand && vp.editBand.page === p.n}
+						<!-- the located band of the paragraph being edited; fades shortly after typing stops -->
+						<div
+							class="rounded-base bg-draft-band/30 pointer-events-none absolute"
+							transition:fade={{ duration: 300 }}
+							style="left:{(ctrl.paper.mx + vp.editBand.colL) * vp.dispScale}px; top:{(ctrl.paper.my + vp.editBand.top - 2) *
+								vp.dispScale}px; width:{(vp.editBand.colR - vp.editBand.colL) * vp.dispScale}px; height:{(vp.editBand.bottom -
+								vp.editBand.top +
+								4) *
+								vp.dispScale}px"
+						></div>
+					{/if}
+					{#if vp.clickMark && vp.clickMark.page === p.n}
+						<!-- where the sync double-click landed -->
+						<div
+							class="pointer-events-none absolute"
+							transition:fade={{ duration: 200 }}
+							style="left:{vp.clickMark.x * vp.dispScale}px; top:{vp.clickMark.y * vp.dispScale}px"
+						>
+							<span class="border-primary-500 absolute size-6 -translate-x-1/2 -translate-y-1/2 animate-ping rounded-full border-2"></span>
+							<span class="bg-primary-500 absolute size-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full"></span>
+						</div>
+					{/if}
+				</div>
+				<div class="text-muted -mt-3 text-[10px]">{m.draft_page_label({ n: p.n })}</div>
+			{/each}
+		</div>
+	</ColorVisionFilter>
 </div>

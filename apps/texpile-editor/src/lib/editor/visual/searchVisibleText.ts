@@ -1,9 +1,20 @@
 // Find and replace over the text the editor actually shows.
-import { getSearchState } from 'prosemirror-search';
-import { TextSelection, type Command, type EditorState } from 'prosemirror-state';
-import type { SearchQuery } from 'prosemirror-search';
+import { getSearchState, SearchQuery } from 'prosemirror-search';
+import { TextSelection, type EditorState, type Transaction } from 'prosemirror-state';
 
 type Match = NonNullable<ReturnType<SearchQuery['findNext']>>;
+
+// a regex match of nothing (`a|`, `.*` at a line end) has no text to show or replace, and the search
+// plugin's own scan stands still on one
+export class VisibleTextQuery extends SearchQuery {
+	override findNext(state: EditorState, from = 0, to = state.doc.content.size): Match | null {
+		for (let pos = from; ;) {
+			const next = super.findNext(state, pos, to);
+			if (!next || next.to > next.from) return next;
+			pos = next.from + 1;
+		}
+	}
+}
 
 // A chip keeps its key as node CONTENT, so a plain text search reaches it: \ref{tab:corpus} draws
 // as "1", and replacing "corpus" there rewrote the key and broke the cross-reference with nothing
@@ -41,7 +52,7 @@ function applyReplacements(state: EditorState, query: SearchQuery, matches: Matc
 	return tr;
 }
 
-export const replaceAllVisible: Command = (state, dispatch) => {
+export function replaceAllVisible(state: EditorState, dispatch?: (tr: Transaction) => void): boolean {
 	const search = getSearchState(state);
 	if (!search) return false;
 	const range = search.range ?? { from: 0, to: state.doc.content.size };
@@ -49,10 +60,10 @@ export const replaceAllVisible: Command = (state, dispatch) => {
 	if (!matches.length) return false;
 	dispatch?.(applyReplacements(state, search.query, matches));
 	return true;
-};
+}
 
 /** replace the match under the selection, then move to the next one; select it first if not on one */
-export const replaceNextVisible: Command = (state, dispatch) => {
+export function replaceNextVisible(state: EditorState, dispatch?: (tr: Transaction) => void): boolean {
 	const search = getSearchState(state);
 	if (!search) return false;
 	const all = visibleMatches(state, search.query);
@@ -71,7 +82,7 @@ export const replaceNextVisible: Command = (state, dispatch) => {
 		dispatch(tr.scrollIntoView());
 	}
 	return true;
-};
+}
 
 /** step to the next (dir 1) or previous (dir -1) visible match, wrapping at the ends */
 export function stepToMatch(state: EditorState, dir: 1 | -1): TextSelection | null {

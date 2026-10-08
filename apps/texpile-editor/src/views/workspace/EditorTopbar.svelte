@@ -5,15 +5,19 @@
 	import { tip } from '$lib/components/tooltip.svelte';
 	import { openWorkspaceForFile } from '$lib/workspace/openWorkspace';
 	import { fileMode } from '$lib/workspace/fileMode.svelte';
-	import { compileConfig } from '$lib/workspace/projectConfigSync.svelte';
+	import { latexLiveMode } from '$lib/workspace/projectConfigSync.svelte';
 	import { isDirty } from '$lib/workspace/workspaceStore';
 	import { compileLog } from '$lib/stores/compileLogStore';
 	import WordCount from './WordCount.svelte';
 	import { hideIfCramped } from '$lib/components/hideIfCramped';
 	import CompileButton, { COMPILE_TONE } from '$lib/preview/CompileButton.svelte';
+	import CompileOptionsMenu from './CompileOptionsMenu.svelte';
 	import type { ComponentProps } from 'svelte';
 	import type { FileKind } from '$lib/workspace/documentBuffer.svelte';
+	import type { ProjectWords } from '$lib/workspace/wordCount/projectWords';
 	import { m } from '$lib/paraglide/messages';
+	import { combo } from '$lib/chrome/shortcutText';
+	import EditModePicker from './EditModePicker.svelte';
 	import {
 		ArrowRight,
 		FileText,
@@ -22,21 +26,26 @@
 		Square,
 		Play,
 		ChevronDown,
-		Settings2,
 		CircleAlert,
 		TriangleAlert,
 		Save,
 		Loader2,
 		ShieldQuestion,
 		MessageSquare,
-		FolderOpen
+		FolderOpen,
+		GitCompare
 	} from '@lucide/svelte';
+	import { scmHandlers } from '$lib/workspace/scm/actions/scmHandlers.svelte';
+	import { gitChanges } from '$lib/workspace/scm/gitStore';
+	import { samePath } from '$lib/workspace/fileSystem';
 
 	type Props = {
 		loadedPath: string | null;
 		kind: FileKind;
 		viewMode: 'visual' | 'source' | 'diff';
 		encodingIssue?: string | null;
+		/** the file holds places a merge marked, which only the source editor offers a choice at */
+		conflicted?: boolean;
 		guest: boolean;
 		terminalAvailable: boolean;
 		compiling: boolean;
@@ -47,7 +56,6 @@
 		pdfPaneOpen: boolean;
 		draftPaused: boolean;
 		saving: boolean;
-		modLabel: string;
 		onSetViewMode: (m: 'visual' | 'source') => void;
 		onStopCompile: () => void;
 		onPauseDraft: () => void;
@@ -58,10 +66,22 @@
 		/** guest only: ask the host to compile (it owns the toolchain). */
 		onRequestCompile: () => void;
 		onConfigureCompile: () => void;
+		onCompileFromScratch: () => void;
+		onCleanAux: () => void;
+		/** latexmk only, and only while Compile runs the shell command (CompilePipeline decides) */
+		latexmkActionsAvailable?: boolean;
+		onShowOutput: () => void;
+		outputAvailable?: boolean;
 		onShowProblems: () => void;
+		/** the paper's words by file, for the word count's panel */
+		onCountWords?: () => Promise<ProjectWords | null>;
+		/** opens the main file chooser, which the word count offers while none is set */
+		onPickMain?: () => void;
 		/** open review threads in the project; 0 hides the badge, like a clean compile hides Problems */
 		commentCount?: number;
 		onShowComments?: () => void;
+		suggesting?: boolean;
+		onToggleSuggest?: (suggesting: boolean) => void;
 		onTogglePdf: () => void;
 		onSave: () => void;
 		/**
@@ -78,6 +98,7 @@
 		kind,
 		viewMode,
 		encodingIssue = null,
+		conflicted = false,
 		guest,
 		terminalAvailable,
 		compiling,
@@ -86,7 +107,6 @@
 		pdfPaneOpen,
 		draftPaused,
 		saving,
-		modLabel,
 		onSetViewMode,
 		onStopCompile,
 		onPauseDraft,
@@ -95,14 +115,28 @@
 		commandPending = false,
 		onRequestCompile,
 		onConfigureCompile,
+		onCompileFromScratch,
+		onCleanAux,
+		latexmkActionsAvailable = false,
+		onShowOutput,
+		outputAvailable = false,
 		onShowProblems,
+		onCountWords,
+		onPickMain,
 		commentCount = 0,
 		onShowComments = () => {},
+		suggesting = false,
+		onToggleSuggest,
 		onTogglePdf,
 		onSave,
 		onSyncToCursor = null,
 		syncTargetsPreview = false
 	}: Props = $props();
+
+	// saved in a version before, and different now: a new file has nothing to compare against
+	const changedSinceVersion = $derived(
+		!guest && !!loadedPath && gitChanges.current.some((c) => c.x !== '?' && !c.files && samePath(c.path, loadedPath ?? ''))
+	);
 
 	let compileMenuOpen = $state(false);
 
@@ -136,14 +170,14 @@
 				tone: 'error',
 				icon: Square,
 				label: m.wsview_stop_label(),
-				title: m.wsview_stop_compile_title({ combo: `${modLabel}+Alt+Enter` }),
+				title: m.wsview_stop_compile_title({ combo: combo('Enter', { alt: true }) }),
 				onclick: onStopCompile
 			};
 		// the preview is attached; closing the pane is its stop (the pane detaches the server task
 		// on close), so this is both indicator and off switch
 		if (typstLive && pdfPaneOpen)
 			return { tone: 'success', dot: true, label: m.wsview_live_label(), title: m.wsview_typst_preview_live_title(), onclick: onTogglePdf };
-		if (compileConfig.current.latex.liveMode && pdfPaneOpen) {
+		if (latexLiveMode() && pdfPaneOpen) {
 			if (draftPaused)
 				return {
 					tone: 'warning',
@@ -160,18 +194,19 @@
 				onclick: onPauseDraft
 			};
 		}
-		const live = typstLive || compileConfig.current.latex.liveMode;
+		const live = typstLive || latexLiveMode();
 		return {
 			tone: 'primary',
 			icon: Play,
 			label: live ? m.wsview_preview_label() : m.wsview_compile_label(),
-			title: live ? m.wsview_open_live_preview_title() : m.wsview_compile_title({ combo: `${modLabel}+Alt+Enter` }),
+			title: live ? m.wsview_open_live_preview_title() : m.wsview_compile_title({ combo: combo('Enter', { alt: true }) }),
 			onclick: onCompile
 		};
 	});
 </script>
 
-<header class="border-surface-200-800 col-span-full flex h-12 items-center justify-between gap-3 border-b px-4">
+<!-- an inset shadow, not a border: a border leaves 47px of the 48px bar and centered icons land half a pixel off -->
+<header class="line-under col-span-full flex h-12 items-center justify-between gap-3 px-4">
 	<!-- the sidebar and preview toggles used to bracket this row. Both moved onto the divider of the
 	     pane they open (WorkspaceChrome / PreviewPane), where the control sits on the boundary it
 	     moves - so this row is only about the document -->
@@ -182,10 +217,15 @@
 		{/if}
 		{#if loadedPath && (kind === 'tex' || kind === 'md' || kind === 'typ') && (viewMode === 'visual' || viewMode === 'source')}
 			<!-- hidden, not truncated, once it no longer fits beside the buttons -->
-			<span class="shrink-0" use:hideIfCramped><WordCount /></span>
+			<span class="shrink-0" use:hideIfCramped><WordCount details={onCountWords} pickMain={onPickMain} /></span>
 		{/if}
 	</div>
 	<div class="flex items-center gap-2">
+		{#if onToggleSuggest}
+			<EditModePicker {suggesting} onChange={onToggleSuggest} />
+		{:else if fileMode.current}
+			<EditModePicker suggesting={false} onChange={() => {}} unavailable={m.single_file_unavailable()} />
+		{/if}
 		{#if commentCount > 0}
 			<!-- unresolved review threads, project-wide. Leftmost of the cluster on purpose: the row is
 			     right-aligned, so out here the badge's appearance grows into free space instead of
@@ -224,20 +264,32 @@
 				<span class="flex h-[1lh] items-center"><ArrowRight class="size-3.5" /></span>
 			</button>
 		{/if}
+		{#if loadedPath && changedSinceVersion && scmHandlers.current}
+			<!-- "what did I change in this chapter?" without knowing a palette command's name: only
+			     while there is something to compare, as VS Code's Open Changes in the editor title -->
+			<button
+				class="btn btn-xs preset-outlined-surface-200-800 hover:preset-tonal"
+				onclick={() => scmHandlers.current?.compare(loadedPath)}
+				use:tip={m.wsview_compare_last()}
+				aria-label={m.wsview_compare_last()}
+			>
+				<span class="flex h-[1lh] items-center"><GitCompare class="size-3.5" /></span>
+			</button>
+		{/if}
 		{#if loadedPath && (kind === 'tex' || kind === 'md' || kind === 'typ' || (kind === 'bib' && !guest))}
 			<!-- visual/source toggle; for .bib it's the reference editor vs raw BibTeX (BibManager
 			     stays host-only: it isn't wired to the shared doc yet) -->
-			<div class="border-surface-300-700 inline-flex shrink-0 overflow-hidden rounded-base border text-xs">
+			<div class="border-surface-300-700 rounded-base inline-flex shrink-0 overflow-hidden border text-xs">
 				<button
 					class="flex items-center gap-1 px-2.5 py-1 disabled:cursor-not-allowed disabled:opacity-40 {viewMode === 'visual'
 						? 'preset-filled-primary-500'
 						: 'hover:preset-tonal disabled:hover:bg-transparent'}"
 					onclick={() => onSetViewMode('visual')}
-					disabled={!!encodingIssue}
-					use:tip={encodingIssue ?? m.wsview_visual_editor_title()}
+					disabled={!!encodingIssue || conflicted}
+					use:tip={encodingIssue ?? (conflicted ? m.vcs_conflict_visual_off() : m.wsview_visual_editor_title())}
 				>
 					<Eye class="size-3.5" />
-					{m.wsview_visual_label()}
+					<span class="cap-center">{m.wsview_visual_label()}</span>
 				</button>
 				<button
 					class="flex items-center gap-1 px-2.5 py-1 {viewMode === 'source' ? 'preset-filled-primary-500' : 'hover:preset-tonal'}"
@@ -245,7 +297,7 @@
 					use:tip={kind === 'typ' ? m.wsview_typst_source_title() : m.wsview_latex_source_title()}
 				>
 					<Code class="size-3.5" />
-					{m.wsview_source_label()}
+					<span class="cap-center">{m.wsview_source_label()}</span>
 				</button>
 			</div>
 		{/if}
@@ -268,7 +320,7 @@
 		{#if fileMode.current}
 			<button class="btn btn-xs {COMPILE_TONE.primary}" onclick={() => loadedPath && void openWorkspaceForFile(loadedPath)}>
 				<FolderOpen class="size-4" />
-				{m.wsview_open_in_workspace()}
+				<span class="cap-center">{m.wsview_open_in_workspace()}</span>
 			</button>
 		{:else if terminalAvailable}
 			<!-- the one-shot sync-to-cursor button used to sit here; it lives on the preview pane's
@@ -279,7 +331,7 @@
 				<!-- border-l-0: the button's right edge already draws the seam, and two hairlines
 				     meeting there would read as a heavier line than the outline itself -->
 				<button
-					class="btn btn-xs {COMPILE_TONE[compile.tone]} rounded-l-none self-stretch border-l-0 px-1"
+					class="btn btn-xs {COMPILE_TONE[compile.tone]} self-stretch rounded-l-none border-l-0 px-1"
 					onclick={() => (compileMenuOpen = !compileMenuOpen)}
 					use:tip={m.wsview_compile_options()}
 					aria-label={m.wsview_compile_options()}
@@ -288,23 +340,16 @@
 				>
 					<ChevronDown class="size-3.5 transition-transform {compileMenuOpen ? 'rotate-180' : ''}" />
 				</button>
-				{#if compileMenuOpen}
-					<!-- click-away layer -->
-					<button class="fixed inset-0 z-1200 cursor-default" onclick={() => (compileMenuOpen = false)} tabindex="-1" aria-hidden="true"
-					></button>
-					<div class="card bg-surface-50-950 border-surface-300-700 absolute top-full right-0 z-1300 mt-1 w-max border p-1 shadow-xl">
-						<button
-							class="hover:preset-tonal flex w-full items-center gap-2 rounded-base px-2 py-1.5 text-left text-sm whitespace-nowrap"
-							onclick={() => {
-								compileMenuOpen = false;
-								onConfigureCompile();
-							}}
-						>
-							<Settings2 class="size-4 shrink-0" />
-							{m.wsview_configure_compile_command()}
-						</button>
-					</div>
-				{/if}
+				<CompileOptionsMenu
+					open={compileMenuOpen}
+					onClose={() => (compileMenuOpen = false)}
+					onConfigure={onConfigureCompile}
+					onFromScratch={onCompileFromScratch}
+					{onCleanAux}
+					latexmkActions={latexmkActionsAvailable}
+					{onShowOutput}
+					{outputAvailable}
+				/>
 			</div>
 		{/if}
 		{#if guest}
@@ -317,7 +362,7 @@
 			{#if loadedPath && (kind === 'tex' || kind === 'typ') && !guestTypstOffered}
 				<button class="btn btn-xs preset-tonal-primary gap-1.5" onclick={onRequestCompile} use:tip={m.session_request_compile()}>
 					<Play class="size-4" />
-					{m.session_request_compile()}
+					<span class="cap-center">{m.session_request_compile()}</span>
 				</button>
 			{/if}
 		{/if}
@@ -329,7 +374,7 @@
 				disabled={!loadedPath || saving || !isDirty.current}
 			>
 				{#if saving}<Loader2 class="size-4 animate-spin" />{:else}<Save class="size-4" />{/if}
-				{m.wsview_save_label()}
+				<span class="cap-center">{m.wsview_save_label()}</span>
 			</button>
 		{/if}
 	</div>

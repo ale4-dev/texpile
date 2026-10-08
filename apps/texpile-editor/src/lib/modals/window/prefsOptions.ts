@@ -1,9 +1,9 @@
-// The option lists Preferences' selects render, and the locale switch with its
-// machine-translation warning.
+// The option lists Preferences' selects render, and the locale switch.
 import { applyUiLocale, updateSettings, type AppSettings } from '$lib/settings';
 import { LOCALE_META } from '$lib/localeMeta';
-import { toaster } from '$lib/modals/toaster-svelte';
+import { markPreferencesReopen } from '$lib/stores/dialogStore';
 import { m } from '$lib/paraglide/messages';
+import { ENGLISH_VARIANTS, systemVariant, type EnglishVariant } from '$lib/editor/spellcheck/config/grammarRules';
 
 // source-editor keybindings; Vim and Emacs are names, so they are not translated
 export function keymapOptions(): { value: AppSettings['editorKeymap']; label: string }[] {
@@ -14,45 +14,30 @@ export function keymapOptions(): { value: AppSettings['editorKeymap']; label: st
 	];
 }
 
-// image resize snaps to multiples of this fraction of \textwidth
-export function resizeStepOptions(): { value: number; label: string }[] {
-	return [
-		{ value: 0.1, label: '10%' },
-		{ value: 0.25, label: '25%' },
-		{ value: 0.5, label: '50%' }
-	];
-}
-
-// <option> only renders plain text, so the machine-translated tag is appended into the label itself
 export function uiLocaleOptions(): { value: AppSettings['uiLocale']; label: string }[] {
 	return (Object.entries(LOCALE_META) as [AppSettings['uiLocale'], (typeof LOCALE_META)[AppSettings['uiLocale']]][]).map(
-		([value, meta]) => ({
-			value,
-			label: meta.machineTranslated ? `${meta.label} ${m.prefs_machine_translated_tag({}, { locale: value })}` : meta.label
-		})
+		([value, meta]) => ({ value, label: meta.label })
 	);
 }
 
 export function changeUiLocale(e: Event): void {
 	const uiLocale = (e.currentTarget as HTMLSelectElement).value as AppSettings['uiLocale'];
 	updateSettings({ uiLocale });
-	if (!LOCALE_META[uiLocale]?.machineTranslated) {
-		applyUiLocale(uiLocale);
-		return;
-	}
-	// warn every time (not just once) since switching to this language is a deliberate, infrequent action
-	toaster.warning({
-		title: m.mt_warning_title(),
-		description: m.mt_warning_description(),
-		duration: 6000,
-		action: {
-			label: m.mt_warning_report_action(),
-			onClick: () => {
-				const title = `Translation issue: ${LOCALE_META[uiLocale]?.label ?? uiLocale}`;
-				window.open(`https://github.com/texpile/texpile/issues/new?title=${encodeURIComponent(title)}`, '_blank', 'noopener,noreferrer');
-			}
-		}
-	});
-	// give the toast a moment on screen before the locale-switch reload would otherwise wipe it
-	setTimeout(() => applyUiLocale(uiLocale), 3000);
+	markPreferencesReopen();
+	applyUiLocale(uiLocale);
+}
+
+/** the Englishes spelling can follow, the system's own first */
+export function englishVariantOptions(): { value: AppSettings['englishVariant']; label: string }[] {
+	const names: Record<EnglishVariant, string> = {
+		american: m.prefs_english_american(),
+		british: m.prefs_english_british(),
+		australian: m.prefs_english_australian(),
+		canadian: m.prefs_english_canadian(),
+		indian: m.prefs_english_indian()
+	};
+	return [
+		{ value: '', label: m.prefs_english_system({ variant: names[systemVariant(navigator.languages)] }) },
+		...ENGLISH_VARIANTS.map((v) => ({ value: v, label: names[v] }))
+	];
 }

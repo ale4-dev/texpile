@@ -10,17 +10,22 @@ export type ContextMenuItem =
 	| { separator: true }
 	| {
 			label: string;
-			onclick: () => void;
+			onclick?: () => void;
+			/** items shown beside this one, which then runs nothing itself */
+			submenu?: ContextMenuItem[];
 			icon?: Component<{ class?: string }>;
 			/** shortcut hint, Kbd syntax ("Mod+C"); shown, not bound */
 			keys?: string;
+			/** a setting the item turns on and off, or one of a set; undefined for an action */
+			checked?: boolean;
 			disabled?: boolean;
 			/** drawn in the error tint: delete and the like */
 			danger?: boolean;
 			tip?: string;
 	  };
 
-export type OpenMenu = { items: ContextMenuItem[]; x: number; y: number; onClose?: () => void };
+/** above: the menu's bottom at y rather than its top, for a button at the foot of a box */
+export type OpenMenu = { items: ContextMenuItem[]; x: number; y: number; above?: boolean; onClose?: () => void };
 
 /** what ContextMenuHost draws; null between menus */
 export const openMenu = box<OpenMenu | null>(null);
@@ -33,17 +38,37 @@ function accelerator(keys: string): string {
 		.join('+');
 }
 
+type NativeItem =
+	| { separator: true }
+	| { id: string; label: string; enabled: boolean; checked?: boolean; toolTip?: string; accelerator?: string; submenu?: NativeItem[] };
+
+/** a submenu item's id is its path, "2.3" */
+function nativeItems(items: ContextMenuItem[], path = ''): NativeItem[] {
+	return items.map((it, i) =>
+		'separator' in it
+			? { separator: true }
+			: {
+					id: path + i,
+					label: it.label,
+					enabled: !it.disabled,
+					checked: it.checked,
+					toolTip: it.tip,
+					accelerator: it.keys ? accelerator(it.keys) : undefined,
+					submenu: it.submenu && nativeItems(it.submenu, path + i + '.')
+				}
+	);
+}
+
 async function showNative(items: ContextMenuItem[], x: number, y: number): Promise<ContextMenuItem | null> {
-	const chosen = await nativeBridge()!.popupMenu!({
-		items: items.map((it, i) =>
-			'separator' in it
-				? { separator: true }
-				: { id: String(i), label: it.label, enabled: !it.disabled, accelerator: it.keys ? accelerator(it.keys) : undefined }
-		),
-		x: Math.round(x),
-		y: Math.round(y)
-	});
-	return chosen === null ? null : (items[Number(chosen)] ?? null);
+	const chosen = await nativeBridge()!.popupMenu!({ items: nativeItems(items), x: Math.round(x), y: Math.round(y) });
+	if (chosen === null) return null;
+	let found: ContextMenuItem | undefined;
+	let level: ContextMenuItem[] | undefined = items;
+	for (const i of String(chosen).split('.')) {
+		found = level?.[Number(i)];
+		level = found && !('separator' in found) ? found.submenu : undefined;
+	}
+	return found ?? null;
 }
 
 /** show the menu; resolves once it has closed, chosen item already run. onClose runs before the
@@ -51,12 +76,12 @@ async function showNative(items: ContextMenuItem[], x: number, y: number): Promi
 export async function showContextMenu(
 	items: ContextMenuItem[],
 	at: { x: number; y: number },
-	opts?: { onClose?: () => void }
+	opts?: { onClose?: () => void; above?: boolean }
 ): Promise<void> {
 	if (nativeContextMenus()) {
 		const it = await showNative(items, at.x, at.y);
 		opts?.onClose?.();
-		if (it && !('separator' in it)) it.onclick();
+		if (it && !('separator' in it)) it.onclick?.();
 		return;
 	}
 	closeContextMenu();
@@ -65,6 +90,7 @@ export async function showContextMenu(
 			items,
 			x: at.x,
 			y: at.y,
+			above: opts?.above,
 			onClose: () => {
 				opts?.onClose?.();
 				resolve();

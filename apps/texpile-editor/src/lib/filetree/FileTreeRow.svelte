@@ -5,11 +5,11 @@
 	import FileIcon from './FileIcon.svelte';
 	import FileTreeRow from './FileTreeRow.svelte';
 	import type { TreeEntry } from '$lib/workspace/fileSystem';
-	import type { GitBadge } from '$lib/workspace/git';
+	import type { GitBadge } from '$lib/workspace/scm/git';
 	import type { FileTreeState } from './treeState.svelte';
 	import type { FileTreeDnd } from './treeDnd.svelte';
 	import type { TreeNameEditor } from './treeNameEditor.svelte';
-	import { gitBadgeOf, STATUS_COLOR, STATUS_TITLE } from './treeBadges';
+	import { gitBadgeOf, folderTitle, STATUS_COLOR, STATUS_DECOR, STATUS_TITLE } from './treeBadges';
 	import { focusSelect } from './focusSelect';
 	import { m } from '$lib/paraglide/messages';
 
@@ -31,8 +31,13 @@
 
 	let { entry, depth, sel, dnd, editor, focused, gitStatus, isActive, isMain, onOpen, openCtx, createInput }: Props = $props();
 	let row = $state<HTMLDivElement>();
+	// only as the row becomes the open file: a refreshed tree hands every row a new entry, and the
+	// tree stays where it was scrolled
+	let wasActive = false;
 	$effect(() => {
-		if (isActive(entry)) row?.scrollIntoView?.({ block: 'nearest' });
+		const active = isActive(entry);
+		if (active && !wasActive) row?.scrollIntoView?.({ block: 'nearest' });
+		wasActive = active;
 	});
 </script>
 
@@ -41,13 +46,14 @@
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
 		bind:this={row}
-		class="group flex rounded-base text-sm transition-colors {editor.renaming === entry.path
+		data-path={entry.path}
+		class="group rounded-base flex text-sm transition-colors {editor.renaming === entry.path
 			? 'flex-col items-stretch'
 			: 'items-center'} {isActive(entry)
 			? `bg-primary-tint font-medium ${focused ? 'text-primary-ink' : ''}`
 			: sel.selected.includes(entry.path)
 				? 'bg-surface-strong-wash'
-				: 'hover:bg-surface-200-800'} {dnd.dropTarget === entry.path && entry.type === 'dir'
+				: 'hover:preset-tonal'} {dnd.dropTarget === entry.path && entry.type === 'dir'
 			? 'ring-primary-500 ring-2 ring-inset'
 			: ''} {dnd.dragPaths.includes(entry.path) ? 'opacity-50' : ''}"
 		draggable={editor.renaming !== entry.path}
@@ -102,29 +108,36 @@
 				/>
 			{:else}
 				{@const status = gitBadgeOf(gitStatus, entry)}
+				{@const folder = entry.type === 'dir'}
 				<!-- names are never trimmed; the tree scrolls sideways instead (see FileTree's min-w-max).
-				     git status is the name's own colour, so it needs no column of its own -->
-				<span class="whitespace-nowrap {status ? STATUS_COLOR[status] : ''}" use:tip={status ? STATUS_TITLE[status] : undefined}
-					>{entry.name}</span
+				     git status is the name's own colour, so it needs no column of its own; a folder takes
+				     the colour of the weightiest change inside it, so a changed chapter can be found -->
+				<span
+					class="whitespace-nowrap {status ? STATUS_COLOR[status] : ''} {status && !folder ? (STATUS_DECOR[status] ?? '') : ''}"
+					use:tip={status ? (folder ? folderTitle(status) : STATUS_TITLE[status]) : undefined}>{entry.name}</span
 				>
+				<!-- and a mark that is not a colour, for a state the tooltip should not be the only way to know -->
+				{#if status === 'C' && !folder}
+					<span class="text-error-ink ml-0.5 font-bold" aria-label={STATUS_TITLE.C}>!</span>
+				{:else if status && folder}
+					<span class="ml-1 inline-block size-1.5 shrink-0 rounded-full bg-current opacity-70 {STATUS_COLOR[status]}" aria-hidden="true"
+					></span>
+				{/if}
 			{/if}
 		</button>
 		{#if editor.renaming !== entry.path}
 			<!-- one slot, not three: the row's actions live in the context menu this opens, so hovering
-			     never widens the row. `hidden`, not opacity-0, so it reserves no width when not hovered.
+			     never widens the row.
 			     sticky: rows can be wider than the pane, and parked at the row's end this would sit off
-			     screen until you scrolled to it.
-			     No fill of its own, deliberately. It used to carry one so that a name scrolled under
-			     it could not show through - but a second painted surface over an already-lit row is
-			     visible however carefully its colour is matched: instant against the row's fade,
-			     square against the row's rounded-base ends. A name bleeding through while the tree is
-			     scrolled sideways is the cheaper of the two. -->
-			<span class="sticky right-0 z-10 hidden shrink-0 items-center bg-transparent pr-1 group-hover:flex">
-				<!-- the icon answers the hover, not a second fill: the row is already lit, and
-				     preset-tonal washed 10% white over it, leaving a paler rounded-base patch with a
-				     visible seam against the row it sits on -->
+			     screen until you scrolled to it. -->
+			{@const fill = isActive(entry)
+				? 'bg-primary-tint-solid'
+				: sel.selected.includes(entry.path)
+					? 'bg-surface-strong-wash-solid'
+					: 'bg-tonal-hover-solid'}
+			<span class="sticky right-0 z-10 flex w-0 shrink-0 items-center justify-end">
 				<button
-					class="btn-icon btn-icon-xs text-muted hover:text-surface-950-50 bg-transparent transition-colors"
+					class="btn-icon btn-icon-xs text-muted hover:text-surface-950-50 mr-1 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 {fill}"
 					use:tip={m.filetree_row_actions()}
 					aria-label={m.filetree_row_actions()}
 					onclick={(e) => {

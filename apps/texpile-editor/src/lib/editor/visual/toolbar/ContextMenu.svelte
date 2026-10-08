@@ -3,23 +3,27 @@
 	import { editorViewStore } from '$lib/stores/editorStore';
 	import { onMount } from 'svelte';
 	import { CellSelection, mergeCells, splitCell } from 'prosemirror-tables';
-	import { BookMarked, MessageSquarePlus } from '@lucide/svelte';
+	import { BookMarked, BookPlus, MessageSquarePlus } from '@lucide/svelte';
 	import { TextSelection } from 'prosemirror-state';
-	import { buildPmAnchor, setPmCommentPending } from '$lib/editor/visual/extensions/pmComments';
+	import { setPmCommentPending, type SourceAnchorFn } from '$lib/editor/visual/extensions/pmComments';
 	import type { CommentAnchor } from '$lib/comments/anchor';
 	import { buildMenuItems, buildTableMenuItems, type ContextMenuEntry } from './contextMenuItems';
 	import { showContextMenu, type ContextMenuItem } from '$lib/menus/contextMenu.svelte';
 	import { m } from '$lib/paraglide/messages';
+	import { refineMenuItems } from '$lib/ai/refineMenu';
 
 	type Props = {
 		/** dialect-aware chrome (see lib/editor/dialect.ts): feature flags derive from this. */
 		dialect?: Dialect;
-		/** offered as a menu item when present; the anchor is rendered-dialect (see pmComments) */
+		/** offered as a menu item when present; the anchor is a range of the file */
 		onAddComment?: (anchor: CommentAnchor | null) => void;
+		sourceAnchor?: SourceAnchorFn;
 		/** pick citations from Zotero and insert at the caret; a menu item when present */
 		onInsertCitation?: () => void;
+		/** look a work up by DOI or arXiv ID and cite it; a menu item when present */
+		onCiteByDoi?: () => void;
 	};
-	let { dialect = 'latex', onAddComment, onInsertCitation }: Props = $props();
+	let { dialect = 'latex', onAddComment, sourceAnchor, onInsertCitation, onCiteByDoi }: Props = $props();
 	// merged cells have no pipe-table syntax, so the markdown editor loses merge/split. Everywhere
 	// else has a spanning form the serializer emits: \multicolumn/\multirow in LaTeX,
 	// table.cell(colspan:/rowspan:) in Typst.
@@ -46,7 +50,7 @@
 		return null;
 	}
 
-	const menuItems = buildMenuItems(dialect);
+	const menuItems = buildMenuItems();
 	const tableMenuItems = buildTableMenuItems({ dialect, canMerge: () => canMerge, canSplit: () => canSplit });
 
 	function getVisibleTableMenuItems() {
@@ -126,6 +130,8 @@
 		const hasTextSelection = sel instanceof TextSelection && !sel.empty;
 
 		const items: ContextMenuItem[] = menuItems.map(entry);
+		const refine = refineMenuItems(hasTextSelection);
+		if (refine.length) items.push({ separator: true }, ...refine);
 		if (onAddComment) {
 			// the same gesture the floating tooltip offers, for people who reach for the menu;
 			// disabled rather than hidden with nothing selected, so it is discoverable
@@ -140,7 +146,7 @@
 							const view = editorViewStore.current!;
 							const s = view.state.selection;
 							if (!(s instanceof TextSelection) || s.empty) return;
-							const anchor = buildPmAnchor(view.state.doc, s.from, s.to);
+							const anchor = sourceAnchor?.(view.state.doc, s.from, s.to) ?? null;
 							onAddComment(anchor);
 							// keep the commented text visible once the composer takes focus
 							if (anchor) setPmCommentPending(view, { from: s.from, to: s.to });
@@ -148,11 +154,10 @@
 				}
 			);
 		}
-		if (onInsertCitation)
-			items.push(
-				{ separator: true },
-				{ label: m.zotero_insert_citation(), icon: BookMarked, onclick: () => run(() => onInsertCitation()) }
-			);
+		// the citation sources share one group
+		if (onInsertCitation || onCiteByDoi) items.push({ separator: true });
+		if (onInsertCitation) items.push({ label: m.zotero_insert_citation(), icon: BookMarked, onclick: () => run(() => onInsertCitation()) });
+		if (onCiteByDoi) items.push({ label: m.cite_doi_insert(), icon: BookPlus, onclick: () => run(() => onCiteByDoi()) });
 		if (isOnTable) items.push({ separator: true }, ...getVisibleTableMenuItems().map(entry));
 		void showContextMenu(items, { x: event.clientX, y: event.clientY });
 

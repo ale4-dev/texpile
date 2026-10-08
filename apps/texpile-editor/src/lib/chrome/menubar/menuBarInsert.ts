@@ -9,6 +9,8 @@ import { computeMathAttrs } from '$lib/editor/visual/extensions/mathlivebridge/m
 import { createCodeBlock } from '$lib/editor/visual/extensions/codemirrorbridge/cmcommands';
 import { createTableNode } from '$lib/editor/visual/tableUtils';
 import { typTableNode } from '$lib/languages/typst/visual/blockInsertItems';
+import { definedFunctions, environmentSuggestions, environmentsInDoc } from '$lib/languages/typst/visual/envNames';
+import { envHeadReadsBack } from '$lib/languages/typst/visual/extensions/env/envHeadEdits';
 import { mdTableNode } from '$lib/languages/markdown/visual/blockInsertItems';
 import { toggleLinkCommand } from '$lib/editor/visual/toolbar/markState';
 import { computeLink as texLink, computeWrapBlock } from '$lib/languages/latex/intellisense/shortcuts';
@@ -29,13 +31,17 @@ import {
 	computeLink as typLink
 } from '$lib/languages/typst/source/sourceInsert';
 import { runVisualCommand, insertNode, activeCm, cmReplace, cmApply } from '$lib/chrome/menuBarCommands';
+import { makeDrawnInserts } from './menuBarInsertDrawn';
+import { makeTypstInserts } from './menuBarInsertTypst';
 import type { formatOf } from '$lib/workspace/documentBuffer.svelte';
 import type { Node as PMNode } from 'prosemirror-model';
 import { m } from '$lib/paraglide/messages';
+import { symbolPicker } from '$lib/editor/symbols/symbolPicker.svelte';
+import { latexSymbolSet } from '$lib/languages/latex/symbols/latexSymbolSet';
 
 type InsertDeps = {
 	dialect: () => ReturnType<typeof formatOf>;
-	askText: (title: string, initial?: string) => Promise<string | null>;
+	askText: (title: string, initial?: string, offered?: string[]) => Promise<string | null>;
 	pickImage: () => void;
 };
 
@@ -50,11 +56,19 @@ const MATH_ENVS: Record<string, string> = {
 	bmatrix: '\\begin{bmatrix}\na & b \\\\\nc & d\n\\end{bmatrix}',
 	pmatrix: '\\begin{pmatrix}\na & b \\\\\nc & d\n\\end{pmatrix}'
 };
+// the ones Typst has a form for, as Typst writes them; gather, multline and split have none
+const TYPST_MATH_ENVS: Record<string, string> = {
+	aligned: 'a &= b \\\nc &= d',
+	cases: 'f(x) = cases(x & "if" x >= 0, -x & "otherwise")',
+	bmatrix: 'mat(delim: "[", a, b; c, d)',
+	pmatrix: 'mat(a, b; c, d)'
+};
 
-function insertMathEnvironment(latex: string) {
+function insertMathEnvironment(content: string, dialect: ReturnType<typeof formatOf>) {
 	const v = editorViewStore.current;
 	if (!v) return;
-	const node = v.state.schema.nodes.block_math.create(computeMathAttrs(latex), v.state.schema.text(latex));
+	const attrs = dialect === 'typ' ? null : computeMathAttrs(content);
+	const node = v.state.schema.nodes.block_math.create(attrs, v.state.schema.text(content));
 	v.dispatch(v.state.tr.replaceSelectionWith(node));
 	v.focus();
 }
@@ -67,21 +81,39 @@ export function makeInsertHandlers(deps: InsertDeps): {
 		const dialect = deps.dialect();
 		const cm = activeCm();
 		if (cm) {
-			// the env/matrix items only render for tex, so the non-tex branch is inline/display only
+			// the env/matrix items render for tex, and those Typst can hold for typ (written as the visual editor writes them)
 			if (value === 'inline') cmReplace(cm, '$', '$');
 			else if (value === 'display') {
 				if (dialect === 'tex') cmReplace(cm, '\\[\n', '\n\\]');
 				else if (dialect === 'typ') cmReplace(cm, '$ ', ' $');
 				else cmReplace(cm, '$$\n', '\n$$');
 			} else if (dialect === 'tex' && MATH_ENVS[value]) cmReplace(cm, MATH_ENVS[value]);
+			else if (dialect === 'typ' && TYPST_MATH_ENVS[value]) cmReplace(cm, `$ ${TYPST_MATH_ENVS[value]} $`);
 			return;
 		}
 		if (value === 'inline') runVisualCommand(createMathField());
 		else if (value === 'display') runVisualCommand(createMathField(true));
-		else if (dialect === 'tex' && MATH_ENVS[value]) insertMathEnvironment(MATH_ENVS[value]);
+		else if (dialect === 'tex' && MATH_ENVS[value]) insertMathEnvironment(MATH_ENVS[value], dialect);
+		else if (dialect === 'typ' && TYPST_MATH_ENVS[value]) insertMathEnvironment(TYPST_MATH_ENVS[value], dialect);
+	}
+
+	const insertDrawn = makeDrawnInserts(deps);
+	const insertTypst = makeTypstInserts(deps);
+
+	/** the function a new typst environment calls, offering the ones the document defines first; a
+	 *  name that would not read back as an environment is not taken */
+	async function askTypstEnvironment(source: string, used: string[]): Promise<string | null> {
+		const offered = environmentSuggestions(source, used);
+		const initial = definedFunctions(source)[0] ?? 'block';
+		const name = (await deps.askText(m.menubar_prompt_typst_environment_name(), initial, offered))?.trim();
+		return name && envHeadReadsBack(name, null) ? name : null;
 	}
 
 	async function insertSelect(value: string) {
+		if (deps.dialect() === 'typ' && (await insertTypst(value))) return;
+		// Symbol…: the picker inserts where the caret is, in either mode
+		if (deps.dialect() === 'tex' && value === 'symbolpicker') return void (await symbolPicker.show(latexSymbolSet));
+		if (await insertDrawn(value)) return;
 		const dialect = deps.dialect();
 		const cm = activeCm();
 		if (cm) {
@@ -110,12 +142,17 @@ export function makeInsertHandlers(deps: InsertDeps): {
 					break;
 				case 'citation': {
 					const key = referenceStore.current?.[0]?.key ?? 'key';
-					if (dialect === 'tex') cmReplace(cm, `\\autocite{${key}}`);
+					if (dialect === 'tex') cmReplace(cm, `\\cite{${key}}`);
 					else if (dialect === 'typ') cmReplace(cm, `@${key}`);
 					break;
 				}
 				case 'environment': {
-					if (dialect !== 'tex') break; // tex-only item; unreachable elsewhere
+					if (dialect === 'typ') {
+						const name = await askTypstEnvironment(s.doc.toString(), []);
+						if (name) cmReplace(cm, `#${name}[`, ']');
+						break;
+					}
+					if (dialect !== 'tex') break; // tex and typst items; unreachable elsewhere
 					const name = (await deps.askText(m.menubar_prompt_environment_name(), 'center'))?.trim();
 					if (name) cmReplace(cm, `\\begin{${name}}\n`, `\n\\end{${name}}`);
 					break;
@@ -165,11 +202,18 @@ export function makeInsertHandlers(deps: InsertDeps): {
 				insertNode((state) =>
 					state.schema.nodes.typ_ref
 						? state.schema.nodes.typ_ref.create({ target: key })
-						: state.schema.nodes.citation.create({ variant: 'autocite' }, state.schema.text(key))
+						: state.schema.nodes.citation.create({ variant: 'cite' }, state.schema.text(key))
 				);
 				break;
 			}
 			case 'environment': {
+				if (dialect === 'typ') {
+					const doc = editorViewStore.current?.state.doc;
+					const found = doc ? environmentsInDoc(doc) : { source: '', used: [] };
+					const typName = await askTypstEnvironment(found.source, found.used);
+					if (typName) insertNode((state) => state.schema.nodes.typ_env.create({ name: typName }, state.schema.nodes.paragraph.create()));
+					break;
+				}
 				const name = await deps.askText(m.menubar_prompt_environment_name(), 'center');
 				if (name?.trim())
 					insertNode((state) => state.schema.nodes.environment.create({ name: name.trim() }, state.schema.nodes.paragraph.create()));

@@ -10,13 +10,13 @@
 	import type { DraftController } from '$lib/draft/draftController.svelte';
 	import type TypstPreview from '$lib/languages/typst/preview/TypstPreview.svelte';
 	import type TypstPreviewRemote from '$lib/languages/typst/preview/TypstPreviewRemote.svelte';
-	import { compileConfig } from '$lib/workspace/projectConfigSync.svelte';
+	import { latexLiveMode } from '$lib/workspace/projectConfigSync.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	// DraftView drags in opentype.js; draft mode is opt-in, so it loads only when first shown
 	let DraftViewComp = $state<typeof DraftView | null>(null);
 	$effect(() => {
-		if (!guest && compileConfig.current.latex.liveMode && !DraftViewComp) {
+		if (!guest && latexLiveMode() && !DraftViewComp) {
 			import('$lib/draft/DraftView.svelte').then(
 				(mod) => (DraftViewComp = mod.default),
 				(e) => console.error('Failed to load draft view chunk:', e)
@@ -62,8 +62,6 @@
 		typstPreviewHost: string | null;
 		/** a Typst preview is what this pane is FOR, even before it has an address */
 		typstPreviewWanted: boolean;
-		/** compile the previewed document to a PDF on disk (the preview itself never writes one) */
-		onSaveTypstPdf: () => Promise<void>;
 		/** a splitter is being dragged; the frame holds its size rather than reflowing every frame */
 		paneDragging: boolean;
 		/** move the preview into its own OS window; null (the popped-out body) hides the button */
@@ -94,7 +92,6 @@
 		draft,
 		typstPreviewHost,
 		typstPreviewWanted,
-		onSaveTypstPdf,
 		paneDragging,
 		onPopout = null,
 		docked = false,
@@ -119,14 +116,12 @@
 				? 'no-main'
 				: typstPreviewWanted
 					? 'typst'
-					: compileConfig.current.latex.liveMode
+					: latexLiveMode()
 						? 'draft'
 						: 'pdf'
 	);
 	/** what the bar calls this pane; live mode is a different thing from a compiled PDF */
-	const previewLabel = $derived(
-		!guest && compileConfig.current.latex.liveMode ? m.wsview_live_preview_label() : m.wsview_pdf_preview_label()
-	);
+	const previewLabel = $derived(!guest && latexLiveMode() ? m.wsview_live_preview_label() : m.wsview_pdf_preview_label());
 	/** the PDF bar carries the label and the popout itself; Typst brings its own */
 	const ownsItsBar = $derived(body === 'pdf' || body === 'typst' || body === 'typst-remote' || body === 'draft');
 
@@ -191,7 +186,7 @@
 			     it is the same document and it is ahead of it, since it needs no save. Rendered on
 			     `wanted` rather than on the host so the PDF never flashes up while it starts. -->
 			{#if TypstPreviewComp}
-				<TypstPreviewComp host={typstPreviewHost} {paneDragging} {onSaveTypstPdf} {onPopout} asTabStrip={docked} />
+				<TypstPreviewComp host={typstPreviewHost} {paneDragging} {onPopout} asTabStrip={docked} />
 			{/if}
 		{:else if body === 'draft'}
 			{#if DraftViewComp}
@@ -206,6 +201,8 @@
 					{onInverseSync}
 					{onSettled}
 					{onDiagnostics}
+					settleEdits={() => draft.settleForSave()}
+					paused={draft.paused}
 				/>
 			{/if}
 		{:else}

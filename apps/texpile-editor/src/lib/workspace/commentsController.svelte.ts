@@ -3,18 +3,9 @@
 //
 // Kept out of WorkspaceView the way the other pipelines are - the view is already long, and none of
 // this needs anything from it but the workspace root and a way to open a file.
-import { CommentStore, relativeTo } from '$lib/comments/store.svelte';
-import {
-	buildAnchor,
-	dialectOfPath,
-	prepareLoose,
-	resolveAnchor,
-	resolveAnchorLoose,
-	resolveAnchorLooseIn,
-	toSourceAnchor,
-	type CommentAnchor,
-	type LooseHaystack
-} from '$lib/comments/anchor';
+import { untrack } from 'svelte';
+import { CommentStore, relativeTo, type CommentLogShare } from '$lib/comments/store.svelte';
+import { buildAnchor, resolveAnchor, type CommentAnchor } from '$lib/comments/anchor';
 import {
 	anchorEvent,
 	deleteEvent,
@@ -22,9 +13,9 @@ import {
 	editEvent,
 	moveEvent,
 	openEvent,
-	placeEvent,
 	replyEvent,
 	resolveEvent,
+	parseLog,
 	type CommentEvent,
 	type CommentMessage,
 	type CommentThread
@@ -32,12 +23,22 @@ import {
 import { lineOf } from '$lib/comments/anchorLocate';
 import { resolveAuthor, forgetAuthor } from '$lib/comments/author';
 import type { CommentRange } from '$lib/editor/visual/extensions/comments';
+import { canChangeMessage, isSuggestion, touchesSuggestions } from '$lib/comments/suggest';
+import { activeSuggestions, suggestionVisibility } from '$lib/comments/activeSuggestions.svelte';
+import type { EditMode } from '$lib/comments/suggestCompare';
+import { SuggestionsController, type SourceEdit } from './suggestions/suggestionsController';
+import type { RemoteEdit } from './suggestions/suggestionStates';
+import { driftedAnchors, placeThreads, withAnchors } from './threadPlacement';
+import { ghostThreads, placementBadges } from './threadBadges';
+import { PlacementVerdicts } from './placementVerdicts';
 
 type Deps = {
 	/** absolute workspace root, or null before a folder is open */
 	root: () => string | null;
 	/** the Preferences name; blank falls back to git */
 	preferredAuthor: () => string;
+	/** whether there is a name to sign with, asking for one when there is none; false when the reader would not give one */
+	ensureName?: () => Promise<boolean>;
 	/**
 	 * The open file's CURRENT text. `reanchor` snapshots the text only when a file opens, which is
 	 * fine for re-searching but wrong for building NEW anchors: in a shared session the buffer
@@ -52,19 +53,20 @@ type Deps = {
 	 * there. False means "not from here" and the line jump is used instead.
 	 */
 	revealInVisual?: (id: string) => boolean;
-	/**
-	 * Hand a locally-made event to the session, if there is one.
-	 *
-	 * Called for everything this side originates and nothing it receives, so an event cannot loop:
-	 * ingest() never publishes.
-	 */
-	publish?: (event: CommentEvent) => void;
+	liveAnchors?: (text: string) => Map<string, CommentAnchor> | null;
+	mode?: () => EditMode;
+	applyEdit?: (edit: SourceEdit) => Promise<boolean>;
+	markDecision?: (seq: number) => void;
+	saveNow?: () => void;
+	compares?: () => boolean;
+	rewraps?: () => boolean;
 };
 
 export class CommentsController {
 	readonly store = new CommentStore();
 	/** the thread the reader is looking at, highlighted in both the panel and the editor */
 	selected = $state<string | null>(null);
+	toReveal = $state<{ id: string; seq: number } | null>(null);
 	/** where each thread on the ACTIVE file sits now; what the editor decorates */
 	ranges = $state<CommentRange[]>([]);
 	/** threads on the active file whose quote is gone from it */
@@ -75,7 +77,7 @@ export class CommentsController {
 	 * these merely have no rendered text to sit on, and switching to source brings them back.
 	 * Empty whenever the source editor is the view; it draws everything it can resolve.
 	 */
-	notVisible = $state<Set<string>>(new Set());
+	private hiddenNow = $state<Set<string>>(new Set());
 	/**
 	 * Threads on the active file that were found, but whose surroundings changed (see
 	 * ResolvedAnchor.weak). If the file holds their sentence twice the highlight may be on the
@@ -102,33 +104,81 @@ export class CommentsController {
 	private activeLost = new Set<string>();
 	private activeHidden = new Set<string>();
 	/** the reader is in the visual editor; see setVisualMode for why the hidden badge depends on it */
-	private visual = false;
+	private visual = $state(false);
 	/** a thread we are opening a different file for; selected once that file re-anchors */
 	private pendingOpen: string | null = null;
-	/** verdicts whose place event is still being written, keyed d:/h: + thread id; a second pass
-	 *  landing before the first commit (a disk reload and a log refresh from one watcher event)
-	 *  must not write the same line twice */
-	private inFlight = new Map<string, boolean>();
+	private lastWords = new Map<string, CommentAnchor>();
+	private carried: { text: string; anchors: Map<string, CommentAnchor> } | null = null;
+	knownAnchors = $state.raw<Map<string, CommentAnchor>>(new Map());
 
-	constructor(private readonly deps: Deps) {}
+	withKnownAnchors(threads: CommentThread[]): CommentThread[] {
+		return withAnchors(threads, this.knownAnchors);
+	}
+
+	readonly suggestions: SuggestionsController;
+	private readonly verdicts = new PlacementVerdicts({
+		store: this.store,
+		author: () => this.author(),
+		commit: (...events) => this.commit(...events)
+	});
+
+	constructor(private readonly deps: Deps) {
+		this.suggestions = new SuggestionsController({
+			store: this.store,
+			activeFile: () => this.file,
+			activeText: () => this.fresh(),
+			mode: () => deps.mode?.() ?? 'editing',
+			author: () => this.author(),
+			commit: (...events) => this.commit(...events),
+			applyEdit: (edit) => deps.applyEdit?.(edit) ?? Promise.resolve(false),
+			markDecision: (seq) => deps.markDecision?.(seq),
+			saveNow: () => deps.saveNow?.(),
+			compares: () => deps.compares?.() ?? true,
+			rewraps: () => deps.rewraps?.() ?? false,
+			onLost: (file, lost) => this.suggestionsLost(file, lost)
+		});
+	}
+
+	get notVisible(): Set<string> {
+		const hidden = suggestionVisibility.current.hidden;
+		return this.visual && hidden.size ? new Set([...this.hiddenNow, ...hidden]) : this.hiddenNow;
+	}
+
+	get partial(): Set<string> {
+		return this.visual ? suggestionVisibility.current.partial : new Set();
+	}
 
 	get threads(): CommentThread[] {
 		return this.store.threads;
+	}
+
+	get ghosts(): Set<string> {
+		return ghostThreads(this.ranges, this.store.threads, this.knownAnchors);
 	}
 	get activeFile(): string | null {
 		return this.file;
 	}
 
 	async load(root: string | null): Promise<void> {
+		if (root !== this.store.root) await this.suggestions.finish();
 		forgetAuthor();
 		this.selected = null;
 		this.pendingOpen = null;
 		this.pending = null;
 		this.activeHidden = new Set();
 		this.activeLost = new Set();
-		this.notVisible = new Set();
+		this.hiddenNow = new Set();
 		this.weak = new Set();
+		this.knownAnchors = new Map();
+		this.lastWords.clear();
+		this.carried = null;
 		await this.store.load(root);
+		const ghosts = this.store.threads.filter((t) => !t.anchor.quote && !isSuggestion(t));
+		if (ghosts.length && this.store.writable) {
+			const by = await this.author();
+			const at = new Date().toISOString();
+			await this.commit(...ghosts.map((t) => deleteEvent({ thread: t.id, by, at })));
+		}
 	}
 
 	/**
@@ -141,9 +191,17 @@ export class CommentsController {
 	 */
 	reanchor(absPath: string | null, text: string): void {
 		const root = this.deps.root();
-		this.file = absPath && root ? relativeTo(root, absPath) : null;
+		const file = absPath && root ? relativeTo(root, absPath) : null;
+		if (file !== this.file && this.knownAnchors.size > 0) this.knownAnchors = new Map();
+		this.file = file;
 		this.text = text;
 		this.resolve();
+	}
+
+	carryLive(): void {
+		const text = this.fresh();
+		const anchors = this.deps.liveAnchors?.(text);
+		this.carried = anchors ? { text, anchors } : null;
 	}
 
 	/**
@@ -153,8 +211,7 @@ export class CommentsController {
 	 * the panel jump away because a colleague's comment arrived would be its own bug.
 	 */
 	async refresh(): Promise<void> {
-		// A guest holds the session's log in memory against a sentinel root - re-reading would find
-		// no file and clear it. Their updates arrive as events over the wire; disk is the host's.
+		// a guest has no file to re-read: its log is the session's, and disk is the host's
 		if (!this.store.writable) return;
 		await this.store.reload();
 		this.resolve();
@@ -169,22 +226,10 @@ export class CommentsController {
 	 * the weaker evidence and must not survive next to it.
 	 */
 	private applyOrphans(): void {
-		const merged = new Set(this.activeLost);
-		for (const t of this.store.threads) {
-			if (t.file === this.file) continue; // measured above, not remembered
-			if (t.detached) merged.add(t.id);
-		}
-		this.orphaned = merged;
 		// nothing is "not in this view" while the view is source; see setVisualMode
-		const hidden = new Set<string>();
-		if (this.visual) {
-			for (const id of this.activeHidden) hidden.add(id);
-			for (const t of this.store.threads) {
-				if (t.file === this.file) continue; // measured above, not remembered
-				if (t.hidden) hidden.add(t.id);
-			}
-		}
-		this.notVisible = hidden;
+		const { orphaned, hidden } = placementBadges(this.store.threads, this.file, this.activeLost, this.activeHidden, this.visual);
+		this.orphaned = orphaned;
+		this.hiddenNow = hidden;
 	}
 
 	/**
@@ -213,45 +258,38 @@ export class CommentsController {
 		return this.text;
 	}
 
-	/** the open file's markup family, for the normalized quote search */
-	private dialect() {
-		return dialectOfPath(this.file ?? '');
-	}
-
 	/** recompute the active file's ranges from the current log and text */
 	private resolve(): void {
 		if (!this.file) {
 			this.ranges = [];
 			this.activeLost = new Set();
 			this.weak = new Set();
+			this.suggestions.clear();
 			this.applyOrphans();
 			return;
 		}
 		const text = this.fresh();
-		const ranges: CommentRange[] = [];
-		const lost = new Set<string>();
-		const weak = new Set<string>();
-		// normalized once for the whole file, and only if something actually misses the fast path
-		let hay: LooseHaystack | null = null;
-		for (const t of this.store.forFile(this.file)) {
-			// loose second: an anchor authored in the visual editor is rendered-dialect, and only the
-			// normalized search can carry it back onto source with its wraps, escapes and ligatures
-			let hit = resolveAnchor(text, t.anchor);
-			if (!hit) {
-				hay ??= prepareLoose(text, this.dialect());
-				hit = resolveAnchorLooseIn(hay, t.anchor);
-			}
-			if (hit) {
-				ranges.push({ id: t.id, from: hit.from, to: hit.to, resolved: t.resolved });
-				if (hit.weak) weak.add(t.id);
-			} else lost.add(t.id);
-		}
+		const carried = this.carried;
+		this.carried = null;
+		const live = this.deps.liveAnchors?.(text) ?? null;
+		const handed = carried && carried.text === text ? carried.anchors : null;
+		const placed = placeThreads(
+			this.store.forFile(this.file),
+			text,
+			(id) => live?.get(id) ?? handed?.get(id) ?? null,
+			untrack(() => this.knownAnchors),
+			this.lastWords
+		);
+		const { ranges, lost, weak } = placed;
+		for (const id of this.suggestions.place(this.file, text)) lost.add(id);
+		if (placed.known) this.knownAnchors = placed.known;
 		this.ranges = ranges;
 		this.activeLost = lost;
 		this.weak = weak;
 		this.applyOrphans();
-		void this.recordDetached(this.file, lost);
-		if (this.pendingOpen) {
+		void this.verdicts.detached(this.file, lost);
+		// once its own file is up: one that never opens (gone from disk) must not take the selection at every refresh
+		if (this.pendingOpen && this.store.forFile(this.file).some((t) => t.id === this.pendingOpen)) {
 			const target = this.pendingOpen;
 			this.pendingOpen = null;
 			this.selected = target;
@@ -259,37 +297,18 @@ export class CommentsController {
 		}
 	}
 
-	/**
-	 * Write back what we just measured, for the threads whose recorded status was wrong or missing.
-	 *
-	 * ONLY the differences. Two reasons, and the second is not optional: appending on every pass
-	 * would grow a committed file every time anyone opened a folder, and - because appending
-	 * reassigns `store.threads`, which resolve() reads - it would re-enter resolve() and append
-	 * again, forever. Writing only deltas makes the second pass find nothing to say and stop.
-	 */
-	private async recordDetached(file: string, lost: Set<string>): Promise<void> {
-		if (!this.store.writable) return;
-		const stale = this.store.forFile(file).filter((t) => asFlag(t.detached) !== lost.has(t.id));
-		await this.recordPlacement('d:', stale, lost, (t) => ({ thread: t.id, detached: lost.has(t.id) }));
-	}
-
-	/** the write behind recordDetached and recordHidden, skipping verdicts already on their way */
-	private async recordPlacement(
-		key: 'd:' | 'h:',
-		stale: CommentThread[],
-		lost: Set<string>,
-		fields: (t: CommentThread) => { thread: string; detached?: boolean; hidden?: boolean }
-	): Promise<void> {
-		const fresh = stale.filter((t) => this.inFlight.get(key + t.id) !== lost.has(t.id));
-		if (fresh.length === 0) return;
-		for (const t of fresh) this.inFlight.set(key + t.id, lost.has(t.id));
-		try {
-			const by = await this.author();
-			const at = new Date().toISOString();
-			await this.commit(...fresh.map((t) => placeEvent({ ...fields(t), by, at })));
-		} finally {
-			for (const t of fresh) this.inFlight.delete(key + t.id);
-		}
+	private suggestionsLost(file: string, lost: Set<string>): void {
+		if (file !== this.file) return;
+		const ids = new Set(
+			this.store
+				.forFile(file)
+				.filter(isSuggestion)
+				.map((t) => t.id)
+		);
+		const next = new Set([...this.activeLost].filter((id) => !ids.has(id)));
+		for (const id of lost) next.add(id);
+		this.activeLost = next;
+		this.applyOrphans();
 	}
 
 	/**
@@ -301,9 +320,7 @@ export class CommentsController {
 	async recordHidden(file: string, lost: Set<string>): Promise<void> {
 		this.activeHidden = file === this.file ? lost : new Set();
 		this.applyOrphans();
-		if (!this.store.writable) return;
-		const stale = this.store.forFile(file).filter((t) => asFlag(t.hidden) !== lost.has(t.id));
-		await this.recordPlacement('h:', stale, lost, (t) => ({ thread: t.id, hidden: lost.has(t.id) }));
+		await this.verdicts.hidden(file, lost);
 	}
 
 	/**
@@ -323,17 +340,12 @@ export class CommentsController {
 	}
 
 	/**
-	 * The visual editor's version of beginAdd: it hands over a rendered-dialect anchor because its
-	 * own positions mean nothing to anyone else. Converted to SOURCE dialect right here, at the
-	 * gesture, against the live text - the source file is the source of truth, and a stored quote
-	 * sliced from it resolves exactly in the source editor and survives the loose search back into
-	 * every visual view. Precise when the quote crosses only markup, the enclosing block when it
-	 * crossed an atom, detached only when nothing at all is locatable (see toSourceAnchor).
+	 * The visual editor's version of beginAdd: it hands over an anchor it built through the source
+	 * map, a range of the file like any other, so nothing here converts.
 	 */
 	beginAddAnchored(anchor: CommentAnchor | null): void {
 		if (!this.file || !anchor) return;
-		const converted = toSourceAnchor(this.fresh(), this.dialect(), anchor);
-		this.pending = { quote: converted.anchor.quote, anchor: converted.anchor };
+		this.pending = { quote: anchor.quote, anchor };
 		this.selected = null;
 	}
 
@@ -381,9 +393,37 @@ export class CommentsController {
 		else if (thread.file === this.file) this.dropRange(thread.id);
 	}
 
+	async reattach(thread: CommentThread, from: number, to: number): Promise<void> {
+		if (!this.file || to <= from) return;
+		const text = this.fresh();
+		if (to > text.length) return;
+		await this.moveAnchor(thread, buildAnchor(text, from, to), this.file);
+	}
+
+	async reattachAnchored(thread: CommentThread, anchor: CommentAnchor): Promise<void> {
+		if (!this.file) return;
+		await this.moveAnchor(thread, anchor, this.file);
+	}
+
+	async syncAnchorsToText(absPath: string, text: string): Promise<void> {
+		const root = this.deps.root();
+		if (!root || !this.file || !this.store.writable) return;
+		if (relativeTo(root, absPath) !== this.file) return;
+		const live = this.deps.liveAnchors?.(text);
+		if (!live) return;
+		const moved = driftedAnchors(this.store.forFile(this.file), text, live);
+		if (moved.length === 0) return;
+		const by = await this.author();
+		const at = new Date().toISOString();
+		await this.commit(...moved.map((m) => anchorEvent({ thread: m.id, anchor: m.anchor, by, at })));
+		for (const m of moved) this.placeOne(m.id, m.anchor, false);
+	}
+
 	/** returns the new message's id, or null if there was nothing to write */
 	async reply(thread: CommentThread, body: string, by?: string): Promise<string | null> {
 		if (!body.trim()) return null;
+		// an MCP client signs with its own name; a new comment asked before it was begun (workspaceActionSurfaces)
+		if (!by && !(await (this.deps.ensureName?.() ?? true))) return null;
 		const id = crypto.randomUUID();
 		await this.commit(replyEvent({ id, thread: thread.id, by: await this.author(by), body: body.trim(), at: new Date().toISOString() }));
 		return id;
@@ -391,13 +431,17 @@ export class CommentsController {
 
 	async setResolved(thread: CommentThread, resolved: boolean, by?: string): Promise<void> {
 		await this.commit(resolveEvent({ thread: thread.id, by: await this.author(by), resolved, at: new Date().toISOString() }));
+		if (isSuggestion(thread)) {
+			if (thread.file === this.file) this.resolve();
+			return;
+		}
 		this.ranges = this.ranges.map((r) => (r.id === thread.id ? { ...r, resolved } : r));
 	}
 
 	/** one thread's range on the active file, from the live text; lost there when the quote is not */
 	private placeOne(id: string, anchor: CommentAnchor, resolved: boolean): void {
 		const text = this.fresh();
-		const hit = resolveAnchor(text, anchor) ?? resolveAnchorLoose(text, anchor, this.dialect());
+		const hit = anchor.quote ? resolveAnchor(text, anchor) : { from: anchor.start, to: anchor.end, exact: true, weak: false };
 		const rest = this.ranges.filter((r) => r.id !== id);
 		this.ranges = hit ? [...rest, { id, from: hit.from, to: hit.to, resolved }] : rest;
 		if (hit) this.activeLost.delete(id);
@@ -426,27 +470,22 @@ export class CommentsController {
 	/** rewrite one message. Not restricted to your own: the log is a file anyone can edit anyway */
 	async editMessage(message: CommentMessage, body: string): Promise<void> {
 		if (!body.trim() || body.trim() === message.body) return;
+		const thread = this.threads.find((t) => t.messages.some((x) => x.id === message.id));
+		if (thread && !canChangeMessage(thread, message)) return;
 		await this.commit(editEvent({ message: message.id, body: body.trim(), by: await this.author(), at: new Date().toISOString() }));
 	}
 
 	/** drop one message; the fold drops the thread with it if that was the last of it */
 	async removeMessage(thread: CommentThread, message: CommentMessage): Promise<void> {
+		if (!canChangeMessage(thread, message)) return;
 		await this.commit(deleteMessageEvent({ message: message.id, by: await this.author(), at: new Date().toISOString() }));
-		if (thread.messages.length <= 1) {
-			this.ranges = this.ranges.filter((r) => r.id !== thread.id);
-			if (this.selected === thread.id) this.selected = null;
-		}
-	}
-
-	async remove(thread: CommentThread): Promise<void> {
-		await this.commit(deleteEvent({ thread: thread.id, by: await this.author(), at: new Date().toISOString() }));
-		this.ranges = this.ranges.filter((r) => r.id !== thread.id);
-		if (this.selected === thread.id) this.selected = null;
+		if (thread.messages.length <= 1) this.dropRange(thread.id);
 	}
 
 	/** reveal a thread: scroll to it here, or open the file it is on and scroll once it lands */
 	open(thread: CommentThread): void {
 		this.selected = thread.id;
+		this.toReveal = { id: thread.id, seq: (this.toReveal?.seq ?? 0) + 1 };
 		if (thread.file === this.file) {
 			this.scrollTo(thread.id);
 			return;
@@ -457,27 +496,44 @@ export class CommentsController {
 		this.deps.openFileAt(`${root}/${thread.file}`, 1);
 	}
 
-	/** everything this side originates: state, disk if there is any, then the session */
+	/** everything this side originates: state, then disk if there is any; a session's log shares it on the way */
 	private async commit(...events: CommentEvent[]): Promise<void> {
 		await this.store.append(...events);
-		for (const e of events) this.deps.publish?.(e);
+	}
+
+	/** follow a session's log: `seed` puts this side's own log in first, the host's part */
+	startSharing(share: CommentLogShare, seed: boolean): void {
+		this.store.startSharing(share, seed);
+		this.suggestions.answered();
+		this.resolve();
+	}
+
+	stopSharing(): void {
+		this.store.stopSharing();
 	}
 
 	/**
-	 * An event from someone else in the session.
+	 * Someone else changed the session's log: `added` in the order it stands, `dropped` when lines went.
 	 *
-	 * Never publishes - that is what stops a rebroadcast bouncing forever - and never re-anchors the
-	 * whole file. A full reanchor would re-search against `text`, which is only refreshed when a file
-	 * opens, so anything typed since would push every OTHER thread onto stale offsets and throw away
-	 * the exact mapping CodeMirror has been keeping. Only the range this event is about is touched.
+	 * A plain comment only moves its own range. Re-resolving the whole file would re-search threads
+	 * the open editor has been mapping exactly, and could snap one onto another copy of its quote.
 	 */
-	async ingest(event: CommentEvent): Promise<void> {
-		// The host echoes a guest's own event back (it broadcasts to everyone, the sender
-		// included). A thread we already hold is that echo: appending is harmless (foldLog
-		// dedupes by id) but re-resolving is NOT - a miss here badged the author's own fresh
-		// comment as detached on their own screen.
-		if (event.t === 'open' && this.store.threads.some((t) => t.id === event.id)) return;
-		await this.store.append(event);
+	received(added: string[], dropped: boolean): void {
+		const events = parseLog(added.join('\n'));
+		const before = this.store.threads;
+		// before the refit below forgets where it stood: its words come back as the rejecter's edit
+		for (const e of events) if (e.t === 'resolve' && e.decision === 'rejected') this.suggestions.expectReject(e.thread);
+		this.store.follow();
+		void this.store.flush();
+		if (dropped || events.some((e) => touchesSuggestions(e, before, events))) {
+			this.suggestions.answered();
+			this.resolve();
+			return;
+		}
+		for (const e of events) this.applyIngested(e);
+	}
+
+	private applyIngested(event: CommentEvent): void {
 		if (event.t === 'open' && event.file === this.file) {
 			this.placeOne(event.id, event.anchor, false);
 		} else if (event.t === 'resolve') {
@@ -506,15 +562,21 @@ export class CommentsController {
 		const from = relativeTo(root, fromAbs);
 		const to = relativeTo(root, toAbs);
 		if (from === to) return;
-		const affected = this.store.threads.some((t) => t.file === from || t.file.startsWith(from + '/'));
-		if (!affected) return;
+		this.suggestions.moved(from, to);
+		if (this.file && (this.file === from || this.file.startsWith(from + '/'))) this.file = to + this.file.slice(from.length);
+		if (!this.store.threads.some((t) => t.file === from || t.file.startsWith(from + '/'))) return;
 		await this.commit(moveEvent({ from, to, by: await this.author(), at: new Date().toISOString() }));
+		this.resolve();
 	}
 
-	/** a guest's catch-up: the host's whole log, served over the blob channel on join */
-	adopt(text: string, absPath: string | null, docText: string): void {
-		this.store.adoptLog(text);
-		this.reanchor(absPath, docText);
+	/** a collaborator's change to a file, as it applies here; see SuggestionsController.remoteEdit */
+	remoteEdit(file: string, before: string, after: string, edit: RemoteEdit): void {
+		void this.suggestions.remoteEdit(file, before, after, edit);
+	}
+
+	/** before a collaborator's changes go to disk, so the log never trails the file */
+	async beforeRemoteWrite(file: string, content: string): Promise<void> {
+		if (this.store.writable) await this.suggestions.beforeWrite(file, content);
 	}
 
 	private scrollTo(id: string): void {
@@ -524,27 +586,14 @@ export class CommentsController {
 		// paragraph landed at the top of the paragraph. Falls through when the reader is in source, or
 		// when this thread is one the visual view could not draw.
 		if (this.deps.revealInVisual?.(id)) return;
-		const hit = this.ranges.find((r) => r.id === id);
+		const hit = this.ranges.find((r) => r.id === id) ?? activeSuggestions.current.find((s) => s.id === id);
 		// an orphaned thread has nowhere to scroll to; the panel says so rather than jumping to line 1
 		if (hit) this.deps.openFileAt(`${this.deps.root()}/${this.file}`, lineOf(this.text, hit.from));
 	}
 
 	/** who signs an event: a caller's own name (an MCP client), else this workspace's author */
-	private author(by?: string): Promise<string> {
+	author(by?: string): Promise<string> {
 		const own = by?.trim();
 		return own ? Promise.resolve(own) : resolveAuthor(this.deps.root(), this.deps.preferredAuthor());
 	}
-}
-
-/**
- * An unrecorded status read as "fine", which is what makes browsing a project free.
- *
- * The panel only ever asks `if (t.detached)`, so "nobody has looked" and "looked, nothing wrong"
- * produce the same row. Telling them apart on disk would therefore buy nothing and cost a line per
- * thread the first time anyone opens each file - a committed log gaining hundreds of entries that
- * all say nothing is wrong. So only the interesting answer is written: `true` when the text has
- * gone, and `false` only to CORRECT a recorded `true` that is no longer so.
- */
-function asFlag(v: boolean | undefined): boolean {
-	return v === true;
 }

@@ -176,9 +176,10 @@
 				// eslint-disable-next-line id-denylist -- pdf.js DocumentInitParameters field
 				documentSource = { data: arrayBuffer };
 			} else if (source instanceof ArrayBuffer) {
-				_setSrcDataForDownload(source.slice(0)); // copy before PDF.js detaches it
+				// PDF.js detaches what it is given: it gets a copy, so the same bytes draw again (a guest's preview reopened)
+				_setSrcDataForDownload(source);
 				// eslint-disable-next-line id-denylist -- pdf.js DocumentInitParameters field
-				documentSource = { data: source };
+				documentSource = { data: source.slice(0) };
 			} else if (source instanceof Uint8Array) {
 				_setSrcDataForDownload(new Uint8Array(source).buffer.slice(0) as ArrayBuffer); // copy for download
 				// eslint-disable-next-line id-denylist -- pdf.js DocumentInitParameters field
@@ -195,10 +196,9 @@
 			if (!loadingTask) return;
 			toDestroy = loadingTask; // if the parse rejects, the task itself still needs freeing
 			const loadedPdfDocument = await loadingTask.promise;
-			toDestroy = loadedPdfDocument; // destroying the doc frees the task too
 			if (gen !== loadGen) {
 				toDestroy = null;
-				void loadedPdfDocument.destroy().catch(() => {});
+				void loadingTask.destroy().catch(() => {});
 				return;
 			}
 
@@ -214,7 +214,7 @@
 			// nulls the viewer. Its cleanup never sees this document, so free it here.
 			if (!viewer) {
 				toDestroy = null;
-				void loadedPdfDocument.destroy().catch(() => {});
+				void loadingTask.destroy().catch(() => {});
 				overlay?.remove();
 				return;
 			}

@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { tip } from '$lib/components/tooltip.svelte';
-	import { ZoomIn, ZoomOut, RotateCw, Search, ChevronUp, ChevronDown, Save, Presentation } from '@lucide/svelte';
+	import { ZoomIn, ZoomOut, RotateCw, Search, ChevronUp, ChevronDown, Save, Presentation, Contrast, Check } from '@lucide/svelte';
 	import { getPdfViewerContext } from './pdf-viewer/context';
 	import PdfZoomMenu from './PdfZoomMenu.svelte';
 	import PreviewToolbar, { type PreviewToolbarPlace } from '$lib/preview/PreviewToolbar.svelte';
+	import ColorVisionMenu from '$lib/preview/colorVision/ColorVisionMenu.svelte';
 
 	import type { Snippet } from 'svelte';
 
@@ -19,7 +20,9 @@
 		inEditor = false,
 		inPopout = false,
 		findOpen = false,
-		onToggleFind
+		onToggleFind,
+		inverted = false,
+		onToggleInvert
 	}: {
 		leading?: Snippet;
 		trailing?: Snippet;
@@ -30,6 +33,9 @@
 		/** the find bar (PdfSearchBar) is the viewer's; the bar only carries its switch */
 		findOpen?: boolean;
 		onToggleFind?: () => void;
+		/** the pages are drawn with their colors inverted; each theme keeps its own choice */
+		inverted?: boolean;
+		onToggleInvert?: () => void;
 	} = $props();
 
 	const { state: viewerState, actions } = getPdfViewerContext();
@@ -83,6 +89,25 @@
 	</button>
 {/snippet}
 
+<!-- how the pages' colors are drawn, inverted and as a color-blind reader sees them; in the "..." with those below,
+     one row each -->
+{#snippet invert(place: PreviewToolbarPlace)}
+	<button
+		class:menu-item={place === 'menu'}
+		aria-pressed={inverted}
+		onclick={onToggleInvert}
+		aria-label="Invert page colors"
+		use:tip={'Invert page colors'}
+	>
+		<Contrast size={16} />
+		{#if place === 'menu'}Invert colors{#if inverted}<Check size={14} class="ml-auto" />{/if}{/if}
+	</button>
+{/snippet}
+
+{#snippet vision(place: PreviewToolbarPlace)}
+	<ColorVisionMenu {place} />
+{/snippet}
+
 <!-- pinned: one switch for the find bar, on the bar at every width -->
 {#snippet search()}
 	<button aria-pressed={findOpen} onclick={() => onToggleFind?.()} aria-label="Find" use:tip={'Find'}>
@@ -90,7 +115,7 @@
 	</button>
 {/snippet}
 
-<!-- the three below live in the "..." at every width, where they draw as named rows -->
+<!-- these live in the "..." at every width, where they draw as named rows -->
 {#snippet rotate(place: PreviewToolbarPlace)}
 	<button
 		class:menu-item={place === 'menu'}
@@ -137,6 +162,8 @@
 		{ id: 'search', pinned: true, alignEnd: true, render: search },
 		// rarely reached for, so they sit in the ... at every width and the bar stays short
 		{ id: 'rotate', inMenu: true, render: rotate },
+		...(onToggleInvert ? [{ id: 'invert', inMenu: true, render: invert }] : []),
+		{ id: 'vision', inMenu: true, render: vision },
 		{ id: 'present', inMenu: true, render: present },
 		...(viewerState.canSavePdf ? [{ id: 'save', inMenu: true, render: save }] : [])
 	]}

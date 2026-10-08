@@ -1,10 +1,19 @@
 <script lang="ts">
-	import { fileMode, NO_PROJECT_CAPS } from '$lib/workspace/fileMode.svelte';
+	import type { DockView } from '$lib/terminal/dockView';
+	import VersionChangesModal from './VersionChangesModal.svelte';
+	import TwoVersionsModal from './TwoVersionsModal.svelte';
+	import RestoreDeletedDialog from './history/RestoreDeletedDialog.svelte';
+	import { versionChanges } from '$lib/workspace/versionChanges.svelte';
+	import { twoVersions } from '$lib/workspace/twoVersions.svelte';
+	import { restoreDeletedDialog } from '$lib/workspace/localHistory/localHistoryDialog.svelte';
+	import { fileMode, SINGLE_FILE_CAPS } from '$lib/workspace/fileMode.svelte';
 	import { onMount, onDestroy } from 'svelte';
 	import WorkspaceModals from '$lib/modals/workspace/WorkspaceModals.svelte';
 	import WorkspaceMain from './WorkspaceMain.svelte';
 	import WorkspaceChrome from './WorkspaceChrome.svelte';
 	import GlobalSearch from '$lib/search/GlobalSearch.svelte';
+	import { makeFolderReplace, makeRenameElsewhere } from './writing/workspaceReplace';
+	import type { TextEdit } from '$lib/workspace/edits/textEdits';
 	import TutorialConfirmModal from '$lib/modals/start/TutorialConfirmModal.svelte';
 	import { tabs, tabKey } from '$lib/workspace/tabs.svelte';
 	import { makeMainActions, makeChromeActions, makePaletteActions, type ActionSurfaceDeps } from './workspaceActionSurfaces';
@@ -20,31 +29,34 @@
 		toggleGlobalSearch as toggleSearchPanel
 	} from '$lib/workspace/editorCommands';
 	import { WorkspaceComments } from './workspaceComments.svelte';
+	import { wireRefiner } from './workspaceRefiner.svelte';
 	import { WorkspaceFiles } from './workspaceFiles.svelte';
 	import { WorkspaceDoc } from './workspaceDoc.svelte';
 	import { WorkspaceEditFlow } from './workspaceEditFlow.svelte';
 	import { WorkspaceIntegrations } from './workspaceIntegrations.svelte';
 	import { createWorkspacePipelines } from './workspacePipelines.svelte';
 	import { WorkspaceFormatting } from './workspaceFormatting.svelte';
-	import { attachSourceToc } from './workspaceToc.svelte';
+	import { attachSourceToc, tocListOf } from './workspaceToc.svelte';
 	import { startWorkspace } from './workspaceStartup';
 	import { projectConfigSync as projectConfig, compileConfig } from '$lib/workspace/projectConfigSync.svelte';
 	import { setPaletteActions } from '$lib/workspace/commandPalette.svelte';
 	import { PaneLayout } from '$lib/workspace/paneLayout.svelte';
 	import { TerminalDockState } from '$lib/workspace/terminalDockState.svelte';
 	import { mark } from '$lib/debug/startupDoctor';
-	import { createKeydownHandler } from '$lib/workspace/shortcuts';
+	import { createKeydownHandler, createCaptureKeydownHandler } from '$lib/workspace/shortcuts';
+	import { editSelect } from '$lib/chrome/menuBarCommands';
 	import { preferencesOpen } from '$lib/stores/dialogStore';
-	import { workspaceRoot, texFiles, activeCompare, activeFilePath } from '$lib/workspace/workspaceStore';
+	import { workspaceRoot, texFiles, activeCompare, activeFilePath, mainFile } from '$lib/workspace/workspaceStore';
 	import ZoteroCitationDialog from '$lib/zotero/ZoteroCitationDialog.svelte';
+	import CiteByDoiDialog from '$lib/cite/CiteByDoiDialog.svelte';
 	import { settings } from '$lib/settings';
-	import { basename, dirname, isDesktop } from '$lib/workspace/fileSystem';
+	import { basename, dirname, isDesktop, searchInFolder } from '$lib/workspace/fileSystem';
 	import { diskProvider } from '$lib/workspace/diskProvider';
 	import type { WorkspaceProvider } from '$lib/workspace/workspaceProvider';
 	// the file-access seam: the host gets the disk-backed provider by default; a guest session
 	// mounts this same view with a CRDT-backed one. caps gate the host-only features.
 	let { provider: hostProvider = diskProvider, session = collabHost }: { provider?: WorkspaceProvider; session?: EditSession } = $props();
-	const provider = $derived(fileMode.current ? { ...hostProvider, caps: NO_PROJECT_CAPS } : hostProvider);
+	const provider = $derived(fileMode.current ? { ...hostProvider, caps: SINGLE_FILE_CAPS } : hostProvider);
 	// all file access flows through the provider; these thin delegates keep the existing call sites
 	// (and scan's wrapped {root,...} shape) intact
 	// true for the disk-backed host; false for a guest session. Gates the host-only lifecycle
@@ -56,7 +68,6 @@
 	const canTrash = $derived(!!provider.trash && !!provider.restore);
 	// a guest session: host chrome (compile/terminal/git/file-ops/share) hidden
 	const guest = $derived(session.isGuest);
-	import { modLabel } from '$lib/platform';
 	import { hasVisualMode, isRawTextKind } from '$lib/workspace/documentBuffer.svelte';
 
 	// the open document, its parse/mode lifecycle, and the edit-persistence flow live in
@@ -80,12 +91,22 @@
 		modes,
 		kind: () => kind,
 		guest: () => guest,
-		jumpToFileLine: (abs, line) => nav.syncJumpToFileLine(abs, line)
+		jumpToFileLine: (abs, line) => nav.syncJumpToFileLine(abs, line),
+		parseVisual: async (text) => (await wsdoc.tryParseVisual(text)).parsed ?? null,
+		flushSave: () => saver.flush()
 	});
 	const commentsCtl = commentsW.ctl;
+	wireRefiner({ comments: commentsW, doc, modes, kind: () => kind, guest: () => guest });
 	// an outside write adopted into the open file (an agent, vim) re-places its threads now, so a
 	// rewritten quote badges detached at once rather than at the next mode switch
-	external.onAdopted = () => commentsW.reanchorNow();
+	external.onAdopted = () => void commentsW.adoptDisk();
+	unsaved.onDiscard = (path) => commentsW.discarded(path);
+	saver.verify = (path, content) => doc.verifyForWrite(path, content);
+	saver.beforeWrite = async (path, content) => {
+		await commentsW.beforeSave(path, content);
+		await commentsCtl.syncAnchorsToText(path, content);
+	};
+	modes.beforeSwitch = () => commentsCtl.carryLive();
 
 	const folderEmpty = $derived(texFiles.current.length === 0);
 
@@ -133,8 +154,9 @@
 	// proxied by $state, so the objects themselves behave exactly as they would unwrapped.
 	let layout = $state(new PaneLayout());
 
-	// visual TOC reads PM headings (works for md too); source-mode TOC parses raw LaTeX, tex-only
-	const showToc = $derived(!!doc.path && (modes.mode === 'visual' ? hasVisualMode(kind) : modes.mode === 'source' && kind === 'tex'));
+	// the explorer's Contents pane stays whatever is open, so the file tree above it keeps its height
+	// and its scroll; this is the list it shows (workspaceToc.svelte.ts)
+	const toc = $derived(tocListOf(doc, modes.mode, nameOnly));
 	attachSourceToc(wsdoc);
 	// dock visibility/height/shrink live in lib/workspace/terminalDockState.svelte.ts
 	let termDock = $state(new TerminalDockState(() => guest));
@@ -152,10 +174,10 @@
 	// popped out counts as "no docked pane": the rail is up and the dock must not run past it
 	const dockShrunk = $derived(termDock.shrink || !layout.pdfPaneOpen || layout.pdfPopout);
 	// bottom dock body: the terminal shells (always mounted) or the Problems list
-	let dockView = $state<'terminal' | 'problems' | 'comments'>('terminal');
+	let dockView = $state<DockView>('terminal');
 	// the compile-side stack (compile-command state, draft controller, typst preview, compile
 	// pipeline, jump router) is built in ./workspacePipelines.svelte.ts
-	const { cc, draftCtl, typstPreview, compiler, nav } = createWorkspacePipelines({
+	const { cc, draftCtl, typstPreview, typstStream, compiler, nav } = createWorkspacePipelines({
 		provider,
 		session: () => session,
 		guest: () => guest,
@@ -191,6 +213,7 @@
 	});
 	onDestroy(() => {
 		typstPreview.dispose(); // leaving the workspace must not leave a preview compiling in the server
+		typstStream.dispose();
 		projectConfig.reset(); // adopted compile state is per folder; the start screen holds defaults
 	});
 	// shared session: guests can ask for a compile; leaving the workspace ends the session
@@ -211,11 +234,44 @@
 		typstPreview: () => typstPreview,
 		compileSettings: () => fmt.compileSettings,
 		commentsCtl,
-		setDockView: (v) => (dockView = v)
+		setDockView: (v) => (dockView = v),
+		comments: commentsW
 	});
 	const scm = integrations.scm;
 
 	let globalSearchRef = $state<GlobalSearch | null>(null);
+	// folder replace, and renames in the open file followed into the other files
+	const replaceWiring = {
+		provider: () => provider,
+		doc,
+		modes,
+		kind: () => kind,
+		parseVisual: async (text: string) => (await wsdoc.tryParseVisual(text)).parsed ?? null,
+		saver: () => saver,
+		history: () => (files.treeOps.undoable ? files.treeOps.history : null),
+		reloadOpen: () => external.check(),
+		main: () => mainFile.current,
+		editedClosed: (...change: Parameters<WorkspaceComments['editClosedFile']>) => commentsW.editClosedFile(...change),
+		editedOpenVisual: (before: string, after: string, edits: readonly TextEdit[]) => commentsW.editOpenVisual(before, after, edits)
+	};
+	const renameElsewhere = makeRenameElsewhere({ ...replaceWiring, root: () => workspaceRoot.current, search: searchInFolder });
+	onMount(() => {
+		function follow(kind: 'label' | 'cite') {
+			return (e: Event) => {
+				const { from, to } = (e as CustomEvent<{ from: string; to: string }>).detail;
+				// the other files are the host's to write; a guest's rename stays in the file it made it in
+				if (!guest && provider.caps.manageTree) renameElsewhere(kind, from, to);
+			};
+		}
+		const onLabel = follow('label');
+		const onCite = follow('cite');
+		addEventListener('texpile:label-renamed', onLabel);
+		addEventListener('texpile:citekey-renamed', onCite);
+		return () => {
+			removeEventListener('texpile:label-renamed', onLabel);
+			removeEventListener('texpile:citekey-renamed', onCite);
+		};
+	});
 	// Find in Files panel plumbing lives in lib/workspace/editorCommands.ts
 	const searchDeps = {
 		setSidebarView: (v: 'explorer' | 'search' | 'scm') => (layout.sidebarView = v),
@@ -229,7 +285,11 @@
 
 	// the three callback surfaces live in ./workspaceActionSurfaces.ts
 	const actionDeps: ActionSurfaceDeps = {
-		provider,
+		// read when an action runs, not now: the provider follows the folder (and file mode), and a
+		// copy taken here kept whatever it was while the window was still starting
+		get provider() {
+			return provider;
+		},
 		wsdoc,
 		editFlow: () => editFlow,
 		files: () => files,
@@ -250,7 +310,8 @@
 		setShareModalOpen: (open) => (shareModalOpen = open),
 		setTutorialModalOpen: (open) => (tutorialModalOpen = open),
 		openGlobalSearch: () => void openSearchPanel(searchDeps),
-		closeGlobalSearch: () => void closeSearchPanel(searchDeps)
+		closeGlobalSearch: () => void closeSearchPanel(searchDeps),
+		replaceInFolder: makeFolderReplace(replaceWiring)
 	};
 	const actions = makeMainActions(actionDeps);
 	const chromeActions = makeChromeActions(actionDeps);
@@ -267,6 +328,7 @@
 	// shortcut table + UI zoom live in lib/workspace/shortcuts.ts
 	const onKeydown = createKeydownHandler({
 		closeTab: (t) => editFlow.closeTab(t),
+		reopenTab: () => editFlow.reopenTab(),
 		isGuest: () => guest,
 		save: () => wsdoc.save(),
 		toggleGlobalSearch: () => void toggleSearchPanel(searchDeps),
@@ -274,11 +336,14 @@
 		isCompiling: () => compiler.compiling,
 		runCompile: () => compiler.runCompile(),
 		stopCompile: () => compiler.stopCompile(),
-		openPreferences: () => (preferencesOpen.current = true)
+		openPreferences: () => (preferencesOpen.current = true),
+		openFolder: () => void (hostMode && files.folder.open()),
+		stepDocumentHistory: (direction) => editSelect(direction)
 	});
+	const onKeydownCapture = createCaptureKeydownHandler({ openSourceControl: () => chromeActions.openSourceControl() });
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onkeydowncapture={onKeydownCapture} />
 <!-- file - folder - app (VS Code's order); the folder segment tells windows apart in the taskbar -->
 <svelte:head
 	><title
@@ -294,14 +359,12 @@
 <div class="flex h-screen flex-col overflow-clip">
 	<WorkspaceChrome
 		bind:layout
-		{modes}
 		bind:termDock
 		{compiler}
 		{scm}
 		treeOps={files.treeOps}
 		{guest}
-		{modLabel}
-		{showToc}
+		{toc}
 		menu={{
 			disabled: !doc.path,
 			fileKind: kind,
@@ -309,7 +372,7 @@
 			// nowhere to put one however good the path looks
 			imageDir: provider.caps.manageTree && doc.path && hasVisualMode(kind) ? dirname(doc.path) : undefined,
 			// never a guest: a guest is IN someone's session, not in a position to open one
-			shareable: isDesktop() && !guest,
+			shareable: isDesktop() && !guest && provider.caps.share,
 			hostMode,
 			canManageTree: provider.caps.manageTree,
 			canFormat: fmt.canFormatDoc(),
@@ -335,7 +398,6 @@
 			{kind}
 			{nameOnly}
 			{folderEmpty}
-			{modLabel}
 			{dockShrunk}
 			draft={draftCtl}
 			typstPreviewHost={typstPreview.host}
@@ -351,11 +413,13 @@
 				previewTab: tabs.preview,
 				applyingStarter: files.starters.applying,
 				allReferences: integrations.allReferences,
+				changeBaseline: integrations.changeBaseline.text,
 				sourceGotoLine: nav.sourceGotoLine,
 				sourceDiagnostics: cc.sourceDiagnostics,
 				fileUrl: (p: string) => provider.fileUrl(p),
 				cwd: workspaceRoot.current ?? '',
 				comments: commentsCtl.threads,
+				commentGhosts: commentsCtl.ghosts,
 				commentFile: commentsCtl.activeFile,
 				commandPending: !!projectConfig.pending,
 				commentsOrphaned: commentsCtl.orphaned,
@@ -365,15 +429,29 @@
 				commentSelected: commentsCtl.selected,
 				commentRanges: commentsCtl.ranges,
 				commentPending: commentsCtl.pending,
-				zoteroCite: integrations.canZoteroCite()
+				zoteroCite: integrations.canZoteroCite(),
+				doiCite: integrations.canCiteByDoi()
 			}}
 			{actions}
+			{commentsCtl}
 			bind:dockView
 			bind:pdfPaneRef={nav.pdfPaneRef}
 		/>
 	</WorkspaceChrome>
 
 	<ZoteroCitationDialog />
+	<CiteByDoiDialog />
+	{#if versionChanges.entry && workspaceRoot.current}
+		<VersionChangesModal entry={versionChanges.entry} root={workspaceRoot.current} />
+	{/if}
+	{#if twoVersions.current}
+		<TwoVersionsModal versions={twoVersions.current} />
+	{/if}
+	{#if restoreDeletedDialog.under && workspaceRoot.current}
+		{#key restoreDeletedDialog.under}
+			<RestoreDeletedDialog root={workspaceRoot.current} under={restoreDeletedDialog.under} />
+		{/key}
+	{/if}
 
 	<WorkspaceModals
 		bind:mainPrompt={files.mainPrompt}

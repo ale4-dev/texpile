@@ -6,10 +6,13 @@
 	import { settings, updateSettings } from '$lib/settings';
 	// eslint-disable-next-line no-restricted-imports -- this modal IS the desktop updater's UI; a web entry never mounts it
 	import { updateState, updateModalOpen, startDownload, installNow } from '$lib/updates';
+	import UpdateSupportLinks from './UpdateSupportLinks.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	const u = $derived(updateState.current);
 	const pkexec = $derived(u.installMode === 'package-manager');
+	// a portable copy has nothing to install over; the download page hands out a fresh zip
+	const portable = $derived(u.installMode === 'portable');
 	const title = $derived(
 		u.phase === 'downloading'
 			? m.updatemodal_title_downloading()
@@ -54,7 +57,9 @@
 				size="xs"
 				buttons={[
 					{ label: m.updatemodal_dismiss(), role: 'cancel', onclick: close },
-					{ label: m.updatemodal_download_update(), role: 'primary', icon: Download, onclick: () => startDownload() }
+					portable
+						? { label: m.updatemodal_open_download_page(), role: 'primary', icon: ExternalLink, onclick: openDownloadPage }
+						: { label: m.updatemodal_download_update(), role: 'primary', icon: Download, onclick: () => startDownload() }
 				]}
 			/>
 		{:else if u.phase === 'downloading'}
@@ -73,12 +78,13 @@
 				{/if}
 			</p>
 			<p class="text-muted mb-4 text-sm">{m.updatemodal_background_download_notice()}</p>
-			<ModalActions size="xs" buttons={[{ label: m.updatemodal_hide(), role: 'cancel', onclick: close }]} />
+			<UpdateSupportLinks />
 		{:else if u.phase === 'downloaded'}
 			{#if pkexec}
 				<p class="text-muted mb-4 text-sm">
 					{m.updatemodal_downloaded_pkexec({ version: u.version ?? '' })}
 				</p>
+				<UpdateSupportLinks class="mb-4" />
 				<ModalActions
 					size="xs"
 					buttons={[
@@ -88,6 +94,7 @@
 				/>
 			{:else}
 				<p class="text-muted mb-4 text-sm">{m.updatemodal_downloaded_ready({ version: u.version ?? '' })}</p>
+				<UpdateSupportLinks class="mb-4" />
 				<ModalActions
 					size="xs"
 					buttons={[

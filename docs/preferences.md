@@ -1,77 +1,41 @@
 ---
 nav: Preferences
-description: Every setting in Texpile's Preferences dialog, tab by tab: appearance, editor, toolchain, integrations, startup, and the AI assistant.
-blurb: Every setting in the Preferences dialog, tab by tab.
+description: Open Preferences in Texpile and find the settings whose effect is not obvious from their label.
+blurb: The settings that need more than their label.
 icon: settings
-order: 15
-section: Settings
+order: 33
+section: Customize
 ---
 
 # Preferences
 
-Settings apply to every folder you open. The compile command and its options are the exception: they are saved per folder, in a .texpile folder inside it.
+Settings for the whole app. Open it with Ctrl , (Cmd , on macOS) or File › Preferences… (Texpile › Preferences… on macOS).
 
-| Where to find it | Path                | Note                   |
-| ---------------- | ------------------- | ---------------------- |
-| Start screen     | Preferences…        |                        |
-| Menu             | File › Preferences… | Once a folder is open. |
+![The Appearance tab of Preferences, with the list of tabs on the left](../landing/src/lib/assets/showcase/docs/app/preferences-appearance.png)
 
-## Appearance
+| Setting                                     | Note                                                                                                                           |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Appearance › Language                       | Changes the interface only. Spell check covers English only.                                                                   |
+| Editor › Autosave                           | Always on for LaTeX live mode and while you host a shared session.                                                             |
+| Editor › Open terminal panel when compiling | When off, the badge next to Compile is the only sign of errors.                                                                |
+| Editor › Keybindings                        | Vim and Emacs work in the source editor only.                                                                                  |
+| Editor › Justify text, Hyphenate words      | Change the visual editor only, not the compiled document or the file.                                                          |
+| Spelling › Check spelling and grammar       | Off by default.                                                                                                                |
+| Spelling › Custom Dictionary                | Separate several words with spaces, commas, or semicolons.                                                                     |
+| Spelling › Grammar rules                    | All off by default.                                                                                                            |
+| Version Control › Autofetch                 | Fetches from the default remote every 3 minutes.                                                                               |
+| Version Control › Git Identity              | Read-only. Change it with `git config` in a terminal.                                                                          |
+| Version Control › Keep version history      | Keeps a copy of each save for 30 days.                                                                                         |
+| Collaboration › Display name                | Shown in shared sessions and on your comments. Left empty, you show as Host or Guest.                                          |
+| Toolchain › Folders                         | Texpile looks here first for every program it runs, your compile command too. See [Toolchain](build-and-preview/toolchain.md). |
+| Toolchain › Distribution                    | Which TeX distribution, and which tinymist, to use when more than one is found.                                                |
+| Integrations › Find and cite papers online  | Looks papers up through Crossref, DataCite, doi.org, Open Library, and PubMed.                                                 |
+| AI Assistant › MCP server                   | Lets an AI assistant such as Claude Code see your open files. See [MCP server](ai-assistant/mcp.md).                           |
+| AI Assistant › Refine with                  | An agent Texpile cannot find cannot be picked. Add its folder under Toolchain › Folders.                                       |
+| AI Assistant › Agent tab                    | Untick every agent to remove the tab.                                                                                          |
 
-| Setting                     | What it does                                                                                                                                                              |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Mode                        | Light, System, or Dark. System follows the operating system's light or dark setting.                                                                                      |
-| Theme                       | The color theme, as tiles. See [Themes](themes.md).                                                                                                                       |
-| Language                    | English, Simplified Chinese, Traditional Chinese, or German. English is the default; the window reloads when you switch. German is machine translated and marked as such. |
-| Dark PDF pages in dark mode | Darkens the pages in the PDF preview when the mode is dark. Off, the pages keep their original colors.                                                                    |
+## Not in Preferences
 
-## Editor
-
-| Setting                            | What it does                                                                                                                                                |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Autosave                           | On by default. Off, changes save only when you press Save, and you are warned before switching files. Live preview and hosting a shared session keep it on. |
-| Spell check                        | Off by default. See [Spell check](spell-check.md).                                                                                                          |
-| Comment button on selection        | The floating button that offers to comment on selected text, in both editors.                                                                               |
-| Open terminal panel when compiling | Also opens Problems when a compile reports errors. Off, the badge next to Compile is the only signal.                                                       |
-| Keybindings                        | Default, Vim, or Emacs, for the source editor. The mode line appears under the editor.                                                                      |
-
-### Source editor
-
-| Setting         | What it does                                                    |
-| --------------- | --------------------------------------------------------------- |
-| Wrap long lines | In Source mode, wrap long lines instead of scrolling sideways.  |
-| Math preview    | A typeset preview of the math under the cursor, in source mode. |
-
-### Visual editor
-
-| Setting           | What it does                                                                                                |
-| ----------------- | ----------------------------------------------------------------------------------------------------------- |
-| Editor width      | How wide text gets in the visual editor. Extra window space stays empty, so short lines are easier to read. |
-| Image resize step | Dragging an image snaps its width to multiples of this fraction of the text width: 10%, 25%, or 50%.        |
-
-## Toolchain
-
-Every external program Texpile runs, for LaTeX, Typst, and version control, and whether each one was found. Nothing is bundled; these are found on your PATH. Check again runs the check once more after you install something.
-
-[Installation](installation/README.md)
-
-## Integrations
-
-| Setting          | What it does                                                                                                                                                                             |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Zotero citations | Adds Insert citation from Zotero to the right-click menu and the command palette in LaTeX and Typst documents. Needs Zotero running with the Better BibTeX plugin. Off hides the action. |
-
-## Startup
-
-| Setting                      | What it does                                                                                                                                     |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Reopen last folder on launch | Opens the folder you had open when you last quit, on the file you left open.                                                                     |
-| Check for updates on launch  | Looks for a new version when Texpile starts and shows a notice you can dismiss. Downloading the update is a manual step, from the download page. |
-
-## AI assistant
-
-| Setting                                      | What it does                                                                                                                                                                                                 |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| MCP server                                   | Runs a local MCP server so an assistant such as Claude Code can see your open tabs, current file, caret, and unsaved changes. It cannot edit your documents. See [AI assistants (MCP)](integrations/mcp.md). |
-| Let the assistant change the compile command | Off by default. The compile command runs as a shell command, so an assistant that can rewrite it can run any program on your computer. It can still change where the PDF and build files go.                 |
-| Show instructions                            | The setup command for Claude Code and the config entry for Codex, with the real port filled in.                                                                                                              |
+- The compile command, output paths, and live mode are saved per folder: Terminal › Configure Compile Command….
+- Interface zoom: View › Zoom In, Zoom Out, Reset Zoom.
+- Dark PDF pages: **Invert page colors** on the PDF toolbar, remembered separately for light and dark mode.

@@ -1,4 +1,5 @@
 <script module lang="ts">
+	import { localizeHref } from '$lib/paraglide/runtime';
 	/** `better` bolds the cell that wins the row; leave it out when the two are level */
 	export type Row = { label: string; texpile: string; other: string; better?: 'texpile' | 'other' };
 	export type Vs = {
@@ -109,23 +110,23 @@
 
 		<p class="text-surface-500 text-sm">
 			Checked {CHECKED} against
-			<a href={vs.url} target="_blank" rel="noopener noreferrer" class="underline hover:text-surface-700">{vs.name}'s own site</a>.
+			<a href={vs.url} target="_blank" rel="noopener noreferrer" class="hover:text-surface-700 underline">{vs.name}'s own site</a>.
 			Corrections are welcome as an
-			<a href="https://github.com/texpile/texpile/issues" target="_blank" rel="noopener noreferrer" class="underline hover:text-surface-700"
+			<a href="https://github.com/texpile/texpile/issues" target="_blank" rel="noopener noreferrer" class="hover:text-surface-700 underline"
 				>issue on GitHub</a
 			>.
 		</p>
 
 		<div class="flex flex-wrap items-center gap-4">
 			<a
-				href="/download"
+				href={localizeHref('/download')}
 				class="btn preset-filled-primary-500 rounded-base inline-flex items-center gap-2 px-6 py-2.5 font-semibold text-white"
 			>
 				<Download class="h-5 w-5" />
 				{m.notfound_download()}
 			</a>
 			<a
-				href="/latex-editor"
+				href={localizeHref('/latex-editor')}
 				class="text-primary-600 hover:text-primary-700 inline-flex items-center gap-1.5 font-medium transition-colors"
 			>
 				{m.footer_latex()}
@@ -137,9 +138,9 @@
 			Also:
 			{#each OTHERS.filter((o) => o.href !== vs.path) as o, i (o.href)}
 				{#if i > 0},{/if}
-				<a href={o.href} class="underline hover:text-surface-700">{o.label}</a>
+				<a href={localizeHref(o.href)} class="hover:text-surface-700 underline">{o.label}</a>
 			{/each}
-			and <a href="/overleaf-alternatives" class="underline hover:text-surface-700">Overleaf alternatives</a>.
+			and <a href={localizeHref('/overleaf-alternatives')} class="hover:text-surface-700 underline">Overleaf alternatives</a>.
 		</p>
 	</div>
 </section>

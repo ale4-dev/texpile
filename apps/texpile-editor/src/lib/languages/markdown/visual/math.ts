@@ -1,18 +1,24 @@
 /* eslint no-param-reassign: "off" -- markdown-it rules advance parsing by mutating state.pos/state.line; that is the API */
 // $-math rules for markdown-it, deliberately small: `$...$` inline on one line, `$$...$$`
-// blocks. Anything the rules don't match stays literal text, which the orig layer round-trips
+// blocks. Anything the rules don't match stays literal text, which the verbatim layer round-trips
 // untouched, so a false negative costs display fidelity, never bytes.
 import type { MarkdownIt, StateBlock, StateInline } from 'markdown-it';
 
 const DOLLAR = 0x24;
 const BACKSLASH = 0x5c;
 
+function escaped(src: string, at: number): boolean {
+	let n = 0;
+	while (at - n > 0 && src.charCodeAt(at - n - 1) === BACKSLASH) n++;
+	return n % 2 === 1;
+}
+
 function mathInline(state: StateInline, silent: boolean): boolean {
 	const src = state.src;
 	const pos = state.pos;
 	if (src.charCodeAt(pos) !== DOLLAR) return false;
 	if (src.charCodeAt(pos + 1) === DOLLAR) return false; // $$ belongs to the block rule
-	if (pos > 0 && src.charCodeAt(pos - 1) === BACKSLASH) return false; // escaped \$
+	if (escaped(src, pos)) return false;
 	const first = src.charCodeAt(pos + 1);
 	if (Number.isNaN(first) || first === 0x20 || first === 0x0a) return false; // "$ x$" stays a dollar sign
 
@@ -20,7 +26,7 @@ function mathInline(state: StateInline, silent: boolean): boolean {
 	for (;;) {
 		end = src.indexOf('$', end);
 		if (end === -1) return false;
-		if (src.charCodeAt(end - 1) !== BACKSLASH) break;
+		if (!escaped(src, end)) break;
 		end++;
 	}
 	const content = src.slice(pos + 1, end);

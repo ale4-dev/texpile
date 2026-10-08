@@ -1,14 +1,15 @@
 <script lang="ts">
 	import { FileSymlink } from '@lucide/svelte';
-	import { untrack } from 'svelte';
+	import { tick, untrack } from 'svelte';
 	import FileIcon from './FileIcon.svelte';
 	import FileTreeRow from './FileTreeRow.svelte';
 	import { openFileTreeContextMenu, type TreeTarget } from './fileTreeContextMenu';
 	import { contextMenuOpen, closeContextMenu } from '$lib/menus/contextMenu.svelte';
 	import { samePath, type TreeEntry } from '$lib/workspace/fileSystem';
 	import type { FileHistory } from '$lib/workspace/fileHistory.svelte';
-	import type { GitBadge } from '$lib/workspace/git';
+	import type { GitBadge } from '$lib/workspace/scm/git';
 	import { FileTreeState } from './treeState.svelte';
+	import { treeRevealRequest } from './treeReveal.svelte';
 	import { FileTreeDnd, ROOT } from './treeDnd.svelte';
 	import { TreeNameEditor } from './treeNameEditor.svelte';
 	import { namePastedFiles, type ImportItem } from './treeImport';
@@ -18,6 +19,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import { confirmAsk } from '$lib/modals/confirm.svelte';
 	import { toaster } from '$lib/modals/toaster-svelte';
+	import { openLocalHistory, openRestoreDeleted } from '$lib/workspace/localHistory/localHistoryDialog.svelte';
 
 	type Props = {
 		tree: TreeEntry[];
@@ -45,6 +47,8 @@
 		onSetMain?: (entry: TreeEntry) => void;
 		/** select the entry in the OS file manager. Omitted outside the desktop shell. */
 		onReveal?: (entry: TreeEntry) => void;
+		/** a file's Local History and a folder's deleted files: off for a guest, whose files are the host's */
+		localHistory?: boolean;
 		/** the tree's own undo/redo stack for FILE operations - never the editor's text history. */
 		history?: FileHistory | null;
 		/** allow adding new files by drop-from-OS / paste. */
@@ -68,6 +72,7 @@
 		onCopyIn,
 		onSetMain,
 		onReveal,
+		localHistory = false,
 		history = null,
 		allowImport = true,
 		hasUnsaved
@@ -83,7 +88,7 @@
 		return e.type === 'file' && /\.(tex|typ)$/i.test(e.name);
 	}
 	function isMain(e: TreeEntry) {
-		return !!mainPath && e.path.replace(/\\/g, '/').toLowerCase() === mainPath.replace(/\\/g, '/').toLowerCase();
+		return !!mainPath && samePath(e.path, mainPath);
 	}
 
 	const sel = new FileTreeState({ tree: () => tree, onOpen: (e) => onOpen(e) });
@@ -116,6 +121,19 @@
 		untrack(() => {
 			if (!sel.selected.some((p) => samePath(p, a))) sel.selected = [];
 			if (revealed !== a && sel.reveal(a)) revealed = a;
+		});
+	});
+
+	// a request can land before a fresh tree holds the file
+	$effect(() => {
+		const req = treeRevealRequest.current;
+		void tree;
+		if (!req) return;
+		untrack(() => {
+			if (!sel.reveal(req.path)) return;
+			sel.selected = [req.path];
+			treeRevealRequest.current = null;
+			void tick().then(() => treeEl?.querySelector(`[data-path="${CSS.escape(req.path)}"]`)?.scrollIntoView({ block: 'nearest' }));
 		});
 	});
 
@@ -203,6 +221,8 @@
 			typstProject,
 			onSetMain,
 			onReveal,
+			onLocalHistory: localHistory ? (e) => openLocalHistory(e.path) : undefined,
+			onRestoreDeleted: localHistory ? (dir) => openRestoreDeleted(dir) : undefined,
 			onCreate: (dir, type) => editor.startCreate(dir, type),
 			onCopy: copySelection,
 			onPaste: pasteClipboard,
@@ -327,7 +347,7 @@
 	bind:this={treeEl}
 	role="presentation"
 	tabindex="-1"
-	class="min-h-full min-w-max rounded-container outline-none {dnd.dropTarget === ROOT ? 'ring-primary-500 ring-2 ring-inset' : ''}"
+	class="rounded-container min-h-full min-w-max outline-none {dnd.dropTarget === ROOT ? 'ring-primary-500 ring-2 ring-inset' : ''}"
 	onfocusin={() => (focused = true)}
 	onfocusout={(e) => {
 		// relatedTarget is where focus is HEADING; moving between two rows must not read as leaving

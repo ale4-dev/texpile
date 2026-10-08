@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { tip } from '$lib/components/tooltip.svelte';
+	import { inEditorPane } from '$lib/editor/visual/editorPanePositioning';
 	import { Popover, Portal } from '@skeletonlabs/skeleton-svelte';
 	import { Plus, GripVertical, Trash2 } from '@lucide/svelte';
 	import { BLOCK_INSERT_ITEMS, type BlockInsertItem } from './blockInsertItems';
@@ -10,6 +11,8 @@
 		top: number;
 		left: number;
 		right: number;
+		/** comments crowd the pane: one column on the left, delete included, and no right gutter */
+		stacked: boolean;
 		popoverOpen: boolean;
 	};
 	let {
@@ -31,7 +34,7 @@
 <!-- visibility, not display: Floating-UI anchors the popover to the trigger's rect,
      and display:none would collapse it to (0,0) and pin the popover top-left -->
 <div
-	class="block-handle-gutter fixed z-10 flex items-center gap-0.5"
+	class="block-handle-gutter fixed z-10 flex gap-0.5 {state.stacked ? 'flex-col' : 'items-center'}"
 	style="visibility: {state.visible ? 'visible' : 'hidden'}; pointer-events: {state.visible
 		? 'auto'
 		: 'none'}; top: {state.top}px; left: {state.left}px;"
@@ -39,7 +42,7 @@
 	<Popover
 		open={state.popoverOpen}
 		onOpenChange={(e) => (state.popoverOpen = e.open)}
-		positioning={{ placement: 'bottom-start', offset: { mainAxis: 4 } }}
+		positioning={inEditorPane({ placement: 'bottom-start', offset: { mainAxis: 4 } })}
 	>
 		<Popover.Trigger class="block-handle-btn" aria-label={m.blockhandle_insert_below()}>
 			{#snippet element(attrs)}
@@ -48,14 +51,14 @@
 		</Popover.Trigger>
 		<Portal>
 			<Popover.Positioner class="z-floating-ui">
-				<Popover.Content class="card bg-surface-50-950 border-surface-300-700 min-w-48 max-w-64 border p-1 shadow-lg">
+				<Popover.Content class="card bg-surface-50-950 border-surface-300-700 max-w-64 min-w-48 border p-1 shadow-lg">
 					<div class="text-muted px-2 py-1 text-[10px] font-semibold tracking-wider uppercase">
 						{m.blockhandle_insert_header()}
 					</div>
 					{#each items as item (item.label)}
 						<button
 							type="button"
-							class="hover:preset-tonal flex w-full items-center gap-2 rounded-base px-2 py-1.5 text-left text-sm"
+							class="hover:preset-tonal rounded-base flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm"
 							onmousedown={(e) => {
 								e.preventDefault();
 								onInsert(item);
@@ -80,15 +83,22 @@
 	>
 		<GripVertical class="size-4" />
 	</button>
+	{#if state.stacked}{@render deleteButton()}{/if}
 </div>
 
-<!-- right gutter (delete), same visibility rules as the left -->
-<div
-	class="block-handle-gutter fixed z-10 flex items-center"
-	style="visibility: {state.visible ? 'visible' : 'hidden'}; pointer-events: {state.visible
-		? 'auto'
-		: 'none'}; top: {state.top}px; left: {state.right}px;"
->
+<!-- right gutter (delete), same visibility rules as the left; with the gutters stacked it is in the left one -->
+{#if !state.stacked}
+	<div
+		class="block-handle-gutter fixed z-10 flex items-center"
+		style="visibility: {state.visible ? 'visible' : 'hidden'}; pointer-events: {state.visible
+			? 'auto'
+			: 'none'}; top: {state.top}px; left: {state.right}px;"
+	>
+		{@render deleteButton()}
+	</div>
+{/if}
+
+{#snippet deleteButton()}
 	<button
 		type="button"
 		class="block-handle-btn block-handle-btn-danger"
@@ -102,4 +112,4 @@
 	>
 		<Trash2 class="size-4" />
 	</button>
-</div>
+{/snippet}

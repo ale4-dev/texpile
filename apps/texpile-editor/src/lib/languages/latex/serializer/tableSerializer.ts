@@ -6,6 +6,7 @@
 
 import type { Node } from 'prosemirror-model';
 import type { Ctx } from '$lib/serializer/types';
+import { joinInline } from './textEscapes';
 
 type SerializeNodeFn = (node: Node, ctx: Ctx) => string;
 
@@ -42,12 +43,44 @@ export function serializeTable(node: Node, serializeNode: SerializeNodeFn): stri
 	return ''; // rows/cells are consumed by their parents
 }
 
-function renderInline(node: Node, serializeNode: SerializeNodeFn): string {
-	let out = '';
-	node.forEach((child, _offset, index) => {
-		out += serializeNode(child, { parent: node, index, isLastChild: index === node.childCount - 1, inTableCell: true });
+/** a row written on its own, inside the table's frame: its cells joined, the row break and the
+ *  rules left to the frame. `table` is the row's parent, for the cells a rowspan above covers */
+export function serializeRowCells(row: Node, table: Node | null, serializeNode: SerializeNodeFn): string {
+	const coverage = table ? buildRowspanCoverage(table) : new Map<number, Map<number, { colspan: number; rowspan: number }>>();
+	let rowIndex = 0;
+	table?.forEach((r, _o, i) => {
+		if (r === row) rowIndex = i;
 	});
-	return out;
+	const coveredHere = coverage.get(rowIndex);
+	const cells: string[] = [];
+	let colIndex = 0;
+	function emitCovered() {
+		while (coveredHere?.has(colIndex)) {
+			const span = coveredHere.get(colIndex)!;
+			cells.push(placeholderCell(span, colIndex === 0));
+			colIndex += span.colspan;
+		}
+	}
+	row.forEach((cell) => {
+		emitCovered();
+		cells.push(renderCell(cell, colIndex === 0, serializeNode));
+		colIndex += Number(cell.attrs.colspan ?? 1);
+	});
+	emitCovered();
+	return cells.join(' & ');
+}
+
+/** a cell written on its own, inside its row's frame */
+export function serializeCell(cell: Node, first: boolean, serializeNode: SerializeNodeFn): string {
+	return renderCell(cell, first, serializeNode);
+}
+
+function renderInline(node: Node, serializeNode: SerializeNodeFn): string {
+	const pieces: string[] = [];
+	node.forEach((child, _offset, index) => {
+		pieces.push(serializeNode(child, { parent: node, index, isLastChild: index === node.childCount - 1, inTableCell: true }));
+	});
+	return joinInline(pieces);
 }
 
 function childByType(node: Node, typeName: string): Node | null {
@@ -69,7 +102,7 @@ function wrapper(node: Node, serializeNode: SerializeNodeFn): string {
 		typeof captionNode?.attrs.captionOpt === 'string' && captionNode.attrs.captionOpt ? `[${captionNode.attrs.captionOpt}]` : '';
 	const caption =
 		captionNode && captionNode.childCount > 0
-			? `\\caption${captionNode.attrs.starred ? '*' : ''}${capOpt}{${renderInline(captionNode, serializeNode)}}\\vspace{2mm}\n`
+			? `\\caption${captionNode.attrs.starred ? '*' : ''}${capOpt}{${renderInline(captionNode, serializeNode)}}${typeof node.attrs.captionGap === 'string' ? node.attrs.captionGap : '\\vspace{2mm}'}\n`
 			: '';
 	// extra labels re-emit BEFORE the primary, matching source order (`label` holds the LAST
 	// \label found, so anything in extraLabels came before it).
@@ -173,7 +206,8 @@ function assembleTable(table: Node, serializeNode: SerializeNodeFn): string {
 			colspec,
 			table.attrs.tabularxWidth as string | null,
 			String(table.attrs.bottomRules ?? ''),
-			serializeNode
+			serializeNode,
+			table.attrs.position as string | null
 		);
 
 	// fallback: an editor-created table with no captured architecture gets a bordered tabular
@@ -195,7 +229,8 @@ function assembleFaithful(
 	colspec: string,
 	width: string | null,
 	bottomRules: string,
-	serializeNode: SerializeNodeFn
+	serializeNode: SerializeNodeFn,
+	position: string | null
 ): string {
 	const coverage = buildRowspanCoverage(table);
 	const lines: string[] = [];
@@ -224,7 +259,8 @@ function assembleFaithful(
 	});
 	if (bottomRules) lines.push(bottomRules);
 	const widthArg = width != null ? `{${width}}` : '';
-	return `\\begin{${env}}${widthArg}{${colspec}}\n${lines.join('\n')}\n\\end{${env}}`;
+	const positionArg = position != null ? `[${position}]` : '';
+	return `\\begin{${env}}${widthArg}${positionArg}{${colspec}}\n${lines.join('\n')}\n\\end{${env}}`;
 }
 
 function placeholderCell(span: { colspan: number }, first: boolean): string {

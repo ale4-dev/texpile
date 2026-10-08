@@ -1,5 +1,6 @@
 <script lang="ts">
 	// Code block settings popover: the language, offered per environment.
+	import { inEditorPane } from '$lib/editor/visual/editorPanePositioning';
 	//
 	// The gear + hover-reveal + Popover shape is MathSettings', which is the proven way to put
 	// chrome on a node view: the button's visibility is plain CSS :hover toggling an untransitioned
@@ -58,7 +59,7 @@
 	<Popover
 		open={settingsOpen}
 		onOpenChange={(details) => (settingsOpen = details.open)}
-		positioning={{ placement: 'bottom-end', offset: { mainAxis: 4 } }}
+		positioning={inEditorPane({ placement: 'bottom-end', offset: { mainAxis: 4 } })}
 	>
 		<!-- the Trigger renders the <button>; we take it over to hang the hint on it -->
 		<Popover.Trigger class="codeblock-settings-btn" aria-label={m.codeblock_settings_button_label()} disabled={isReadOnly.current}>
@@ -79,11 +80,11 @@
 						</div>
 						{#if canSet}
 							<input type="text" class="input text-sm" placeholder={m.codeblock_language_search_placeholder()} bind:value={search} />
-							<div class="mt-2 max-h-48 overflow-y-auto">
+							<div class="mt-2 max-h-48 [scrollbar-gutter:stable] overflow-y-auto">
 								{#each filtered as name (name)}
 									<button
 										type="button"
-										class="hover:bg-surface-200-800 block w-full rounded-base px-2 py-1 text-left text-sm {name === currentLang
+										class="hover:bg-surface-200-800 rounded-base block w-full px-2 py-1 text-left text-sm {name === currentLang
 											? 'preset-tonal-primary'
 											: ''}"
 										onclick={() => pick(name)}

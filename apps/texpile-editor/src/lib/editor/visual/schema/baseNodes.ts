@@ -16,10 +16,7 @@ const pDom: DOMOutputSpec = ['p', 0],
 
 export const baseNodes = {
 	doc: {
-		content: 'block+',
-		// the body's trailing gap (blank lines before \end{document}) belongs to no block node.
-		// { text, afterSeq }: re-emitted verbatim iff the doc still ends with that pristine block
-		attrs: { docTail: { default: null } }
+		content: 'block+'
 	} as NodeSpec,
 	paragraph: {
 		content: 'inline*',
@@ -35,7 +32,8 @@ export const baseNodes = {
 	blockquote: {
 		content: 'block+',
 		group: 'block',
-		defining: true,
+		// as context only: text dragged or pasted out of the quote travels as a paragraph, the quote stays
+		definingAsContext: true,
 		// env: 'quotation' when the source used that environment rather than quote
 		attrs: { env: { default: null } },
 		parseDOM: [{ tag: 'blockquote' }],
@@ -123,8 +121,11 @@ export const baseNodes = {
 				}
 			}
 		],
+		// the text the chip reads as: a removed include is struck from this form in suggestions
 		toDOM(node) {
-			return ['div', { class: 'includedoc-node', 'data-path': node.attrs.path, 'data-command': node.attrs.command }];
+			const { path, command } = node.attrs;
+			const text = command === 'typst' ? `#include "${path}"` : `\\${command}{${path}}`;
+			return ['div', { class: 'includedoc-node', 'data-path': path, 'data-command': command }, ['code', text]];
 		}
 	} as NodeSpec,
 
@@ -268,44 +269,16 @@ export const baseNodes = {
 
 // raw LaTeX between \begin{itemize} and the first \item (\setlength\itemsep{0pt} setup is
 // common). the list node models one PM node per \item, so this has nowhere else to live:
-// carried verbatim on the FIRST list node of the group, spliced back after \begin{...}
-// envArgs: the environment's own options (enumitem's [resume], [label=...]), same first-node rule
-// envName: 'description' when the source environment was one (the editor shows bullets, the file
-// keeps its environment); itemLabel: the raw [label] of \item[label], on that item's node
+// carried verbatim on every list node of the group, spliced back after \begin{...} by the one that opens it
+// envArgs: the environment's own options (enumitem's [resume], [label=...]), on every node too
+// envName: 'description' on every item of one (the editor shows bullets, the file keeps its
+// environment); envKey: which source environment the item came from, never written out;
+// itemLabel: the raw [label] of \item[label], on that item's node
 baseNodes.list.attrs = {
 	...(baseNodes.list.attrs ?? {}),
 	preBody: { default: null },
 	envArgs: { default: null },
 	envName: { default: null },
+	envKey: { default: null },
 	itemLabel: { default: null }
 };
-
-// verbatim source preservation: every block an importer can emit at the top level carries
-// orig: { latex, norm, pre, seq, start, group* }. latex = original slice; norm = its parse-time
-// deterministic serialization; pre = inter-block source; seq = pristine top-level index;
-// start = body-relative offset (positional consumers like scroll sync); group* set when one
-// construct became several blocks (itemize = one list node per item) so substitution is
-// all-or-nothing. the serializer re-emits `latex` only while the block still serializes to
-// exactly `norm`, so a stale slice can never overwrite an edit. default null: editor-created
-// nodes always go through the deterministic rules. (image gets its orig in updateImageNode)
-const ORIG_BLOCKS = [
-	'paragraph',
-	'blockquote',
-	'horizontal_rule',
-	'heading',
-	'code_block',
-	'raw_latex',
-	'includedoc',
-	'block_math',
-	'table_wrapper',
-	'table', // a bare tabular (no float wrapper) imports as a bare table at the top level
-	'list'
-] as const;
-
-/** add the `orig` attr to a block spec; dialect-only blocks apply it to their own additions. */
-export function withOrigAttr(spec: NodeSpec): NodeSpec {
-	return { ...spec, attrs: { ...(spec.attrs ?? {}), orig: { default: null } } };
-}
-
-const specs = baseNodes as Record<string, NodeSpec>;
-for (const name of ORIG_BLOCKS) specs[name] = withOrigAttr(specs[name]);

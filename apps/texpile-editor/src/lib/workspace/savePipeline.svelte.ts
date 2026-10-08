@@ -9,8 +9,8 @@ import { m } from '$lib/paraglide/messages';
 const AUTOSAVE_MS = 1500;
 
 export type SaveDeps = {
-	/** shared session: every edit streams into the shared doc per keystroke. */
-	sessionEdit(path: string, content: string): void;
+	/** shared session: every edit streams into the shared doc per keystroke; `before` is the text it was made to */
+	sessionEdit(path: string, content: string, before?: string): void;
 	/** a guest has no disk: edits live in the CRDT only, pending/writes never engage. */
 	isGuest(): boolean;
 	autosaveActive(): boolean;
@@ -43,6 +43,14 @@ export class SavePipeline {
 	/** paths of writes that have been handed to the chain but have not settled yet */
 	private inFlight = new Set<string>();
 
+	beforeWrite: ((path: string, content: string) => Promise<void>) | null = null;
+	/** the bytes are on disk: Local History keeps a copy (localHistory.svelte.ts) */
+	afterWrite: ((path: string, content: string) => void) | null = null;
+	/** the content checked and, when it had to be, rewritten before it goes to disk: what the
+	 *  visual editor serialized must parse back to what it shows (see verifiedSerialize). Null
+	 *  keeps the content as queued */
+	verify: ((path: string, content: string) => Promise<string | null>) | null = null;
+
 	constructor(private deps: SaveDeps) {}
 
 	/** the queued debounced write, if any (read-only; use reattach/detach/discard to mutate). */
@@ -64,9 +72,9 @@ export class SavePipeline {
 
 	/** queue a debounced write; a save already queued for a DIFFERENT file flushes first so
 	 * switching files can never drop the previous file's edit. */
-	schedule(path: string | null, content: string) {
+	schedule(path: string | null, content: string, before?: string) {
 		if (!path) return;
-		this.deps.sessionEdit(path, content);
+		this.deps.sessionEdit(path, content, before);
 		if (this.deps.isGuest()) return;
 		if (this._pending && this._pending.path !== path) this.flush();
 		this._pending = { path, content };
@@ -123,7 +131,9 @@ export class SavePipeline {
 	 * lands in the new path instead of re-creating the old one. */
 	retarget(from: string, to: string) {
 		const sep = from.includes('\\') ? '\\' : '/';
-		const covers = (p: string) => samePath(p, from) || p.startsWith(from + sep);
+		function covers(p: string) {
+			return samePath(p, from) || p.startsWith(from + sep);
+		}
 		// nothing queued means the edit is in flight instead; if that write fails it must not come
 		// back pointed at a path this rename just emptied. Only when the rename is actually the one
 		// that moved it: an unrelated rename would otherwise cost a legitimate retry
@@ -156,8 +166,9 @@ export class SavePipeline {
 		return result;
 	}
 
-	private async write(path: string, content: string, notify: boolean, eol: Eol, force: boolean): Promise<boolean> {
+	private async write(path: string, queued: string, notify: boolean, eol: Eol, force: boolean): Promise<boolean> {
 		this.saving = true;
+		let content = queued;
 		try {
 			// The point of no return for someone else's edit: writeText below replaces the whole file,
 			// so if disk moved since we last read or wrote it (VS Code, a git checkout, an AI agent),
@@ -170,8 +181,12 @@ export class SavePipeline {
 				this.deps.raiseConflict(path, notify);
 				return false;
 			}
+			const verified = this.verify ? await this.verify(path, content).catch(() => null) : null;
+			if (verified !== null) content = verified;
+			await this.beforeWrite?.(path, content).catch(() => undefined);
 			await this.deps.writeText(path, fromLf(content, eol)); // re-apply the file's CRLF/LF on disk
 			await this.deps.recordDiskStamp(path); // our own write must not read as an external one
+			this.afterWrite?.(path, content);
 			if (this.deps.getLoadedPath() === path) {
 				// what we just wrote is now the on-disk baseline, so our own save isn't seen as a conflict
 				this.deps.setDiskBaseline(content);

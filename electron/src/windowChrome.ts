@@ -13,6 +13,7 @@
 // list) and this module turns that into a native template. Clicking a native item sends the same
 // value string the in-app menu would have produced, so both paths land in one handler.
 import { app, BrowserWindow, Menu, MenuItemConstructorOptions, ipcMain } from 'electron';
+import { isGlassOn } from './windowGlass';
 
 /** what the renderer tells us about its menus. Everything optional: a window on the start screen
  *  has no file open and reports almost nothing. */
@@ -40,10 +41,19 @@ export type MenuState = {
 	canNewFile: boolean;
 	/** the compile target is Typst: File > New offers .typ instead of .tex/.cls/.sty */
 	typstProject?: boolean;
+	/** the main file is Typst and tinymist can export it: File > Export… */
+	canExportTypst?: boolean;
 	/** there is a directory to write an image next to (a .tex on a host) */
 	canInsertImage: boolean;
 	/** the workspace may be swapped out. False for a guest: it would abandon the session unleft */
 	canOpenFolder: boolean;
+	/** File > Save as template; optional so a renderer predating it simply shows none */
+	canSaveTemplate?: boolean;
+	canClone?: boolean;
+	/** Local History in the File menu: the host's own workspace, not a guest's */
+	canLocalHistory?: boolean;
+	/** a file is open, for Local History… */
+	fileOpen?: boolean;
 	canTutorial: boolean;
 	recentFolders: string[];
 	/** the start screen (or another workspace-less screen): the bar offers only what opens a folder */
@@ -120,11 +130,14 @@ function homeTemplate(win: BrowserWindow, s: MenuState): MenuItemConstructorOpti
 		{
 			label: label(s, 'file', 'File'),
 			submenu: [
-				{ label: label(s, 'openFolder', 'Open folder…'), accelerator: 'CmdOrCtrl+O', click: () => void homeActions?.openFolder(win) },
+				{ label: label(s, 'openFolder', 'Open Folder…'), accelerator: 'CmdOrCtrl+O', click: () => void homeActions?.openFolder(win) },
 				...recents,
 				{ type: 'separator' },
-				{ label: label(s, 'newWindow', 'New window'), accelerator: 'Shift+CmdOrCtrl+N', click: () => homeActions?.newWindow() },
-				{ label: label(s, 'openFolderNewWindow', 'Open folder in new window'), click: () => void homeActions?.openFolderNewWindow(win) }
+				{ label: label(s, 'newWindow', 'New Window'), accelerator: 'Shift+CmdOrCtrl+N', click: () => homeActions?.newWindow() },
+				{ label: label(s, 'openFolderNewWindow', 'Open Folder in New Window'), click: () => void homeActions?.openFolderNewWindow(win) },
+				{ type: 'separator' },
+				// a project window's Cmd+W closes its tab first (shortcuts.ts); here there is only the window
+				{ role: 'close', label: label(s, 'closeWindow', 'Close Window') }
 			]
 		},
 		{ role: 'editMenu' },
@@ -147,7 +160,7 @@ function template(win: BrowserWindow, s: MenuState): MenuItemConstructorOptions[
 				{ role: 'about', label: label(s, 'about', `About ${app.name}`) },
 				{ type: 'separator' },
 				{ label: label(s, 'preferences', 'Preferences…'), accelerator: 'CmdOrCtrl+,', click: () => fire(win, 'file:preferences') },
-				...(s.canShare ? [{ label: label(s, 'share', 'Share session…'), click: () => fire(win, 'file:share-session') }] : []),
+				...(s.canShare ? [{ label: label(s, 'share', 'Share Session…'), click: () => fire(win, 'file:share-session') }] : []),
 				{ type: 'separator' },
 				{ role: 'services', label: label(s, 'services', 'Services') },
 				{ type: 'separator' },
@@ -169,30 +182,49 @@ function template(win: BrowserWindow, s: MenuState): MenuItemConstructorOptions[
 								// .tex/.cls/.sty otherwise. .bib serves both and markdown is format-neutral.
 								submenu: [
 									...(s.typstProject
-										? [{ label: label(s, 'newTyp', 'Typst document'), click: () => fire(win, 'new:typ') }]
-										: [{ label: label(s, 'newTex', 'LaTeX document'), click: () => fire(win, 'new:tex') }]),
-									{ label: label(s, 'newBib', 'BibTeX bibliography'), click: () => fire(win, 'new:bib') },
-									{ label: label(s, 'newMd', 'Markdown file'), click: () => fire(win, 'new:md') },
+										? [{ label: label(s, 'newTyp', 'Typst Document'), click: () => fire(win, 'new:typ') }]
+										: [{ label: label(s, 'newTex', 'LaTeX Document'), click: () => fire(win, 'new:tex') }]),
+									{ label: label(s, 'newBib', 'BibTeX Bibliography'), click: () => fire(win, 'new:bib') },
+									{ label: label(s, 'newMd', 'Markdown File'), click: () => fire(win, 'new:md') },
 									...(s.typstProject
 										? []
 										: [
-												{ label: label(s, 'newCls', 'Class file'), click: () => fire(win, 'new:cls') },
-												{ label: label(s, 'newSty', 'Package file'), click: () => fire(win, 'new:sty') }
+												{ label: label(s, 'newCls', 'Class File'), click: () => fire(win, 'new:cls') },
+												{ label: label(s, 'newSty', 'Package File'), click: () => fire(win, 'new:sty') }
 											])
 								]
 							}
 						]
 					: []),
 				...(s.canOpenFolder
-					? [{ label: label(s, 'openFolder', 'Open folder…'), click: () => fire(win, 'openfolder:newfolder') }, ...recentItems(win, s)]
+					? [
+							{ label: label(s, 'openFolder', 'Open Folder…'), accelerator: 'CmdOrCtrl+O', click: () => fire(win, 'openfolder:newfolder') },
+							...recentItems(win, s)
+						]
 					: []),
+				...(s.canClone ? [{ label: label(s, 'clone', 'Clone Repository…'), click: () => fire(win, 'file:clone') }] : []),
 				{ type: 'separator' },
-				{ label: label(s, 'newWindow', 'New window'), accelerator: 'Shift+CmdOrCtrl+N', click: () => fire(win, 'file:new-window') },
-				{ label: label(s, 'openFolderNewWindow', 'Open folder in new window'), click: () => fire(win, 'file:open-folder-new-window') },
+				{ label: label(s, 'newWindow', 'New Window'), accelerator: 'Shift+CmdOrCtrl+N', click: () => fire(win, 'file:new-window') },
+				{ label: label(s, 'openFolderNewWindow', 'Open Folder in New Window'), click: () => fire(win, 'file:open-folder-new-window') },
 				{ type: 'separator' },
 				{ label: label(s, 'save', 'Save'), accelerator: 'CmdOrCtrl+S', click: () => fire(win, 'file:save') },
+				...(s.canSaveTemplate
+					? [{ label: label(s, 'saveAsTemplate', 'Save as Template…'), click: () => fire(win, 'file:save-as-template') }]
+					: []),
+				...(s.canExportTypst ? [{ label: label(s, 'exportTypst', 'Export…'), click: () => fire(win, 'file:export-typst') }] : []),
+				// under File, where Word and Google Docs keep version history and writers look first
+				...(s.canLocalHistory
+					? [
+							{ type: 'separator' as const },
+							{ label: label(s, 'localHistory', 'Version History…'), enabled: !!s.fileOpen, click: () => fire(win, 'file:local-history') },
+							{ label: label(s, 'restoreDeleted', 'Restore Deleted File…'), click: () => fire(win, 'file:restore-deleted') }
+						]
+					: []),
 				...(s.canCloseWorkspace
-					? [{ label: label(s, 'closeWorkspace', 'Close folder'), click: () => fire(win, 'file:close-workspace') }]
+					? [
+							{ type: 'separator' as const },
+							{ label: label(s, 'closeWorkspace', 'Close Folder'), click: () => fire(win, 'file:close-workspace') }
+						]
 					: [])
 				// Preferences and Share session are in the app menu above, not here
 			]
@@ -200,8 +232,8 @@ function template(win: BrowserWindow, s: MenuState): MenuItemConstructorOptions[
 		{
 			label: label(s, 'edit', 'Edit'),
 			submenu: [
-				{ label: label(s, 'palette', 'Command palette'), accelerator: 'CmdOrCtrl+K', click: () => fire(win, 'edit:palette') },
-				{ label: label(s, 'goToFile', 'Go to file'), accelerator: 'CmdOrCtrl+T', click: () => fire(win, 'edit:goToFile') },
+				{ label: label(s, 'palette', 'Command Palette'), accelerator: 'CmdOrCtrl+K', click: () => fire(win, 'edit:palette') },
+				{ label: label(s, 'goToFile', 'Go to File'), accelerator: 'CmdOrCtrl+T', click: () => fire(win, 'edit:goToFile') },
 				{ type: 'separator' },
 				// our own undo/redo, not the roles: the document history is ProseMirror's or
 				// CodeMirror's, and the native role would only reach a focused native input
@@ -213,15 +245,20 @@ function template(win: BrowserWindow, s: MenuState): MenuItemConstructorOptions[
 				{ role: 'paste', label: label(s, 'paste', 'Paste') },
 				{ role: 'selectAll', label: label(s, 'selectAll', 'Select All') },
 				{ type: 'separator' },
-				{ enabled: s.findable ?? doc.enabled, label: label(s, 'find', 'Find'), accelerator: 'CmdOrCtrl+F', click: () => fire(win, 'edit:find') }
+				{
+					enabled: s.findable ?? doc.enabled,
+					label: label(s, 'find', 'Find'),
+					accelerator: 'CmdOrCtrl+F',
+					click: () => fire(win, 'edit:find')
+				}
 			]
 		},
 		{
 			label: label(s, 'view', 'View'),
 			submenu: [
-				{ label: label(s, 'zoomIn', 'Zoom in'), accelerator: 'CmdOrCtrl+Plus', click: () => fire(win, 'view:zoom-in') },
-				{ label: label(s, 'zoomOut', 'Zoom out'), accelerator: 'CmdOrCtrl+-', click: () => fire(win, 'view:zoom-out') },
-				{ label: label(s, 'zoomReset', 'Reset zoom'), accelerator: 'CmdOrCtrl+0', click: () => fire(win, 'view:zoom-reset') },
+				{ label: label(s, 'zoomIn', 'Zoom In'), accelerator: 'CmdOrCtrl+Plus', click: () => fire(win, 'view:zoom-in') },
+				{ label: label(s, 'zoomOut', 'Zoom Out'), accelerator: 'CmdOrCtrl+-', click: () => fire(win, 'view:zoom-out') },
+				{ label: label(s, 'zoomReset', 'Reset Zoom'), accelerator: 'CmdOrCtrl+0', click: () => fire(win, 'view:zoom-reset') },
 				{ type: 'separator' },
 				// Electron's role is a static "Toggle Full Screen"; mac apps say Enter / Exit and flip.
 				// Main can read the state directly, and watchWindowState rebuilds on the transition.
@@ -238,9 +275,9 @@ function template(win: BrowserWindow, s: MenuState): MenuItemConstructorOptions[
 					...pm,
 					label: label(s, 'math', 'Math'),
 					submenu: [
-						{ label: label(s, 'mathInline', 'Inline equation'), accelerator: 'CmdOrCtrl+M', click: () => fire(win, 'math:inline') },
+						{ label: label(s, 'mathInline', 'Inline Equation'), accelerator: 'CmdOrCtrl+M', click: () => fire(win, 'math:inline') },
 						{
-							label: label(s, 'mathDisplay', 'Display equation'),
+							label: label(s, 'mathDisplay', 'Display Equation'),
 							accelerator: 'Shift+CmdOrCtrl+M',
 							click: () => fire(win, 'math:display')
 						},
@@ -253,27 +290,75 @@ function template(win: BrowserWindow, s: MenuState): MenuItemConstructorOptions[
 										click: () => fire(win, `math:${env}`)
 									})),
 									{ type: 'separator' as const },
-									{ label: label(s, 'matrixSquare', 'Matrix (brackets)'), click: () => fire(win, 'math:bmatrix') },
-									{ label: label(s, 'matrixParen', 'Matrix (parentheses)'), click: () => fire(win, 'math:pmatrix') }
+									{ label: label(s, 'matrixSquare', 'Matrix (Brackets)'), click: () => fire(win, 'math:bmatrix') },
+									{ label: label(s, 'matrixParen', 'Matrix (Parentheses)'), click: () => fire(win, 'math:pmatrix') }
 								]
 							: [])
 					]
 				},
 				...(s.canInsertImage ? [{ ...pm, label: label(s, 'image', 'Image…'), click: () => fire(win, 'insert:image') }] : []),
 				{ ...pm, label: label(s, 'table', 'Table'), click: () => fire(win, 'insert:table') },
-				// markdown has no citation node; tex writes \autocite, typst an @ref chip
-				...(dialect !== 'md' ? [{ ...pm, label: label(s, 'citation', 'Citation'), click: () => fire(win, 'insert:citation') }] : []),
+				// markdown has no citation node; typst writes an @ref chip, tex keeps it with the other references
+				...(dialect === 'typ' ? [{ ...pm, label: label(s, 'citation', 'Citation'), click: () => fire(win, 'insert:citation') }] : []),
 				{ ...pm, label: label(s, 'link', 'Link…'), click: () => fire(win, 'insert:link') },
-				{ ...pm, label: label(s, 'codeBlock', 'Code block'), click: () => fire(win, 'insert:code') },
-				{ ...pm, label: label(s, 'hrule', 'Horizontal rule'), click: () => fire(win, 'insert:hrule') },
+				{ ...pm, label: label(s, 'codeBlock', 'Code Block'), click: () => fire(win, 'insert:code') },
+				{ ...pm, label: label(s, 'hrule', 'Horizontal Rule'), click: () => fire(win, 'insert:hrule') },
+				// what the visual editor draws in place of LaTeX commands, grouped as the in-app menu groups them
 				...(dialect === 'tex'
 					? [
 							{ type: 'separator' as const },
-							{ ...pm, label: label(s, 'environment', 'Environment…'), click: () => fire(win, 'insert:environment') },
-							{ ...pm, label: label(s, 'rawLatex', 'Raw LaTeX block'), click: () => fire(win, 'insert:rawlatex') },
-							{ ...pm, label: label(s, 'inlineLatex', 'Inline LaTeX'), click: () => fire(win, 'insert:inlinelatex') }
+							{
+								...pm,
+								label: label(s, 'references', 'References'),
+								submenu: [
+									{ label: label(s, 'citation', 'Citation'), click: () => fire(win, 'insert:citation') },
+									{ label: label(s, 'crossRef', 'Cross-Reference'), click: () => fire(win, 'insert:crossref') },
+									{ label: label(s, 'hrefLink', 'Link to a Label'), click: () => fire(win, 'insert:hyperref') },
+									{ label: label(s, 'label', 'Label…'), click: () => fire(win, 'insert:label') },
+									{ label: label(s, 'footnote', 'Footnote'), click: () => fire(win, 'insert:footnote') }
+								]
+							},
+							{
+								...pm,
+								label: label(s, 'breaksSpaces', 'Breaks and Spaces'),
+								submenu: [
+									{ label: label(s, 'pageBreak', 'Page Break'), click: () => fire(win, 'insert:pagebreak') },
+									{ label: label(s, 'verticalSpace', 'Vertical Space'), click: () => fire(win, 'insert:vspace') },
+									{ label: label(s, 'horizontalSpace', 'Horizontal Space'), click: () => fire(win, 'insert:hspace') }
+								]
+							},
+							{ ...pm, label: label(s, 'symbolPicker', 'Symbol…'), click: () => fire(win, 'insert:symbolpicker') },
+							{
+								...pm,
+								label: label(s, 'documentParts', 'Document Parts'),
+								submenu: [
+									{ label: label(s, 'abstract', 'Abstract'), click: () => fire(win, 'insert:abstract') },
+									{ label: label(s, 'appendix', 'Appendix'), click: () => fire(win, 'insert:appendix') },
+									{ label: label(s, 'bibliography', 'Bibliography'), click: () => fire(win, 'insert:bibliography') },
+									{ label: label(s, 'includeFile', 'Include File…'), click: () => fire(win, 'insert:include') }
+								]
+							},
+							{ type: 'separator' as const },
+							{
+								...pm,
+								label: label(s, 'latexSource', 'LaTeX Source'),
+								submenu: [
+									{ label: label(s, 'environment', 'Environment…'), click: () => fire(win, 'insert:environment') },
+									{ label: label(s, 'rawLatex', 'Raw LaTeX Block'), click: () => fire(win, 'insert:rawlatex') },
+									{ label: label(s, 'inlineLatex', 'Inline LaTeX'), click: () => fire(win, 'insert:inlinelatex') },
+									{ label: label(s, 'comment', 'Comment'), click: () => fire(win, 'insert:comment') }
+								]
+							}
 						]
-					: [])
+					: dialect === 'typ'
+						? [
+								{ type: 'separator' as const },
+								{ ...pm, label: label(s, 'symbolPicker', 'Symbol…'), click: () => fire(win, 'insert:symbolpicker') },
+								{ ...pm, label: label(s, 'environment', 'Environment…'), click: () => fire(win, 'insert:environment') },
+								{ ...pm, label: label(s, 'includeFile', 'Include File…'), click: () => fire(win, 'insert:include') },
+								{ ...pm, label: label(s, 'sourceComment', 'Source Comment'), click: () => fire(win, 'insert:comment') }
+							]
+						: [])
 			]
 		},
 		{
@@ -285,16 +370,34 @@ function template(win: BrowserWindow, s: MenuState): MenuItemConstructorOptions[
 				...(dialect !== 'md'
 					? [{ ...pm, label: label(s, 'underline', 'Underline'), accelerator: 'CmdOrCtrl+U', click: () => fire(win, 'format:underline') }]
 					: []),
-				{ ...pm, label: label(s, 'inlineCode', 'Inline code'), click: () => fire(win, 'format:code') },
+				{ ...pm, label: label(s, 'inlineCode', 'Inline Code'), click: () => fire(win, 'format:code') },
+				// the styles the visual editor draws that no mark gives
+				...(dialect === 'tex'
+					? [
+							{
+								...pm,
+								label: label(s, 'textStyle', 'Text Style'),
+								submenu: [
+									{ label: label(s, 'smallCaps', 'Small Caps'), click: () => fire(win, 'format:style:textsc') },
+									{ label: label(s, 'sansSerif', 'Sans Serif'), click: () => fire(win, 'format:style:textsf') },
+									{ label: label(s, 'slanted', 'Slanted'), click: () => fire(win, 'format:style:textsl') },
+									{ label: label(s, 'textSize', 'Text Size'), click: () => fire(win, 'format:style:large') },
+									{ type: 'separator' as const },
+									{ label: label(s, 'framed', 'Framed'), click: () => fire(win, 'format:style:fbox') },
+									{ label: label(s, 'together', 'Kept on One Line'), click: () => fire(win, 'format:style:mbox') }
+								]
+							}
+						]
+					: []),
 				{ type: 'separator' },
 				{ ...pm, label: label(s, 'h1', 'Heading 1'), click: () => fire(win, 'format:h1') },
 				{ ...pm, label: label(s, 'h2', 'Heading 2'), click: () => fire(win, 'format:h2') },
 				{ ...pm, label: label(s, 'h3', 'Heading 3'), click: () => fire(win, 'format:h3') },
-				{ ...pm, label: label(s, 'quote', 'Block quote'), click: () => fire(win, 'format:quote') },
+				{ ...pm, label: label(s, 'quote', 'Block Quote'), click: () => fire(win, 'format:quote') },
 				...(s.canFormat
 					? [
 							{ type: 'separator' as const },
-							{ label: label(s, 'formatDocument', 'Format document'), click: () => fire(win, 'format:format-document') }
+							{ label: label(s, 'formatDocument', 'Format Document'), click: () => fire(win, 'format:format-document') }
 						]
 					: [])
 			]
@@ -304,13 +407,14 @@ function template(win: BrowserWindow, s: MenuState): MenuItemConstructorOptions[
 			submenu: [
 				{
 					...doc,
-					label: label(s, 'checkSpelling', 'Check spelling'),
+					label: label(s, 'checkSpelling', 'Check Spelling'),
 					type: 'checkbox',
 					checked: s.spellcheck,
 					click: () => fire(win, 'spelling:toggle')
 				},
 				{ type: 'separator' },
-				{ label: label(s, 'dictionary', 'Edit dictionary…'), click: () => fire(win, 'spelling:dictionary') }
+				{ label: label(s, 'dictionary', 'Edit Dictionary…'), click: () => fire(win, 'spelling:dictionary') },
+				{ label: label(s, 'spellingSettings', 'Spelling and Grammar Settings…'), click: () => fire(win, 'spelling:settings') }
 			]
 		},
 		...(s.terminalAvailable
@@ -319,11 +423,11 @@ function template(win: BrowserWindow, s: MenuState): MenuItemConstructorOptions[
 						label: label(s, 'terminal', 'Terminal'),
 						submenu: [
 							{ label: label(s, 'compile', 'Compile'), accelerator: 'Alt+CmdOrCtrl+Return', click: () => fire(win, 'terminal:compile') },
-							{ label: label(s, 'configureCompile', 'Configure compile command…'), click: () => fire(win, 'terminal:configure') },
+							{ label: label(s, 'configureCompile', 'Configure Compile Command…'), click: () => fire(win, 'terminal:configure') },
 							{ type: 'separator' as const },
-							{ label: label(s, 'newTerminal', 'New terminal'), click: () => fire(win, 'terminal:new') },
+							{ label: label(s, 'newTerminal', 'New Terminal'), click: () => fire(win, 'terminal:new') },
 							{
-								label: label(s, 'showTerminal', 'Show terminal'),
+								label: label(s, 'showTerminal', 'Show Terminal'),
 								type: 'checkbox' as const,
 								checked: s.terminalVisible,
 								click: () => fire(win, 'terminal:toggle')
@@ -349,18 +453,18 @@ function template(win: BrowserWindow, s: MenuState): MenuItemConstructorOptions[
 			role: 'help',
 			label: label(s, 'help', 'Help'),
 			submenu: [
-				{ label: label(s, 'shortcuts', 'Keyboard shortcuts'), click: () => fire(win, 'help:shortcuts') },
-				...(s.canTutorial ? [{ label: label(s, 'tutorial', 'Open tutorial'), click: () => fire(win, 'help:tutorial') }] : []),
-				{ label: label(s, 'whatsNew', "What's new"), click: () => fire(win, 'help:whatsnew') },
+				{ label: label(s, 'shortcuts', 'Keyboard Shortcuts'), click: () => fire(win, 'help:shortcuts') },
+				...(s.canTutorial ? [{ label: label(s, 'tutorial', 'Open Tutorial'), click: () => fire(win, 'help:tutorial') }] : []),
+				{ label: label(s, 'whatsNew', "What's New"), click: () => fire(win, 'help:whatsnew') },
 				{ type: 'separator' },
 				{ label: label(s, 'documentation', 'Documentation'), click: () => fire(win, 'help:docs') },
 				{ label: label(s, 'discord', 'Join Discord'), click: () => fire(win, 'help:discord') },
-				{ label: label(s, 'support', 'Contact support'), click: () => fire(win, 'help:support') },
+				{ label: label(s, 'report', 'Report a Problem…'), click: () => fire(win, 'help:report') },
 				{ type: 'separator' },
 				// Dev Tools is a command-palette entry now (search "dev"), not a menu item: a diagnostic
 				// does not belong in the menu writers open for tutorials. Still no keyboard accelerator
 				// anywhere - a writer must never open a debugger by fumbling a shortcut mid-sentence.
-				{ label: label(s, 'updates', 'Check for updates'), click: () => fire(win, 'help:updates') }
+				{ label: label(s, 'updates', 'Check for Updates'), click: () => fire(win, 'help:updates') }
 			]
 		}
 	];
@@ -434,7 +538,7 @@ export function registerWindowChrome(onChrome?: (c: ChromeColors) => void, home?
 	ipcMain.on('window:overlay', (e, o: { height?: number; color?: string; symbolColor?: string; background?: string }) => {
 		const win = BrowserWindow.fromWebContents(e.sender);
 		if (!win) return;
-		if (o.background) win.setBackgroundColor(o.background);
+		if (o.background && !isGlassOn()) win.setBackgroundColor(o.background);
 		if (!isMac) {
 			try {
 				win.setTitleBarOverlay({ height: o.height, color: o.color, symbolColor: o.symbolColor });

@@ -14,6 +14,7 @@ export type { BibToken } from './bibtexParser';
 
 // the generated-artifact side: keys and display fields scraped from a .bbl
 export { parseBblEntries, sliceBblBibitems, type BblBibItem } from './bblScan';
+export { parseHayagriva } from './hayagriva';
 
 // schema validation is opt-in, used only by the visual add/edit form on save
 export { BibEntrySchema, biblatexReferenceSchema, schemaForType } from './schema';
@@ -30,3 +31,10 @@ export {
 } from './fieldConfig';
 
 export { bibDisplayText, bibAuthorShort } from './bibDisplayText';
+
+export { validateEntry, type BibProblem } from './checks/bibValidate';
+export { bibProblemText } from './checks/bibProblemText';
+export { sameWorkAs, sameWorkIn, type SameWork } from './checks/bibSameWork';
+
+// legacy field name -> the one biblatex renames it to (journal -> journaltitle)
+export { BIB_FIELD_ALIASES } from './bibDatamodel';

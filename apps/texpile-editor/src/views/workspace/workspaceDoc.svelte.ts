@@ -12,11 +12,14 @@ import { VisualParser, MAX_VISUAL_BYTES, type ParseFailure } from '$lib/workspac
 import { detectMainFile, gatherProjectMacros } from '$lib/workspace/project';
 import { workspaceRoot, activeCompare, activeFilePath } from '$lib/workspace/workspaceStore';
 import { editorViewStore } from '$lib/stores/editorStore';
+import { countOpenFile } from '$lib/stores/countStore.svelte';
 import { visualDocCache } from '$lib/workspace/visualDocCache';
 import type { WorkspaceProvider } from '$lib/workspace/workspaceProvider';
 import type { EditSession } from '$lib/collab/editSession';
 import type { SavePipeline } from '$lib/workspace/savePipeline.svelte';
 import { toaster } from '$lib/modals/toaster-svelte';
+import { openTexFileOf } from '$lib/workspace/edits/openEditorEdit';
+import { openTexFile } from '$lib/languages/latex/symbols/latexSymbolPackage';
 import { m } from '$lib/paraglide/messages';
 
 type DocDeps = {
@@ -34,6 +37,8 @@ type DocDeps = {
 export class WorkspaceDoc {
 	// macro-defining text from the main file's include chain, fed to the parser (see workspace/project.ts)
 	projectMacros = $state('');
+	/** files whose save the check could not parse in time, told once each */
+	private uncheckedSaves = new Set<string>();
 
 	// worker parse + sequencing live in lib/workspace/visualParse.svelte.ts
 	readonly parser = new VisualParser(() => this.projectMacros);
@@ -45,13 +50,36 @@ export class WorkspaceDoc {
 	constructor(private d: DocDeps) {
 		// the open file's buffers and edit handlers live in lib/workspace/documentBuffer.svelte.ts
 		this.doc = new DocumentBuffer({
-			scheduleSave: (path, content) => d.saver().schedule(path, content),
+			scheduleSave: (path, content, before) => d.saver().schedule(path, content, before),
 			discardQueuedSave: () => d.saver().discard(),
+			shareEdit: (path, content, before) => {
+				if (path) d.session().edit(path, content, before);
+			},
 			writeNow: (path, content, force) => void d.saver().enqueue(path, content, true, force),
 			rebuildVisual: () => this.rebuildVisualFromSource(),
 			isVisualMode: () => this.modes.mode === 'visual',
 			noteLocalEdit: () => d.visualCollab()?.noteLocalEdit(),
-			clearPendingAnchor: () => (this.modes.pendingVisualAnchor = null)
+			clearPendingAnchor: () => (this.modes.pendingVisualAnchor = null),
+			projectMacros: () => this.projectMacros,
+			reparse: (text, format) => this.parser.reparse(text, format),
+			// once per file: a file too slow to parse twice is slow on every save
+			noteSaveUnchecked: (path) => {
+				console.warn(`[save] ${path} was saved unchecked: it could not be parsed again in time`);
+				if (this.uncheckedSaves.has(path)) return;
+				this.uncheckedSaves.add(path);
+				toaster.info({ title: m.wsview_toast_save_unchecked_title(), description: m.wsview_toast_save_unchecked_desc() });
+			},
+			noteSaveRewrite: (rewritten, difference) => {
+				if (difference === null) {
+					toaster.warning({
+						title: m.wsview_toast_save_rewritten_title(),
+						description: m.wsview_toast_save_rewritten_desc({ count: rewritten })
+					});
+					return;
+				}
+				console.warn(`[save] the saved file does not read back as the editor shows: ${difference}`);
+				toaster.error({ title: m.wsview_toast_save_unverified_title(), description: m.wsview_toast_save_unverified_desc() });
+			}
 		});
 		// view mode, scroll anchors and cross-mode history live in lib/workspace/viewModeSwitch.svelte.ts
 		this.modes = new ViewModeSwitch({
@@ -61,7 +89,10 @@ export class WorkspaceDoc {
 			setSource: (t) => (this.doc.texSource = t),
 			getDocMeta: () => this.doc.docMeta,
 			getMountedSource: () => this.doc.lastDocSource,
+			getSourceMap: () => this.doc.sourceMap,
 			getEncodingIssue: () => this.doc.encodingIssue,
+			getConflicted: () => this.doc.conflicted,
+			leaveConflicts: () => this.doc.leaveConflicts(),
 			rebuildVisual: () => this.rebuildVisualFromSource(),
 			captureDiffSnapshot: () => void this.diff.snapshot(),
 			startCompare: () => d.startCompare(),
@@ -105,6 +136,8 @@ export class WorkspaceDoc {
 
 		// mirror to the global store so menuBarCommands can route Insert/Format
 		$effect(() => this.modes.syncStore());
+		// the top bar's word count
+		$effect(() => countOpenFile(this.doc.path, this.doc.buffer));
 		// the doc.visualDoc dep re-fires this when an async re-parse lands (the doc swap itself is untracked)
 		$effect(() => {
 			void editorViewStore.current;
@@ -137,6 +170,12 @@ export class WorkspaceDoc {
 			if (!activeCompare.current || this.modes.mode !== 'visual' || !hasVisualMode(kind)) return;
 			if (this.diff.originalFor !== this.doc.path) return;
 			untrack(() => void this.diff.ensureVersionDoc(kind as 'tex' | 'md' | 'typ'));
+		});
+		// the LaTeX symbol picker offers the \usepackage a picked symbol needs, written into the open file
+		$effect(() => {
+			const parseVisual = async (text: string) => (await this.tryParseVisual(text)).parsed ?? null;
+			openTexFile.current = openTexFileOf({ doc: this.doc, mode: () => this.modes.mode, kind: () => this.doc.kind, parseVisual });
+			return () => (openTexFile.current = null);
 		});
 		// shared session: a file the host holds in a NON-Y-bound editor is host-exclusive (guests go
 		// read-only), else concurrent guest edits to that file's Y.Text would be clobbered.
@@ -238,7 +277,8 @@ export class WorkspaceDoc {
 
 	/** `force` reparses even when the buffer still matches the mounted doc (new macro signatures) */
 	rebuildVisualFromSource(force = false): void {
-		if (this.doc.encodingIssue) return;
+		// marked places parse into stray paragraphs; the source editor holds the file until they are chosen
+		if (this.doc.encodingIssue || this.doc.conflicted) return;
 		// fast path: the doc last in the view already serializes to this text, so it mounts again as
 		// is. the buffer, not the parser: a visual edit moves that doc on from the last parse without
 		// reparsing, so a disk reload back to the parse's text still rebuilds, and a remount after a

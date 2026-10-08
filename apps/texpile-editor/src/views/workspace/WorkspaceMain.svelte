@@ -11,8 +11,14 @@
 	import TerminalDock from '$lib/terminal/TerminalDock.svelte';
 	import { ChevronLeft } from '@lucide/svelte';
 	import { m } from '$lib/paraglide/messages';
-	import { activeCompare } from '$lib/workspace/workspaceStore';
+	import { activeCompare, setSuggesting, workspaceRoot } from '$lib/workspace/workspaceStore';
+	import { ensureName } from '$lib/identity/ownName.svelte';
+	import { activeSuggestions, suggesting } from '$lib/comments/activeSuggestions.svelte';
+	import { collabGuest } from '$lib/collab/guestStore.svelte';
 	import type { WorkspaceMainProps } from './workspaceMainProps';
+	import { untrack } from 'svelte';
+	import { LOCAL_REF } from '$lib/workspace/localHistory/localHistory.svelte';
+	import { HISTORY_PANEL_WIDTH } from '$lib/workspace/paneGeometry';
 
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the pipelines are structural here
 	type Any = any;
@@ -31,7 +37,6 @@
 		kind,
 		nameOnly,
 		folderEmpty,
-		modLabel,
 		dockShrunk,
 		draft,
 		typstPreviewHost,
@@ -42,6 +47,7 @@
 		onPickMain,
 		panes,
 		actions,
+		commentsCtl,
 		dockView = $bindable(),
 		pdfPaneRef = $bindable()
 	}: WorkspaceMainProps = $props();
@@ -59,9 +65,29 @@
 				: kind === 'tex'
 			: (mainIsTypst ? kind === 'typ' && typstPreviewWanted : kind === 'tex') && !activeCompare.current
 	);
+	// Version History's panel takes room in the editor column (EditorPane draws it beside a comparison with a
+	// copy); untracked, as making that room opens or shuts the preview, which would run this again
+	$effect(() => {
+		const width = activeCompare.current?.hash.startsWith(LOCAL_REF) ? HISTORY_PANEL_WIDTH : 0;
+		untrack(() => layout.setEditorAside(width));
+	});
 	const syncToCursor = $derived(canSync ? (actions.syncForward as () => void) : null);
 	// a lone file has no project to hold the log, so the menus drop their Add comment entry
 	const canComment = $derived(!fileMode.current);
+	async function toggleSuggest(next: boolean) {
+		// a suggestion carries its author's name: git's, or one asked for now
+		if (next && !session.isGuest && !(await ensureName(workspaceRoot.current))) return;
+		void commentsCtl.suggestions.settle();
+		suggesting.current = next;
+		if (workspaceRoot.current && !session.isGuest) setSuggesting(workspaceRoot.current, next);
+	}
+	const beside = $derived(
+		new Set<string>(
+			[...panes.commentRanges.filter((r: Any) => !r.resolved), ...activeSuggestions.current]
+				.map((r: Any) => r.id)
+				.filter((id: string) => !panes.commentsNotVisible.has(id))
+		)
+	);
 </script>
 
 <main
@@ -71,8 +97,9 @@
 	<EditorTopbar
 		loadedPath={doc.path}
 		{kind}
-		viewMode={modes.mode}
+		viewMode={doc.conflicted ? 'source' : modes.mode}
 		encodingIssue={doc.encodingIssue}
+		conflicted={doc.conflictsLeft > 0}
 		{guest}
 		terminalAvailable={termDock.available}
 		compiling={compiler.compiling}
@@ -81,7 +108,6 @@
 		pdfPaneOpen={layout.pdfPaneOpen}
 		draftPaused={draft.paused}
 		saving={saver.saving}
-		{modLabel}
 		onSetViewMode={actions.setViewMode}
 		onStopCompile={compiler.stopCompile}
 		onPauseDraft={actions.pauseDraft}
@@ -90,9 +116,18 @@
 		commandPending={panes.commandPending}
 		onRequestCompile={actions.requestCompile}
 		onConfigureCompile={actions.openCompileModal}
+		onCompileFromScratch={compiler.runCompileFromScratch}
+		onCleanAux={compiler.runCleanAux}
+		latexmkActionsAvailable={compiler.latexmkActionsAvailable}
+		onShowOutput={() => void compiler.revealOutput()}
+		outputAvailable={compiler.hasOutput}
 		onShowProblems={actions.showProblems}
-		commentCount={panes.comments.filter((t: Any) => !t.resolved).length}
+		onCountWords={actions.countWords}
+		{onPickMain}
+		commentCount={panes.comments.filter((t: Any) => !t.resolved && !panes.commentGhosts.has(t.id)).length}
 		onShowComments={actions.showComments}
+		suggesting={suggesting.current}
+		onToggleSuggest={canComment && (!session.isGuest || collabGuest.hostRecords) ? toggleSuggest : undefined}
 		onTogglePdf={layout.togglePdfPane}
 		onSave={actions.save}
 		onSyncToCursor={layout.pdfPopout && !mainUnset ? syncToCursor : null}
@@ -111,6 +146,7 @@
 			onActivateTab={actions.activateTab}
 			onCloseTab={actions.closeTab}
 			onKeepTab={actions.keepTab}
+			onTabMenu={actions.tabMenu}
 			loadedPath={doc.path}
 			{kind}
 			{nameOnly}
@@ -120,10 +156,17 @@
 			loadError={doc.loadError}
 			fileDeleted={doc.deletedOnDisk}
 			encodingIssue={doc.encodingIssue}
+			conflicted={doc.conflicted}
+			conflictsLeft={doc.conflictsLeft}
+			conflictStray={doc.strayMarkers}
+			changeBaseline={panes.changeBaseline}
+			onLeaveConflicts={actions.leaveConflicts}
 			binaryWarning={doc.binaryWarning}
 			onOpenAsText={actions.openAsText}
 			applyingStarter={panes.applyingStarter}
 			texSource={doc.texSource}
+			sourceMap={doc.sourceMap}
+			regionParser={doc.regionParser}
 			rawContent={doc.rawContent}
 			visualDoc={doc.visualDoc}
 			parseProgress={parser.progress}
@@ -157,18 +200,22 @@
 			onJumpToFile={actions.jumpToFile}
 			onOpenFileAt={actions.openFileAt}
 			onJumpToLabel={actions.jumpToLabel}
+			onJumpToDefinition={actions.jumpToDefinition}
 			onCaretMove={actions.onCaretMove}
 			onToggleDiffLayout={() => diff.toggleLayout()}
 			onRefreshDiff={actions.refreshDiff}
 			commentRanges={panes.commentRanges}
-			commentThreads={panes.comments.filter((t: Any) => t.file === panes.commentFile)}
+			commentThreads={commentsCtl.withKnownAnchors(panes.comments.filter((t: Any) => t.file === panes.commentFile))}
 			selectedComment={panes.commentSelected}
 			onAddComment={canComment ? actions.beginComment : undefined}
 			onAddCommentAnchored={canComment ? actions.beginCommentAnchored : undefined}
 			commentPendingActive={!!panes.commentPending}
 			onInsertCitation={panes.zoteroCite ? actions.insertZoteroCitation : undefined}
+			onCiteByDoi={panes.doiCite ? actions.citeByDoi : undefined}
 			onCommentsPlaced={actions.visualCommentsPlaced}
 			onSelectComment={actions.selectComment}
+			commentsCtl={fileMode.current ? undefined : commentsCtl}
+			onSetViewMode={actions.setViewMode}
 		/>
 		{#if !fileMode.current && layout.pdfPaneOpen && !layout.pdfPopout}
 			<PreviewPane
@@ -183,7 +230,6 @@
 				{guestTypstOffered}
 				{mainUnset}
 				{onPickMain}
-				onSaveTypstPdf={actions.onSaveTypstPdf}
 				onSyncToCursor={syncToCursor}
 				onPopout={() => layout.setPdfPopout(true)}
 				paneDragging={layout.paneDragging}
@@ -195,6 +241,7 @@
 				onInverseSync={actions.onInverseSync}
 				onSettled={actions.onPreviewSettled}
 				onDiagnostics={actions.onPreviewDiagnostics}
+				slides={layout.pdfSlides}
 			/>
 		{:else if !fileMode.current && (termDock.available || guest || layout.pdfPopout)}
 			<!-- the pane is gone but its divider stays, on the editor's right edge with the chevron
@@ -231,7 +278,7 @@
 					ariaLabel: m.wsview_toggle_pdf_preview()
 				}}
 				bottomInset={termDock.shrink || !termDock.visible ? 0 : termDock.height}
-				class="z-20 mr-[7px]"
+				class="z-30 mr-[7px]"
 				style="grid-column: 3; grid-row: 2 / -1"
 			/>
 		{/if}
@@ -246,7 +293,6 @@
 				{draft}
 				{typstPreviewHost}
 				{typstPreviewWanted}
-				onSaveTypstPdf={actions.onSaveTypstPdf}
 				onPdfRef={(r) => (pdfPaneRef = r)}
 				onClosed={() => layout.setPdfPopout(false)}
 				onPageClick={actions.onPdfDoubleClick}
@@ -273,7 +319,7 @@
 			onToggleShrink={actions.toggleTerminalShrink}
 			onClose={actions.toggleTerminal}
 			onProblemJump={actions.openFileAt}
-			comments={panes.comments}
+			comments={panes.comments.filter((t: Any) => !panes.commentGhosts.has(t.id))}
 			commentFile={panes.commentFile}
 			commentsOrphaned={panes.commentsOrphaned}
 			commentsWeak={panes.commentsWeak}
@@ -283,12 +329,10 @@
 			onCommentOpen={actions.openComment}
 			onCommentReply={actions.replyToComment}
 			onCommentResolve={actions.resolveComment}
-			onCommentDelete={actions.deleteComment}
 			onCommentEditMessage={actions.editCommentMessage}
 			onCommentDeleteMessage={actions.deleteCommentMessage}
-			commentPending={panes.commentPending}
-			onCommentSubmitPending={actions.submitComment}
-			onCommentCancelPending={actions.cancelComment}
+			commentBeside={beside}
+			onCommentAttach={actions.attachCommentToSelection}
 		/>
 	{/if}
 
@@ -297,12 +341,15 @@
 		     dragging it back up reopens it. Outside the `mounted` gate above on purpose: the rail is
 		     the way in, and it has to be there before the dock has ever been built.
 
+		     It draws no line: a rule along the foot of the window, where no other edge has one, read
+		     as a stray border. The grab zone still lights up under the pointer.
+
 		     No lozenge, unlike the side rails. Those carry a collapse toggle because their panes lost
 		     the toolbar buttons that used to open them; the dock kept both its toolbar button and its
 		     menu item, so a control here would only be a third copy. -->
 		<!-- eslint-disable-next-line svelte/valid-compile -->
-		<div class="bg-surface-200-800 relative z-20 h-px shrink-0" style="grid-row: 4; grid-column: {dockShrunk ? '1' : '1 / -1'}">
-			<!-- the grab zone overhangs the rule by 3px, upwards only: below it is the window's edge,
+		<div class="relative z-20 h-px shrink-0" style="grid-row: 4; grid-column: {dockShrunk ? '1' : '1 / -1'}">
+			<!-- the grab zone overhangs its row by 3px, upwards only: below it is the window's edge,
 			     and 3px past that was scrollable overflow the editors' focus scroll could take up,
 			     shifting the whole workspace by that much -->
 			<div

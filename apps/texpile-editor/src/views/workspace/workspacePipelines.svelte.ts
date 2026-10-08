@@ -3,9 +3,11 @@
 import { fileMode } from '$lib/workspace/fileMode.svelte';
 import { DraftController } from '$lib/draft/draftController.svelte';
 import { TypstPreviewController } from '$lib/languages/typst/preview/previewController.svelte';
+import { TypstDocumentStream } from '$lib/languages/typst/intellisense/typstDocumentStream';
+import { typstExport } from '$lib/languages/typst/export/dialog/typstExportState.svelte';
 import { CompilePipeline } from '$lib/workspace/compilePipeline.svelte';
 import { projectConfigSync as projectConfig, compileConfig } from '$lib/workspace/projectConfigSync.svelte';
-import { texFiles, mainFile } from '$lib/workspace/workspaceStore';
+import { texFiles, mainFile, workspaceRoot } from '$lib/workspace/workspaceStore';
 import { settings } from '$lib/settings';
 import { WorkspaceCompileState } from './workspaceCompileState.svelte';
 import { WorkspaceNav } from './workspaceNav.svelte';
@@ -16,6 +18,7 @@ import type { PaneLayout } from '$lib/workspace/paneLayout.svelte';
 import type { TerminalDockState } from '$lib/workspace/terminalDockState.svelte';
 import type { EditSession } from '$lib/collab/editSession';
 import type { WorkspaceProvider } from '$lib/workspace/workspaceProvider';
+import type { DockView } from '$lib/terminal/dockView';
 
 type PipelineDeps = {
 	provider: WorkspaceProvider;
@@ -26,7 +29,7 @@ type PipelineDeps = {
 	files: () => WorkspaceFiles;
 	layout: () => PaneLayout;
 	termDock: () => TerminalDockState;
-	setDockView: (v: 'terminal' | 'problems' | 'comments') => void;
+	setDockView: (v: DockView) => void;
 	openCompileModal: () => void;
 };
 
@@ -72,11 +75,22 @@ export function createWorkspacePipelines(d: PipelineDeps) {
 		setPreviewSwitch: (root, on) => projectConfig.setTypstPreview(root, on),
 		getDocPath: () => doc.path,
 		getFollow: () => settings.current.typstPreviewFollow === true,
-		getCompileCommand: () => cc.command,
 		getVisualCaretSourcePos: (): { line: number; character: number } | null => nav.visualCaretSourcePos(),
-		flushSaves: () => d.editFlow().saver.flushAndWait(),
-		refreshTree: () => d.files().refreshTree(),
-		syncJumpToFileLine: (file: string, line: number) => nav.syncJumpToFileLine(file, line)
+		syncJumpToFileLine: (file: string, line: number, column?: number) => nav.syncJumpToFileLine(file, line, undefined, column)
+	});
+	// tinymist's copy of the open .typ, which is what the preview renders, kept equal to the buffer
+	// in the visual editor too. A guest's file is on the host's server, kept by the host
+	const typstStream = new TypstDocumentStream({
+		getRoot: () => workspaceRoot.current,
+		getOpenTypstFile: () => (!d.guest() && doc.kind === 'typ' && !doc.binaryWarning ? doc.path : null),
+		getText: () => doc.texSource
+	});
+	// the Export dialog (languages/typst/export) saves and refreshes through this workspace while it
+	// is up; a guest has no tinymist of its own to export with
+	$effect(() => {
+		if (d.guest()) return;
+		typstExport.connect({ flushSaves: () => d.editFlow().saver.flushAndWait(), refreshTree: () => void d.files().refreshTree() });
+		return () => typstExport.connect(null);
 	});
 	// compile / terminal / PDF-watch orchestration lives in lib/workspace/compilePipeline.svelte.ts
 	const compiler: CompilePipeline = new CompilePipeline({
@@ -120,5 +134,5 @@ export function createWorkspacePipelines(d: PipelineDeps) {
 		typstSyncToLine: (line) => typstPreview.syncToLine(line),
 		statFile
 	});
-	return { cc, draftCtl, typstPreview, compiler, nav };
+	return { cc, draftCtl, typstPreview, typstStream, compiler, nav };
 }

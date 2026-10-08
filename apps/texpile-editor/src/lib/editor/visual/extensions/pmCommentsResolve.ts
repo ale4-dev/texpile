@@ -1,17 +1,10 @@
-// Resolving stored anchors against the rendered document: prose survives the round trip
-// verbatim, so the same quote search that places a thread in CodeMirror places it here.
-// Quotes containing markup, math, or wrap whitespace fail to resolve and draw nothing -
-// honest absence over a guessed highlight, same policy as anchor.ts.
+// Placing review threads in the rendered document: a thread's range in the file, through the
+// source map. Exact where prose is, the whole node where a node draws its own content, and
+// nowhere when the map has no answer, which the panel then says
 import type { Node as PMNode } from 'prosemirror-model';
-import {
-	prepareLoose,
-	resolveAnchor,
-	resolveAnchorLooseIn,
-	resolveFragment,
-	type AnchorDialect,
-	type LooseHaystack
-} from '$lib/comments/anchor';
-import type { CommentThread } from '$lib/comments/log';
+import type { SourceMap } from '../sourceSpans';
+import { pmAtOffset } from '../sourceMap';
+import type { CommentRange } from './comments';
 import type { PmCommentRange } from './pmComments';
 
 export type FlatDoc = {
@@ -28,10 +21,6 @@ export type FlatDoc = {
  * wants to argue with - so it has to be walked like any other text. The image node is only an atom
  * for SELECTION purposes; imageNodeView hands back a contentDOM, so a decoration over the caption
  * renders normally.
- *
- * Math is deliberately not here. block_math/inline_math are atoms with content too, but mathlive
- * draws that content itself and ProseMirror never renders it, so a range placed inside one would
- * report a thread as placed while drawing nothing - the exact lie resolvePmComments refuses to tell.
  */
 const ATOMS_WITH_PROSE = new Set(['image']);
 
@@ -70,64 +59,50 @@ export function flattenDoc(doc: PMNode): FlatDoc {
 	return { text, index };
 }
 
-/**
- * Place every thread in the rendered document, or report it as not visible in this view.
- *
- * Tiered, most precise first:
- *  1. the quote in the rendered text as-is (source offsets only feed the fast path/tie-break,
- *     where a miss costs one string compare);
- *  2. the quote through normalizeForMatch with the file's dialect, which is what lets a quote
- *     survive line wraps, escapes, ligatures AND the inline markup between the two dialects -
- *     the normal fate of any selection;
- *  3. a quote that crossed an atom (math, a citation chip): its longest text fragment locates
- *     it, and the highlight covers the enclosing BLOCKS - the same block granularity the
- *     controller downgrades such anchors to at creation, so both views agree on the extent;
- *  4. not visible in this view. The panel still lists the thread and says so; the source editor
- *     still places it.
- */
-export function resolvePmComments(
-	doc: PMNode,
-	threads: CommentThread[],
-	dialect: AnchorDialect = 'tex'
-): { ranges: PmCommentRange[]; lost: string[] } {
-	const { text, index } = flattenDoc(doc);
-	const ranges: PmCommentRange[] = [];
-	const lost: string[] = [];
-	// the flat text is normalized once for the whole pass, and only once something misses: this runs
-	// on every re-place, so a document whose threads all still fit pays nothing for tier 2
-	let hay: LooseHaystack | null = null;
-	for (const t of threads) {
-		let hit = resolveAnchor(text, t.anchor);
-		if (!hit) {
-			hay ??= prepareLoose(text, dialect);
-			hit = resolveAnchorLooseIn(hay, t.anchor);
-		}
-		if (hit) {
-			const from = index[hit.from];
-			const to = hit.to > hit.from ? index[hit.to - 1] + 1 : from;
-			if (from !== undefined && to !== undefined && to > from) {
-				ranges.push({ id: t.id, from, to, resolved: t.resolved });
-				continue;
-			}
-		}
-		// tier 3: the fragment places the thread, the enclosing textblocks carry the highlight
-		hay ??= prepareLoose(text, dialect);
-		const frag = resolveFragment(hay, t.anchor.quote);
-		if (frag) {
-			const from = index[frag.from];
-			const to = frag.to > frag.from ? index[frag.to - 1] + 1 : from;
-			if (from !== undefined && to !== undefined && to > from) {
-				try {
-					const $a = doc.resolve(from);
-					const $b = doc.resolve(to - 1);
-					ranges.push({ id: t.id, from: $a.start(), to: $b.end(), resolved: t.resolved });
-					continue;
-				} catch {
-					/* an edge position the resolver rejects falls through to lost */
-				}
-			}
-		}
-		lost.push(t.id);
+// nodes that draw their own content: a range inside one tints the node, since a decoration on the
+// text inside would land where nothing of it is painted
+const DRAWN_BY_THEMSELVES = new Set([
+	'raw_latex',
+	'code_block',
+	'block_math',
+	'inline_math',
+	'inline_latex',
+	'citation',
+	'ref',
+	'label',
+	'includedoc'
+]);
+
+/** the document range for a range of the file: the characters it maps to, or the node that draws them */
+export function pmRangeOf(doc: PMNode, map: SourceMap, from: number, to: number): { from: number; to: number; node?: boolean } | null {
+	const size = doc.content.size;
+	if (from === to) {
+		const at = pmAtOffset(map, from, -1);
+		return at === null ? null : { from: Math.min(at, size), to: Math.min(at, size) };
 	}
-	return { ranges, lost };
+	const a = pmAtOffset(map, from, 1);
+	const b = pmAtOffset(map, to, -1);
+	if (a === null || b === null) return null;
+	const pmFrom = Math.min(a, b, size);
+	const pmTo = Math.min(Math.max(a, b), size);
+	const $from = doc.resolve(pmFrom);
+	for (let d = $from.depth; d > 0; d--) {
+		if (DRAWN_BY_THEMSELVES.has($from.node(d).type.name)) return { from: $from.before(d), to: $from.after(d), node: true };
+	}
+	return { from: pmFrom, to: pmTo };
+}
+
+/** every thread's range in this document, and the ids of those the map could not place */
+export function placePmComments(doc: PMNode, ranges: CommentRange[], map: SourceMap): { ranges: PmCommentRange[]; lost: string[] } {
+	const out: PmCommentRange[] = [];
+	const lost: string[] = [];
+	for (const r of ranges) {
+		const placed = pmRangeOf(doc, map, r.from, r.to);
+		if (!placed) {
+			lost.push(r.id);
+			continue;
+		}
+		out.push({ id: r.id, from: placed.from, to: placed.to, resolved: r.resolved, ...(placed.node ? { node: true } : {}) });
+	}
+	return { ranges: out, lost };
 }

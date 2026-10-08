@@ -4,9 +4,10 @@
 import { utilityProcess, type UtilityProcess } from 'electron';
 import path from 'node:path';
 import { shellEnvReady } from '../shell/shellEnv';
+import { onToolPathChange } from '../shell/toolDirs';
 import { timeSync } from '../startupStats';
 
-export type HelperEvent = { event: string; key: string };
+export type HelperEvent = { event: string; key: string; data?: unknown };
 type Reply = { id: number; ok: boolean; value?: unknown; error?: string };
 type Waiter = { resolve: (v: unknown) => void; reject: (e: Error) => void };
 
@@ -16,6 +17,11 @@ let nextId = 1;
 const waiting = new Map<number, Waiter>();
 const listeners = new Set<(e: HelperEvent) => void>();
 const reforkHooks = new Set<() => void>();
+
+// forked with a copy of the environment, so a PATH moved by Preferences has to be sent over
+onToolPathChange((p) => {
+	if (proc) void helperCall('env.path', [p]).catch(() => {});
+});
 
 function start(): UtilityProcess {
 	const p = timeSync('fork helper process', () =>
@@ -50,7 +56,8 @@ async function ensure(): Promise<UtilityProcess> {
 	return proc;
 }
 
-/** runs one helper op; `git.<gitService export>`, `watch.start`, `watch.stop` */
+/** runs one helper op; `git.<gitService, gitHistory, gitRemote or gitCombine export>`, `git.gitClone`,
+ *  `watch.start`, `watch.stop` */
 export async function helperCall(op: string, args: unknown[]): Promise<unknown> {
 	const p = await ensure();
 	const id = nextId++;
@@ -60,8 +67,10 @@ export async function helperCall(op: string, args: unknown[]): Promise<unknown> 
 	});
 }
 
-export function onHelperEvent(fn: (e: HelperEvent) => void): void {
+/** returns the unsubscribe */
+export function onHelperEvent(fn: (e: HelperEvent) => void): () => void {
 	listeners.add(fn);
+	return () => listeners.delete(fn);
 }
 
 /** runs after the helper has been forked again following a death; state living there is gone */

@@ -3,33 +3,19 @@
 // quote comes back with the lines of its copies, which is what lets the caller try again with a
 // prefix or a line instead of guessing.
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { BrowserWindow } from 'electron';
 import { z } from 'zod';
-import { askRenderer } from './bridge';
-import { fail, ok, refused } from './toolReply';
+import { relayer, type TargetWindow } from './relay';
 
-/** the window a tool acts on; root picks one when several are open */
-type TargetWindow = (root?: string) => { win: BrowserWindow } | null;
-type Answer = { ok?: boolean; reason?: string } | null;
-
-const rootArg = z.string().optional().describe('workspace root; defaults to the focused window');
-const byArg = z.string().optional().describe("your own name, shown as the author; defaults to 'AI assistant'");
-const pickArgs = {
+export const rootArg = z.string().optional().describe('workspace root; defaults to the focused window');
+export const byArg = z.string().optional().describe("your own name, shown as the author; defaults to 'AI assistant'");
+export const pickArgs = {
 	prefix: z.string().optional().describe('text right before the quote, to pick between copies'),
 	suffix: z.string().optional().describe('text right after the quote, to pick between copies'),
 	line: z.number().int().positive().optional().describe('1-based line the quote starts on, to pick between copies')
 };
 
 export function registerCommentTools(server: McpServer, target: TargetWindow): void {
-	/** ask the renderer and pass its answer through, refusal and all */
-	async function relay(root: string | undefined, kind: string, args: Record<string, unknown>, timeoutMs?: number) {
-		const t = target(root);
-		if (!t) return fail('no matching Texpile window');
-		const r = (await askRenderer(t.win, kind, args, timeoutMs)) as Answer;
-		if (r === null) return fail('the editor did not respond in time');
-		if (!r.ok) return refused(r);
-		return ok(r);
-	}
+	const relay = relayer(target);
 
 	server.registerTool(
 		'get_comments',
@@ -45,7 +31,9 @@ export function registerCommentTools(server: McpServer, target: TargetWindow): v
 				'before acting, and reanchor or reply if not). Open threads only unless includeResolved is ' +
 				'set; total and open follow the path filter. Call this before editing a file that has ' +
 				'threads, since they are pinned to the quoted text and an edit that rewrites it detaches ' +
-				'them. unsaved:true means the lines refer to the open buffer, not the file on disk.',
+				'them. unsaved:true means the lines refer to the open buffer, not the file on disk. A thread with ' +
+				'suggestion set is a suggested edit that is already in the file: quote holds the words it put in, ' +
+				'suggestion.oldWords the words it took out, and it stays pending until someone accepts or rejects it.',
 			inputSchema: {
 				path: z.string().optional().describe('workspace-relative file to filter to; omit for the whole workspace'),
 				includeResolved: z.boolean().optional().describe('also list resolved threads; default false'),
@@ -62,8 +50,8 @@ export function registerCommentTools(server: McpServer, target: TargetWindow): v
 			title: 'Add a review comment',
 			description:
 				'Open a new thread on a quote in a file, as a review note of your own. The quote has to be ' +
-				'found exactly once: it is matched against the editor buffer for the open file and disk ' +
-				'otherwise, and a quote copied across a line wrap still matches. When it appears more than ' +
+				'found once: it is matched exactly, markup included and lines ending in \\n, against the ' +
+				'editor buffer for the open file and disk otherwise. When it appears more than ' +
 				'once the refusal lists the candidate lines; pass prefix, suffix or line to pick one. Refused ' +
 				'rather than guessed when the quote is missing, too short or too common. Not for replacing a ' +
 				'thread you could not reanchor: reply to and resolve that one instead.',

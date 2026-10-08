@@ -149,6 +149,7 @@ export class DraftDispatcher {
 					orig: d.orig,
 					transient: d.transient,
 					floatInner: d.floatInner,
+					floatTabular: d.floatTabular,
 					listItem: d.listItem,
 					cmdChanged: d.cmdChanged,
 					interiorEdit: d.interiorEdit,
@@ -158,7 +159,8 @@ export class DraftDispatcher {
 					},
 					// the patch derived the page's new records itself: no compile is coming, so
 					// the baseline moves here instead, in the same tick as the record store
-					onBaseline: () => this.advanceBaseline(src)
+					onBaseline: () => this.advanceBaseline(src),
+					redecide: () => this.run()
 				});
 				return;
 			}

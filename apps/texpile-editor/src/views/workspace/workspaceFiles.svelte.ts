@@ -1,6 +1,9 @@
 // The workspace's file-management wiring: tree rescans, create/rename/delete/move ops,
 // starter templates, the folder lifecycle, the main-file choice, and the repoint-references
 // offer after a rename.
+import { untrack } from 'svelte';
+import { capsOf } from '$lib/workspace/fileMode.svelte';
+import { moveLocalHistory } from '$lib/workspace/localHistory/localHistory.svelte';
 import { StarterActions } from '$lib/workspace/starterActions.svelte';
 import { TreeOps } from '$lib/workspace/treeOps';
 import { FolderLifecycle } from '$lib/workspace/folderLifecycle';
@@ -11,8 +14,10 @@ import { workspaceRoot, texFiles, mainFile, setMainFile, isDirty } from '$lib/wo
 import { projectConfigSync as projectConfig, compileConfig } from '$lib/workspace/projectConfigSync.svelte';
 import { gatherProjectMacros } from '$lib/workspace/project';
 import { loadReferences } from '$lib/workspace/citations';
+import { readCitationsThrough } from '$lib/workspace/document/citedKeys';
 import { insertIncludeAtCursor, insertTypstIncludeAtCursor } from '$lib/workspace/editorCommands';
 import { retargetDiskStamp } from '$lib/workspace/diskStamp';
+import { scmDraftFor } from '$lib/workspace/scm/actions/scmDraft.svelte';
 import { openFile } from '$lib/workspace/workspaceStore';
 import { confirmAsk } from '$lib/modals/confirm.svelte';
 import { m } from '$lib/paraglide/messages';
@@ -104,7 +109,12 @@ export class WorkspaceFiles {
 			afterRename: (oldPath, newPath) => void this.afterRename(oldPath, newPath),
 			// comment threads follow the file, on user gestures AND on undo/redo replays (which skip
 			// afterRename because it prompts). Writes a `move` event to the log - see fileMoved.
-			afterPathMoved: (from, to) => d.commentsFileMoved(from, to),
+			afterPathMoved: (from, to) => {
+				d.commentsFileMoved(from, to);
+				void moveLocalHistory(from, to, (p) => provider.readText(p)); // and so does its Local History
+				const root = workspaceRoot.current;
+				if (root) scmDraftFor(root).moved(from, to); // and whether Source Control leaves it out
+			},
 			retargetPendingSave: (from, to) => {
 				d.saver().retarget(from, to);
 				retargetDiskStamp(from, to); // the guard's stamp must follow the rename too
@@ -156,6 +166,12 @@ export class WorkspaceFiles {
 		$effect(() => {
 			if (mainFile.current) this.mainPrompt.confirmed = true;
 		});
+		// a Typst main names the Hayagriva bibliography whose keys the @ picker offers
+		$effect(() => {
+			const main = mainFile.current;
+			const root = untrack(() => workspaceRoot.current);
+			if (root && main && /\.typ$/i.test(main)) untrack(() => void this.loadRefs(root));
+		});
 		// live mode compiles on its own as soon as the pane is open; surface the question then.
 		// Strictly `=== false`: null means initProject is still resolving, never a modal.
 		$effect(() => {
@@ -174,7 +190,15 @@ export class WorkspaceFiles {
 
 	// citations read through the provider too, so guest sessions resolve \cite keys from the shared doc
 	loadRefs(root: string) {
-		return loadReferences(root, { scan: (r, e) => this.d.provider.scanFiles(r, e), read: (p) => this.d.provider.readText(p) });
+		// a lone file's folder is no project: none of its .bib files are this document's (and it may be Downloads)
+		const project = capsOf(this.d.provider).project;
+		const through = {
+			scan: (r: string, e: string[]) => (project ? this.d.provider.scanFiles(r, e) : Promise.resolve([])),
+			read: (p: string) => this.d.provider.readText(p)
+		};
+		// and so do the bibliography editor's reads of what the documents cite
+		readCitationsThrough(through);
+		return loadReferences(root, through, mainFile.current);
 	}
 
 	// tree rescan + manifest sync + git refresh live in lib/workspace/treeRefresh.ts
@@ -232,8 +256,9 @@ export class WorkspaceFiles {
 		return {
 			getLoadedPath: () => doc.path,
 			getSourceText: () => doc.texSource,
+			loadedReadOnly: () => !!doc.encodingIssue,
 			setSourceText: (t: string) => (doc.texSource = t),
-			readText: (p: string) => provider.readText(p),
+			readSource: (p: string) => provider.readSource(p),
 			scanFiles: async (exts: string[]) => (await provider.scanFiles(workspaceRoot.current ?? '', exts)).map((f) => f.path),
 			writeText: (p: string, content: string) => provider.writeText(p, content),
 			onActiveFileEdited: () => {

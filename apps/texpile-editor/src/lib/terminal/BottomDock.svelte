@@ -9,11 +9,18 @@
 	import { compileLog } from '$lib/stores/compileLogStore';
 	import { m } from '$lib/paraglide/messages';
 	import { TerminalShells } from './terminalShells.svelte';
+	import type { DockView } from './dockView';
+	import DockTabCount from './DockTabCount.svelte';
+	import AgentPanel from '$lib/ai/agentPanel/ui/AgentPanel.svelte';
+	import AgentPicker from '$lib/ai/agentPanel/ui/strip/AgentPicker.svelte';
+	import { agentSession } from '$lib/ai/agentPanel/agentSession.svelte';
+	import { agentUnavailable } from '$lib/ai/agentPanel/agentAvailability';
+	import { panelTabOff } from '$lib/ai/agentPanel/agentOffer.svelte';
 	import { SquareTerminal, ChevronDown, Check, Trash2, Plus, X, FoldHorizontal, UnfoldHorizontal } from '@lucide/svelte';
 
 	let {
 		cwd,
-		view = $bindable<'terminal' | 'problems' | 'comments'>('terminal'),
+		view = $bindable<DockView>('terminal'),
 		pdfPaneOpen = false,
 		shrink = false,
 		terminalEnabled = true,
@@ -30,15 +37,13 @@
 		onCommentOpen = () => {},
 		onCommentReply = () => {},
 		onCommentResolve = () => {},
-		onCommentDelete = () => {},
 		onCommentEditMessage = () => {},
 		onCommentDeleteMessage = () => {},
-		commentPending = null,
-		onCommentSubmitPending = () => {},
-		onCommentCancelPending = () => {}
+		commentBeside = new Set<string>(),
+		onCommentAttach
 	}: {
 		cwd: string;
-		view?: 'terminal' | 'problems' | 'comments';
+		view?: DockView;
 		pdfPaneOpen?: boolean;
 		shrink?: boolean;
 		/** false for guests: no shells, the dock is a Problems panel only. */
@@ -55,17 +60,22 @@
 		commentFilesPresent?: Set<string> | null;
 		commentSelected?: string | null;
 		onCommentOpen?: (thread: CommentThread) => void;
-		onCommentReply?: (thread: CommentThread, body: string) => void;
+		onCommentReply?: (thread: CommentThread, body: string) => Promise<string | null> | void;
 		onCommentResolve?: (thread: CommentThread, resolved: boolean) => void;
-		onCommentDelete?: (thread: CommentThread) => void;
 		onCommentEditMessage?: (message: CommentMessage, body: string) => void;
 		onCommentDeleteMessage?: (thread: CommentThread, message: CommentMessage) => void;
-		commentPending?: { quote: string } | null;
-		onCommentSubmitPending?: (body: string) => void;
-		onCommentCancelPending?: () => void;
+		commentBeside?: Set<string>;
+		onCommentAttach?: (thread: CommentThread) => void;
 	} = $props();
 
 	const openComments = $derived(comments.filter((c) => !c.resolved).length);
+	// there until turned off; where the agent cannot run (a guest, the browser, a lone file) the tab says why
+	const agentOn = $derived(!panelTabOff());
+	const agentBlocked = $derived(agentUnavailable());
+	// turned off from Preferences in any window: the tab goes (the workspace stops the agent behind it)
+	$effect(() => {
+		if (!agentOn && view === 'agent') view = terminalEnabled ? 'terminal' : 'problems';
+	});
 
 	// shells (roster, compile shell, run/reset plumbing) live in terminalShells.svelte.ts
 	const shells = new TerminalShells(() => onClose());
@@ -124,7 +134,7 @@
 	}
 </script>
 
-<div class="@container bg-surface-100-900 text-muted flex h-8 shrink-0 items-center gap-2 px-2 text-xs">
+<div class="bg-surface-100-900 text-muted @container flex h-8 shrink-0 items-center gap-2 px-2 text-xs">
 	<!-- The tabs scroll and the actions never shrink. Both sides used to be shrinkable, so a narrow
 	     dock squeezed each group below its content and the two drew on top of each other - which is
 	     what a dock beside an open PDF preview does routinely. toolbar-hscroll hides the bar; there
@@ -136,7 +146,7 @@
 	<div class="toolbar-hscroll flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
 		{#if terminalEnabled}
 			<button
-				class="shrink-0 rounded-base px-2 py-1 whitespace-nowrap {view === 'terminal' ? 'preset-tonal' : 'hover:preset-tonal'}"
+				class="rounded-base shrink-0 px-2 py-1 whitespace-nowrap {view === 'terminal' ? 'preset-tonal' : 'hover:preset-tonal'}"
 				onclick={() => {
 					view = 'terminal';
 					shells.ensure(); // a fresh shell if the last one was killed, so the pane is never empty
@@ -146,36 +156,51 @@
 			</button>
 		{/if}
 		<button
-			class="flex shrink-0 items-center gap-1 rounded-base px-2 py-1 whitespace-nowrap {view === 'problems'
+			class="rounded-base flex shrink-0 items-center gap-1 px-2 py-1 whitespace-nowrap {view === 'problems'
 				? 'preset-tonal'
 				: 'hover:preset-tonal'}"
 			onclick={() => (view = 'problems')}
 		>
 			{m.wsview_problems_label()}
 			{#if compileLog.current && compileLog.current.errors.length > 0}
-				<span class="text-error-ink font-semibold">{compileLog.current.errors.length}</span>
+				<DockTabCount count={compileLog.current.errors.length} tone="error" />
 			{:else if compileLog.current && compileLog.current.warnings.length > 0}
-				<span class="text-warning-ink font-semibold">{compileLog.current.warnings.length}</span>
+				<DockTabCount count={compileLog.current.warnings.length} tone="warning" />
 			{/if}
 		</button>
 		<!-- always present, not only once a thread exists: a tab that appears when there is something
 			     in it is a tab nobody finds in the document they actually want to comment on -->
 		<button
-			class="flex shrink-0 items-center gap-1 rounded-base px-2 py-1 whitespace-nowrap {view === 'comments'
+			class="rounded-base flex shrink-0 items-center gap-1 px-2 py-1 whitespace-nowrap {view === 'comments'
 				? 'preset-tonal'
 				: 'hover:preset-tonal'}"
 			onclick={() => (view = 'comments')}
 		>
 			{m.wsview_comments_label()}
 			{#if openComments > 0}
-				<span class="text-primary-ink font-semibold">{openComments}</span>
+				<DockTabCount count={openComments} tone="primary" />
 			{/if}
 		</button>
+		{#if agentOn}
+			<!-- grayed where it cannot run; it still opens, to say why -->
+			<button
+				class="rounded-base flex shrink-0 items-center gap-1 px-2 py-1 whitespace-nowrap {view === 'agent'
+					? 'preset-tonal'
+					: 'hover:preset-tonal'} {agentBlocked ? 'text-muted' : ''}"
+				onclick={() => (view = 'agent')}
+			>
+				{m.agent_panel_tab()}
+				<!-- a count only while it waits on the reader, as Problems shows one only when there is a problem -->
+				{#if agentSession.asks.length > 0}
+					<DockTabCount count={agentSession.asks.length} tone="warning" />
+				{/if}
+			</button>
+		{/if}
 	</div>
 	<div class="flex shrink-0 items-center gap-0.5">
 		{#if view === 'terminal'}
 			<div class="relative">
-				<button class="hover:preset-tonal flex max-w-40 items-center gap-1.5 rounded-base px-2 py-1" onclick={() => (menuOpen = !menuOpen)}>
+				<button class="hover:preset-tonal rounded-base flex max-w-40 items-center gap-1.5 px-2 py-1" onclick={() => (menuOpen = !menuOpen)}>
 					<SquareTerminal class="size-3.5 shrink-0" />
 					<!-- The first thing to go when the dock narrows, and the right thing: it is the only
 					     label up here that is redundant. The icon still says terminal, the chevron still
@@ -192,7 +217,7 @@
 					<button class="fixed inset-0 z-40 cursor-default" aria-label={m.wsview_close_menu_aria()} onclick={() => (menuOpen = false)}
 					></button>
 					<div
-						class="bg-surface-50-950 border-surface-300-700 absolute right-0 bottom-full z-50 mb-1 min-w-52 overflow-hidden card border py-1 shadow-lg"
+						class="bg-surface-50-950 border-surface-300-700 card absolute right-0 bottom-full z-50 mb-1 min-w-52 overflow-hidden border py-1 shadow-lg"
 					>
 						{#each shells.terminals as t (t.id)}
 							<div class="hover:preset-tonal-surface flex items-center">
@@ -241,6 +266,9 @@
 				<Trash2 class="size-3.5" />
 			</button>
 		{/if}
+		{#if view === 'agent'}
+			<AgentPicker disabled={!!agentBlocked} />
+		{/if}
 		{#if pdfPaneOpen}
 			<button
 				class="btn-icon btn-icon-xs hover:preset-tonal"
@@ -267,6 +295,15 @@
 		<div class="bg-surface-50-950 absolute inset-0 z-10 overflow-hidden">
 			<ProblemsPanel root={cwd} onJump={onProblemJump} />
 		</div>
+	{:else if view === 'agent'}
+		<div class="bg-surface-50-950 absolute inset-0 z-10 overflow-hidden">
+			<AgentPanel
+				onOpenTerminal={() => {
+					view = 'terminal';
+					shells.ensure();
+				}}
+			/>
+		</div>
 	{:else if view === 'comments'}
 		<div class="bg-surface-50-950 absolute inset-0 z-10 overflow-hidden">
 			<CommentsPanel
@@ -280,18 +317,17 @@
 				onOpen={onCommentOpen}
 				onReply={onCommentReply}
 				onResolve={onCommentResolve}
-				onDelete={onCommentDelete}
 				onEditMessage={onCommentEditMessage}
 				onDeleteMessage={onCommentDeleteMessage}
-				pending={commentPending}
-				onSubmitPending={onCommentSubmitPending}
-				onCancelPending={onCommentCancelPending}
+				beside={commentBeside}
+				onAttach={onCommentAttach}
 			/>
 		</div>
 	{/if}
 	{#if TerminalComp}
 		{#each shells.terminals as t (t.id)}
-			<div class="absolute inset-0" style={t.id === shells.activeTermId ? '' : 'display: none'}>
+			<!-- a panel above covers the shell with the ground color, which a transparent window clears -->
+			<div class="absolute inset-0" class:invisible={view !== 'terminal'} style={t.id === shells.activeTermId ? '' : 'display: none'}>
 				<TerminalComp bind:this={shells.refs[t.id]} {cwd} />
 			</div>
 		{/each}

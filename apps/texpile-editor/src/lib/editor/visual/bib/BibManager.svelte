@@ -2,7 +2,7 @@
   every change re-serialises and flows back through onInput -->
 <script lang="ts">
 	import { tip } from '$lib/components/tooltip.svelte';
-	import { Pencil, Code } from '@lucide/svelte';
+	import { Pencil, Code, Info } from '@lucide/svelte';
 	import { generateLabel } from '$lib/editor/visual/label';
 	import {
 		type BiblatexReference,
@@ -13,8 +13,11 @@
 		serializeBibtex,
 		fitsVisualEditor,
 		getEntryTypeOptions,
+		sameWorkAs,
 		isKeyUnique as checkKeyUnique
 	} from '$lib/languages/bib/biblatex';
+	import { onMount } from 'svelte';
+	import { citedKeys, loadCitedKeys } from '$lib/workspace/document/citedKeys';
 	import type { ZodIssue } from 'zod';
 	import { referenceStore } from '$lib/stores/editorStore';
 	import CodeMirrorLatex from '$lib/components/CodeMirrorLatex.svelte';
@@ -22,7 +25,17 @@
 	import BibEntryForm from './BibEntryForm.svelte';
 	import BibReferenceList from './BibReferenceList.svelte';
 
-	let { value = '', onInput }: { value?: string; onInput?: (v: string) => void } = $props();
+	let {
+		value = '',
+		onInput,
+		suggested = 0,
+		onShowSource
+	}: {
+		value?: string;
+		onInput?: (v: string) => void;
+		/** unresolved suggestions on this file, which this view draws none of */ suggested?: number;
+		onShowSource?: () => void;
+	} = $props();
 
 	// refs = entries, tokens = file-order stream for round-trip, parseError switches to whole-file raw mode
 	let refs = $state<BiblatexReference[]>([]);
@@ -68,6 +81,28 @@
 	});
 
 	const entryTypeOptions = getEntryTypeOptions();
+
+	// checked as typed, so a DOI pasted into a new entry says at once the paper is already here
+	const formTwins = $derived(
+		sameWorkAs(
+			currentReference as BiblatexReference,
+			refs.filter((r) => r.key !== originalKey)
+		)
+	);
+
+	// reread when the reader comes back from writing elsewhere
+	onMount(() => {
+		function reload() {
+			void loadCitedKeys();
+		}
+		reload();
+		addEventListener('focus', reload);
+		addEventListener('texpile:fs-changed', reload);
+		return () => {
+			removeEventListener('focus', reload);
+			removeEventListener('texpile:fs-changed', reload);
+		};
+	});
 
 	function isKeyUnique(k: string) {
 		return checkKeyUnique(k, refs, originalKey ?? undefined);
@@ -165,6 +200,7 @@
 		if (isEditing && originalKey) refs = refs.map((r) => (r.key === originalKey ? entry : r));
 		else refs = [...refs, entry];
 		commit();
+		announceKeyRenamed(entry.key);
 		resetForm();
 	}
 
@@ -183,7 +219,14 @@
 		if (isEditing && originalKey) refs = refs.map((r) => (r.key === originalKey ? parsed.entry : r));
 		else refs = [...refs, parsed.entry];
 		commit();
+		announceKeyRenamed(parsed.entry.key);
 		resetForm();
+	}
+
+	/** the documents' citations follow a renamed key (views/workspace/writing/workspaceReplace.ts) */
+	function announceKeyRenamed(key: string) {
+		if (!isEditing || !originalKey || key === originalKey) return;
+		dispatchEvent(new CustomEvent('texpile:citekey-renamed', { detail: { from: originalKey, to: key } }));
 	}
 
 	// whole .bib failed to parse; on a clean re-parse drop back to the normal split-pane UI
@@ -251,7 +294,7 @@
 				{m.bib_parse_syntax_error_hint()}
 			</div>
 		</div>
-		<div class="min-h-0 flex-1 overflow-hidden rounded-container border border-surface-200-800">
+		<div class="rounded-container border-surface-200-800 min-h-0 flex-1 overflow-hidden border">
 			<CodeMirrorLatex bind:value={fileRawText} language="bibtex" />
 		</div>
 		{#if fileRawError}
@@ -264,15 +307,28 @@
 	</div>
 {:else}
 	<!-- list above form until the pane is @xl wide: with the PDF preview open two half columns cram the cards -->
-	<div class="@container h-full">
-		<div class="mx-auto flex h-full max-w-7xl flex-col gap-4 p-4 @xl:flex-row">
-			<div class="max-h-[40%] min-h-0 shrink-0 overflow-y-auto pr-3 @xl:max-h-none @xl:w-1/2">
+	<div class="@container flex h-full flex-col">
+		{#if suggested && onShowSource}
+			<!-- a suggestion lives in the file's text, which this view never shows: it reads the entries
+			     out and writes them back, so the old words have nowhere to stand. Say so rather than
+			     letting the reader edit over changes they cannot see -->
+			<div class="border-warning-wash bg-warning-tint flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-2 text-xs">
+				<Info class="text-warning-ink size-4 shrink-0" />
+				<span>{m.bib_suggestions_hidden()}</span>
+				<button type="button" class="btn btn-xs hover:preset-tonal ml-auto shrink-0" onclick={onShowSource}
+					>{m.bib_suggestions_open_source()}</button
+				>
+			</div>
+		{/if}
+		<div class="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col gap-4 p-4 @xl:flex-row">
+			<div class="max-h-[40%] min-h-0 shrink-0 [scrollbar-gutter:stable] overflow-y-auto pr-3 @xl:max-h-none @xl:w-1/2">
 				<button class="btn preset-outlined-surface-200-800 hover:preset-tonal mb-3 w-full" type="button" onclick={resetForm}
 					>{m.bib_new_reference_button()}</button
 				>
 				<ul>
 					<BibReferenceList
 						{refs}
+						cited={citedKeys.current}
 						selectedKey={isEditing ? (currentReference.key ?? null) : null}
 						onEdit={editReference}
 						onDelete={deleteReference}
@@ -281,7 +337,7 @@
 			</div>
 
 			<div
-				class="border-surface-200-800 min-h-0 flex-1 overflow-y-auto border-t pt-4 @xl:border-t-0 @xl:border-l @xl:pt-0 @xl:pr-4 @xl:pl-4"
+				class="border-surface-200-800 min-h-0 flex-1 [scrollbar-gutter:stable] overflow-y-auto border-t pt-4 @xl:border-t-0 @xl:border-l @xl:pt-0 @xl:pr-4 @xl:pl-4"
 			>
 				<div class="mb-2 flex items-center gap-2 text-base font-semibold">
 					{#if isEditing}
@@ -289,7 +345,7 @@
 						{m.bib_editing_heading({ key: currentReference.key ?? '' })}
 						{#if editMode === 'raw'}
 							<span
-								class="border-surface-300-700 text-muted ml-1 inline-flex items-center gap-0.5 rounded-base border px-1 py-px text-[10px]"
+								class="border-surface-300-700 text-muted rounded-base ml-1 inline-flex items-center gap-0.5 border px-1 py-px text-[10px]"
 								use:tip={m.bib_raw_badge_edit_tooltip()}
 							>
 								<Code class="size-2.5" />
@@ -300,7 +356,7 @@
 				</div>
 
 				{#if editMode === 'raw'}
-					<div class="border-surface-200-800 min-h-[16rem] overflow-hidden rounded-container border">
+					<div class="border-surface-200-800 rounded-container min-h-[16rem] overflow-hidden border">
 						<CodeMirrorLatex bind:value={rawEntryText} language="bibtex" />
 					</div>
 					{#if rawEntryError}
@@ -311,19 +367,27 @@
 						<button class="btn preset-filled-primary-500" type="button" onclick={saveRawEntry}>{m.bib_update_reference_button()}</button>
 					</div>
 				{:else}
-					<BibEntryForm bind:currentReference {formErrors} {entryTypeOptions} {isEditing} onSave={saveReference} onCancel={resetForm} />
+					<BibEntryForm
+						bind:currentReference
+						{formErrors}
+						{entryTypeOptions}
+						{isEditing}
+						twins={formTwins}
+						onSave={saveReference}
+						onCancel={resetForm}
+					/>
 				{/if}
 
 				{#if !isEditing}
 					<div class="border-surface-200-800 mt-4 border-t pt-4">
 						<div class="text-sm font-semibold">{m.bib_paste_bibtex_heading()}</div>
 						<textarea
-							class="textarea mt-1 w-full font-mono text-xs rounded-container"
+							class="textarea rounded-container mt-1 w-full font-mono text-xs"
 							rows="5"
 							bind:value={bibtexContent}
 							placeholder={m.bib_paste_bibtex_placeholder()}></textarea>
 						{#if bibtexWarnings.length}
-							<div class="border-warning-500 bg-warning-tint mt-2 rounded-base border p-2 text-xs">
+							<div class="border-warning-500 bg-warning-tint rounded-base mt-2 border p-2 text-xs">
 								{#each bibtexWarnings as w (w.key)}<div><strong>{w.key}:</strong> {w.issues.join(', ')}</div>{/each}
 							</div>
 						{/if}

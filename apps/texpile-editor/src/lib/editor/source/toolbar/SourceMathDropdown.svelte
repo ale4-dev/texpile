@@ -18,6 +18,8 @@
 		symbolTooltip,
 		type MatrixBracket
 	} from '$lib/editor/visual/toolbar/mathSymbols';
+	import { symbolPicker } from '$lib/editor/symbols/symbolPicker.svelte';
+	import { latexSymbolSet } from '$lib/languages/latex/symbols/latexSymbolSet';
 	import { m } from '$lib/paraglide/messages';
 
 	let open = $state(false);
@@ -41,6 +43,11 @@
 		e.preventDefault();
 	}
 
+	function openPicker() {
+		open = false;
+		void symbolPicker.show(latexSymbolSet);
+	}
+
 	function insert(latex: string) {
 		const view = sourceCmView.current;
 		if (!view) return;
@@ -59,7 +66,7 @@
 >
 	<Popover.Trigger>
 		<button
-			class="toolbarButton flex items-center gap-1 rounded-base p-1 hover:preset-tonal"
+			class="toolbarButton rounded-base hover:preset-tonal flex items-center gap-1 p-1"
 			class:preset-tonal-primary={open}
 			aria-label={m.tbar_math_symbols()}
 			use:tip={m.tbar_math_symbols()}
@@ -94,7 +101,7 @@
 					</div>
 
 					<!-- tabs stay put; only the palette body scrolls -->
-					<div class="max-h-[60vh] overflow-y-auto">
+					<div class="max-h-[60vh] [scrollbar-gutter:stable] overflow-y-auto">
 						{#if group.id === 'matrices'}
 							<div class="border-surface-300-700 border-b p-3">
 								<div class="mb-2 text-xs font-medium">{m.tbar_matrix_style()}</div>
@@ -123,7 +130,7 @@
 										{#each Array.from({ length: 6 }) as _, col (col)}
 											<button
 												type="button"
-												class="size-6 rounded-base border text-xs transition-colors"
+												class="rounded-base size-6 border text-xs transition-colors"
 												class:preset-tonal-primary={row < matrixRows && col < matrixCols}
 												class:border-math-key-edge={row < matrixRows && col < matrixCols}
 												class:bg-surface-100-900={!(row < matrixRows && col < matrixCols)}
@@ -177,6 +184,12 @@
 								{/each}
 							</div>
 						{/if}
+					</div>
+					<!-- the few symbols above are the common ones; every symbol LaTeX has is one click further -->
+					<div class="border-surface-300-700 border-t p-1.5">
+						<button type="button" class="btn btn-sm hover:preset-tonal w-full justify-start text-xs" tabindex="-1" onclick={openPicker}>
+							{m.menubar_insert_symbol_more()}
+						</button>
 					</div>
 				</div>
 			</Popover.Content>

@@ -23,7 +23,9 @@
 	import 'prosemirror-search/style/search.css';
 	import { syncPmComments } from '$lib/editor/visual/extensions/pmCommentsSync.svelte';
 	import type { CommentAnchor } from '$lib/comments/anchor';
-	import type { CommentThread } from '$lib/comments/log';
+	import type { SourceAnchorFn } from '$lib/editor/visual/extensions/pmComments';
+	import type { CommentRange } from '$lib/editor/visual/extensions/comments';
+	import type { RegionParser, SourceMap } from '$lib/editor/visual/sourceSpans';
 	import type { BiblatexReference } from '$lib/languages/bib/biblatex';
 
 	type Props = {
@@ -44,20 +46,31 @@
 		 * block on a large document, and it starts only after the dynamic import below resolves - well
 		 * after this component's own mount - so callers cannot infer it from mounting. */
 		onReady?: () => void;
-		/** review threads on this file; resolved here against the rendered text (see pmComments) */
-		commentThreads?: CommentThread[];
+		/** the file's threads as ranges of its text, placed here through the map */
+		commentRanges?: CommentRange[];
+		sourceMap?: SourceMap;
+		/** the file's text, the stretch of it the document is, and its parser: what suggestions are drawn from */
+		texSource?: string;
+		bodyRange?: { from: number; to: number };
+		regionParser?: RegionParser | null;
+		/** the selection as a range of the file; see pmComments */
+		sourceAnchor?: SourceAnchorFn;
 		/** the thread the reader is looking at, highlighted stronger than the rest */
 		selectedComment?: string | null;
 		/** commented text was clicked. Origin 'visual': unlike source mode's prose clicks, this one
 		 * OPENS the panel - the visual editor has no gutter rail, so the highlight is the only
 		 * affordance pointing at the thread, and select-only left no way in at all. */
-		onSelectComment?: (id: string, from: 'visual') => void;
-		/** the reader asked to comment on a selection; the anchor is rendered-dialect (buildPmAnchor) */
+		onSelectComment?: (id: string) => void;
+		/** the reader asked to comment on a selection; the anchor is a range of the file (sourceAnchor) */
 		onAddComment?: (anchor: CommentAnchor | null) => void;
 		/** pick citations from Zotero, offered in the context menu when present */
 		onInsertCitation?: () => void;
+		/** cite by DOI or arXiv ID, offered in the context menu when present */
+		onCiteByDoi?: () => void;
 		/** a \ref whose label is not drawn here: the workspace jumps to its \label line */
 		onJumpToLabel?: (name: string) => boolean;
+		/** a drawn call of the paper's own macro: the workspace opens its definition in the source */
+		onJumpToDefinition?: (name: string) => boolean;
 		/** after each placement pass: the threads that could not be drawn in this view (every tier
 		 * failed), so the panel can say "not in this view" instead of implying they are gone */
 		onCommentsPlaced?: (lost: string[]) => void;
@@ -77,12 +90,19 @@
 		placeholder = 'Begin your journey here...',
 		onHistoryBoundary,
 		onReady,
-		commentThreads = [],
+		commentRanges = [],
+		sourceMap = { leaves: [], blocks: [] },
+		texSource = '',
+		bodyRange = { from: 0, to: 0 },
+		regionParser = null,
+		sourceAnchor,
 		selectedComment = null,
 		onSelectComment,
 		onAddComment,
 		onInsertCitation,
+		onCiteByDoi,
 		onJumpToLabel,
+		onJumpToDefinition,
 		onCommentsPlaced,
 		addCommentLabel = 'Comment',
 		commentPendingActive = false
@@ -107,6 +127,7 @@
 			onHistoryBoundary,
 			onSelectComment,
 			onAddComment,
+			sourceAnchor,
 			addCommentLabel
 		});
 
@@ -128,7 +149,7 @@
 				'data-show-section-numbers': 'true'
 			}),
 			state: editorState,
-			nodeViews: latexNodeViews(() => imageDir ?? '', onJumpToLabel),
+			nodeViews: latexNodeViews(() => imageDir ?? '', onJumpToLabel, onJumpToDefinition),
 			editable: () => true,
 			dispatchTransaction(this: EditorView, transaction: Transaction) {
 				// A plugin that finishes asynchronously can dispatch into a view that was destroyed while
@@ -146,6 +167,7 @@
 				if (onLocalChange && transaction.docChanged && !transaction.getMeta('collabRemotePatch')) {
 					onLocalChange(newState.doc);
 				}
+				if (transaction.getMeta('collabRemotePatch')) remotePatches++;
 				if (onSelectionChange && (transaction.selectionSet || transaction.docChanged)) onSelectionChange();
 			}
 		});
@@ -165,6 +187,7 @@
 	 * with it. Typing never bumps it: ranges map through transactions and re-searching mid-edit
 	 * could snap a range onto another copy of its text. */
 	let docEpoch = $state(0);
+	let remotePatches = $state(0);
 	$effect(() => {
 		const next = localValue;
 		const path = docPath;
@@ -189,9 +212,13 @@
 	// the sync reads editorView.state.doc the swap has already installed the new document.
 	syncPmComments({
 		view: () => editorView,
-		threads: () => commentThreads,
-		dialect: 'tex',
+		ranges: () => commentRanges,
+		map: () => sourceMap,
+		text: () => texSource,
+		body: () => bodyRange,
+		parse: () => regionParser,
 		epoch: () => docEpoch,
+		patched: () => remotePatches,
 		selected: () => selectedComment,
 		onPlaced: (lost) => onCommentsPlaced?.(lost),
 		pendingActive: () => commentPendingActive
@@ -225,30 +252,10 @@
      nothing, so the viewport upgrades could not run until after it was already on screen -->
 <main bind:this={editor} class={BUILDING_CLASS}></main>
 
-<ContextMenu {onAddComment} {onInsertCitation} />
+<ContextMenu {onAddComment} {sourceAnchor} {onInsertCitation} {onCiteByDoi} />
 
 <style lang="postcss">
 	@reference "../../../../app.css";
-
-	:global(.suggestion-add) {
-		background-color: color-mix(in srgb, var(--diff-insert-tint) 2%, transparent);
-		border-bottom: 2px solid color-mix(in srgb, var(--diff-insert-tint) 5%, transparent);
-	}
-	:global(.suggestion-delete) {
-		background-color: color-mix(in srgb, var(--diff-delete-tint) 15%, transparent);
-		text-decoration: line-through;
-		text-decoration-color: color-mix(in srgb, var(--diff-delete-tint) 6%, transparent);
-		opacity: 0.7;
-	}
-	:global(.suggestion-node-insert) {
-		outline: 2px solid color-mix(in srgb, var(--diff-insert-tint) 5%, transparent);
-		background-color: color-mix(in srgb, var(--diff-insert-tint) 8%, transparent);
-	}
-	:global(.suggestion-node-delete) {
-		outline: 2px solid color-mix(in srgb, var(--diff-delete-tint) 4%, transparent);
-		background-color: color-mix(in srgb, var(--diff-delete-tint) 8%, transparent);
-		opacity: 0.6;
-	}
 
 	:global(.agent-diff-insert) {
 		background-color: color-mix(in srgb, var(--diff-insert-tint) 2%, transparent);
@@ -365,7 +372,7 @@
 	}
 
 	:global(.TexpileEditor div.abstract) {
-		@apply border-surface-300-700 bg-surface-100-900 rounded-base relative mx-4 my-6 border p-4 pt-8;
+		@apply border-surface-300-700 bg-surface-100-900 rounded-base relative my-6 border p-4 pt-8;
 	}
 	:global(.TexpileEditor div.abstract::before) {
 		content: 'Abstract';

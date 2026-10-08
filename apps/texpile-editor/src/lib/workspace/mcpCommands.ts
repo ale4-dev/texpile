@@ -1,12 +1,11 @@
 // Renderer end of the MCP tools: answering requests main cannot serve from its state cache, and
-// carrying out the steer commands. Nothing here writes a document - the connected agent has its own
-// file tools for that, and keeping writes out is what makes this surface safe. The comment tools
-// (mcpComments.ts) write the comment log only, never a document.
+// carrying out the steer commands. The comment tools (mcpComments.ts) write the comment log only; the one
+// change to a document is suggest_edit (mcpSuggestEdit.ts), which lands as a suggestion.
 import { browser } from '$lib/runtime';
+import { fileMode } from './fileMode.svelte';
 import { workspaceRoot, isDirty, mainFile, texFiles, effectiveCompileFormat } from './workspaceStore';
-import { isGitRepo, refreshGitStatus } from './gitStore';
+import { isGitRepo, refreshGitStatus } from './scm/gitStore';
 import { compileLog } from '$lib/stores/compileLogStore';
-import { settings } from '$lib/settings';
 import { compileConfig } from './projectConfigSync.svelte';
 import { relativeTo, samePath } from './fileSystem';
 import { inOpenTree, resolveInWorkspace } from './mcpWorkspacePath';
@@ -18,6 +17,7 @@ import {
 	resolveCommentPayload,
 	type McpCommentDeps
 } from './mcpComments';
+import { suggestEditPayload } from './mcpSuggestEdit';
 import {
 	compileOutDir,
 	detectEngine,
@@ -214,7 +214,6 @@ function compileConfigPayload(deps: McpCommandDeps) {
 	function rel(p: string | null) {
 		return p && root ? relativeTo(root, p) : p;
 	}
-	const s = settings.current;
 	return {
 		command: cmd,
 		// the typesetter in effect, from the main file's extension and nothing else. Change it by
@@ -230,16 +229,14 @@ function compileConfigPayload(deps: McpCommandDeps) {
 		// null rather than absent, so "no override, this was detected" is distinguishable from
 		// "an override happens to match what would have been detected"
 		overrides: { pdf: ov.pdf ?? null, log: ov.log ?? null },
-		live: compileConfig.current.latex.liveMode,
-		// so a caller can tell "you may not do that" apart from "that failed", without trying it
-		canSetCommand: s.mcpAllowCompileCommand === true
+		live: compileConfig.current.latex.liveMode
 	};
 }
 
 /**
  * Retarget the build: the output directory, and/or where the viewer reads the PDF and log.
  *
- * Ungated, unlike set_compile_command, and the validation here is what earns that. The output
+ * The only tool that reaches a shell command line, and the validation here is what earns that. The output
  * directory is spliced into a shell command line, so it goes through sanitizeOutputDir and can
  * only ever name a place; the PDF/log overrides are never executed at all, only read, so they only
  * have to be single real files of the right kind.
@@ -282,29 +279,6 @@ function setOutputPathsPayload(deps: McpCommandDeps, a: Record<string, unknown>)
 	return { ok: true, ...compileConfigPayload(deps) };
 }
 
-/**
- * Replace the compile command outright.
- *
- * Gated behind a setting that is off by default, and that gate is the whole point: this string is
- * handed to a shell, so anything able to set it can run anything the user can. Every other tool on
- * this server reads state or moves the window. Refusing loudly - naming the setting - beats
- * failing in a way a caller would work around by editing the settings file itself.
- */
-function setCompileCommandPayload(deps: McpCommandDeps, command: unknown) {
-	if (!settings.current.mcpAllowCompileCommand)
-		return {
-			ok: false,
-			reason:
-				'setting the compile command is turned off. The user can enable it in Preferences > AI assistant ("Allow changing the compile command"); it is separate from MCP access because a compile command is a shell command line. set_output_paths can retarget the output directory without it.'
-		};
-	const cmd = typeof command === 'string' ? command.trim() : '';
-	if (!cmd) return { ok: false, reason: 'command must be a non-empty string' };
-	if (!cmd.includes('{main}'))
-		return { ok: false, reason: 'command must contain the {main} token, which expands to the project main file' };
-	deps.applyCompile(cmd);
-	return { ok: true, ...compileConfigPayload(deps) };
-}
-
 function syncTexPayload(deps: McpCommandDeps, line: unknown) {
 	const n = Number(line);
 	if (!Number.isInteger(n) || n < 1) return { ok: false, reason: 'line must be a positive integer' };
@@ -317,6 +291,10 @@ function syncTexPayload(deps: McpCommandDeps, line: unknown) {
 }
 
 /** wire the MCP request/command channels; returns the detach function */
+// a lone file is no project: nothing that reads or changes the folder around it, or compiles it
+const PROJECT_REQUESTS = new Set(['set_output_paths', 'main_file', 'compile', 'show_diff']);
+const LONE_FILE = 'a single file is open in this window, not a folder: open it in a workspace first';
+
 export function attachMcpCommands(deps: McpCommandDeps): () => void {
 	const api = nativeBridge();
 	const offRequest = api?.onMcpRequest?.((req) => {
@@ -324,18 +302,20 @@ export function attachMcpCommands(deps: McpCommandDeps): () => void {
 		function reply(payload: unknown) {
 			return api?.mcpRespond?.(req.id, payload);
 		}
+		if (fileMode.current && (PROJECT_REQUESTS.has(req.kind) || (req.kind === 'view_mode' && a.mode === 'diff')))
+			return reply({ ok: false, reason: LONE_FILE });
 		if (req.kind === 'unsaved') return reply(unsavedPayload(deps));
 		if (req.kind === 'diagnostics') return reply(diagnosticsPayload(deps));
 		if (req.kind === 'synctex') return reply(syncTexPayload(deps, a.line));
 		if (req.kind === 'compile_config') return reply(compileConfigPayload(deps));
 		if (req.kind === 'set_output_paths') return reply(setOutputPathsPayload(deps, a));
-		if (req.kind === 'set_compile_command') return reply(setCompileCommandPayload(deps, a.command));
 		if (req.kind === 'main_file') return void mainFilePayload(deps, a.path).then(reply);
 		if (req.kind === 'comments') return void commentsPayload(deps.comments, a).then(reply);
 		if (req.kind === 'comment_add') return void addCommentPayload(deps.comments, a).then(reply);
 		if (req.kind === 'comment_reply') return void replyCommentPayload(deps.comments, a).then(reply);
 		if (req.kind === 'comment_resolve') return void resolveCommentPayload(deps.comments, a).then(reply);
 		if (req.kind === 'comment_reanchor') return void reanchorCommentPayload(deps.comments, a).then(reply);
+		if (req.kind === 'suggest_edit') return void suggestEditPayload(deps.comments, a).then(reply);
 		if (req.kind === 'compile') {
 			// Live mode and terminal mode are different enough that the caller has to be told which one
 			// it got. In live mode runCompile() drives the incremental draft engine, the preview is
@@ -379,6 +359,7 @@ export function attachMcpCommands(deps: McpCommandDeps): () => void {
 		// set_view_mode / show_diff / synctex / compile arrive as REQUESTS, not commands: each can be
 		// refused, and the caller needs to hear that rather than assume it worked.
 		if (kind === 'open_file') {
+			if (fileMode.current) return; // the window holds its one file; the folder around it is not open
 			const rel = typeof cmd.path === 'string' ? cmd.path : '';
 			const abs = resolveInWorkspace(rel);
 			if (!abs) return; // outside the workspace: ignore rather than reach for it

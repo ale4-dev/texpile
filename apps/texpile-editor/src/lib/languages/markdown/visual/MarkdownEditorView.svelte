@@ -15,11 +15,18 @@
 	import { dropCursor } from 'prosemirror-dropcursor';
 	import { fixTables, tableEditing, goToNextCell } from 'prosemirror-tables';
 	import { tableViewOnly } from '$lib/editor/visual/extensions/table/tableViewOnly';
+	import { wholeTableEdits } from '$lib/editor/visual/extensions/table/wholeTableEdits';
+	import { crossBlockEdits } from '$lib/editor/visual/extensions/crossBlockEdits';
+	import { firstRowHeader } from './firstRowHeader';
+	import { tableAlignment } from './tableAlignment';
 	import { createListPlugins, listInputRules, listKeymap, createIndentListCommand, createDedentListCommand } from 'prosemirror-flat-list';
 	import { inputRules, textblockTypeInputRule, wrappingInputRule, InputRule, undoInputRule } from 'prosemirror-inputrules';
+	import { selectFigureBackward, selectFigureForward } from '$lib/editor/visual/figureDeleteGuard';
+	import { deleteEmptyBlockForward, deleteEmptyFirstBlock } from '$lib/editor/visual/emptyBlockDelete';
 	import { search } from 'prosemirror-search';
 	import { mdSchema } from './schema';
 	import { markdownCopyPlugin } from './clipboard';
+	import { parseCarryPlugin } from '$lib/editor/visual/parseCarry';
 	import { listAttrInheritance } from './listAttrInheritance';
 	import { isMac } from '$lib/platform';
 	import { editorViewStore, referenceStore } from '$lib/stores/editorStore';
@@ -27,7 +34,7 @@
 	import { preferences } from '$lib/stores/preferencesStore.svelte';
 	import { toggleHeading, toggleBlockQuote } from '$lib/editor/visual/helperCommands';
 	import { selectAllScoped } from '$lib/editor/visual/selectAllScoped';
-	import { selectDocStart, selectDocEnd } from '$lib/editor/visual/selectDocBoundary';
+	import { extendToDocEnd, extendToDocStart, selectDocEnd, selectDocStart } from '$lib/editor/visual/selectDocBoundary';
 	import { createMathField } from '$lib/editor/visual/extensions/mathlivebridge/mlcommands';
 	import { createCodeBlock } from '$lib/editor/visual/extensions/codemirrorbridge/cmcommands';
 	import { cmarrowHandlers } from '$lib/editor/visual/extensions/codemirrorbridge/cmarrowhandler';
@@ -35,16 +42,23 @@
 	import { createMarkdownImageSettings } from './imageSettings.svelte';
 	import { menuUpdatePlugin } from '$lib/editor/visual/extensions/toolbarlistenerplugin';
 	import { createCursorPlugin } from '$lib/editor/visual/extensions/cursor-plugin';
+	import { shiftArrowsPlugin } from '$lib/editor/visual/extensions/shiftArrows/shiftArrowsPlugin';
+	import { lineBreakPlugins } from '$lib/editor/visual/linebreak/lineBreakPlugin';
 	import { createLinkPlugin } from '$lib/editor/visual/extensions/link';
 	import { pasteUuidFixPlugin } from '$lib/editor/visual/extensions/paste-uuid-fix';
+	import { pasteMarkdownSource, visualSmartPaste } from '$lib/editor/paste/visualSmartPaste';
 	import { placeholderPlugin } from '$lib/editor/visual/extensions/placeholderplugin';
 	import { tablePlaceholderPlugin } from '$lib/editor/visual/extensions/table/tablePlaceholderPlugin';
 	import { createWordCountPlugin } from '$lib/editor/visual/extensions/wordcount/wordCountPlugin';
 	import { createTocPlugin } from '$lib/editor/visual/extensions/tableofcontents/tocPlugin';
 	import { createPersistentSelectionPlugin } from '$lib/editor/visual/extensions/persistentSelection/persistentSelectionPlugin';
-	import { proofreadPlugin, spellClickBoundaryPlugin } from '$lib/editor/spellcheck/spellcheckplugin';
+	import { proofreadPlugin, spellClickBoundaryPlugin, spellProblemKeymap } from '$lib/editor/spellcheck/spellcheckplugin';
 	import { createBoundaryClickPlugin } from '$lib/editor/visual/extensions/boundary-click-plugin';
+	import { wordSelectionTrim } from '$lib/editor/visual/extensions/wordSelectionTrim';
+	import { dragSelectionPlugin } from '$lib/editor/visual/extensions/dragSelection/dragSelectionPlugin';
 	import { createBlockHandlePlugin } from '$lib/editor/visual/extensions/block-handle-plugin.svelte';
+	import { wholeBlockDragPlugin } from '$lib/editor/visual/extensions/wholeBlockDrag';
+	import { dropPastNodeViewsPlugin } from '$lib/editor/visual/extensions/dropPastNodeViews';
 	import { createNodeFlashPlugin } from '$lib/editor/visual/extensions/flash-plugin';
 	import { remoteCursorsPlugin } from '$lib/editor/visual/extensions/remoteCursors';
 	import { MD_BLOCK_INSERT_ITEMS } from './blockInsertItems';
@@ -55,7 +69,9 @@
 	import { pmComments } from '$lib/editor/visual/extensions/pmComments';
 	import { syncPmComments } from '$lib/editor/visual/extensions/pmCommentsSync.svelte';
 	import type { CommentAnchor } from '$lib/comments/anchor';
-	import type { CommentThread } from '$lib/comments/log';
+	import type { SourceAnchorFn } from '$lib/editor/visual/extensions/pmComments';
+	import type { CommentRange } from '$lib/editor/visual/extensions/comments';
+	import type { RegionParser, SourceMap } from '$lib/editor/visual/sourceSpans';
 	import type { BiblatexReference } from '$lib/languages/bib/biblatex';
 	import 'prosemirror-view/style/prosemirror.css';
 	import 'prosemirror-tables/style/tables.css';
@@ -81,9 +97,16 @@
 		 * markdown link), false to fall through to the browser. */
 		onOpenLink?: (href: string) => boolean;
 		/** review comments, same contract as the latex EditorView; see extensions/pmComments */
-		commentThreads?: CommentThread[];
+		commentRanges?: CommentRange[];
+		sourceMap?: SourceMap;
+		/** the file's text, the stretch of it the document is, and its parser: what suggestions are drawn from */
+		texSource?: string;
+		bodyRange?: { from: number; to: number };
+		regionParser?: RegionParser | null;
+		/** the selection as a range of the file; see pmComments */
+		sourceAnchor?: SourceAnchorFn;
 		selectedComment?: string | null;
-		onSelectComment?: (id: string, from: 'visual') => void;
+		onSelectComment?: (id: string) => void;
 		onAddComment?: (anchor: CommentAnchor | null) => void;
 		onCommentsPlaced?: (lost: string[]) => void;
 		addCommentLabel?: string;
@@ -102,7 +125,12 @@
 		onHistoryBoundary,
 		onReady,
 		onOpenLink,
-		commentThreads = [],
+		commentRanges = [],
+		sourceMap = { leaves: [], blocks: [] },
+		texSource = '',
+		bodyRange = { from: 0, to: 0 },
+		regionParser = null,
+		sourceAnchor,
 		selectedComment = null,
 		onSelectComment,
 		onAddComment,
@@ -132,18 +160,28 @@
 		const { mathlivePlugin, mlarrowHandlers } = await import('$lib/editor/visual/extensions/mathlivebridge/mlplugin');
 
 		const plugins = [
+			parseCarryPlugin,
 			markdownCopyPlugin,
 			gapCursor(),
-			dropCursor({ color: 'var(--color-primary-500)', width: 2 }),
+			dropCursor({ color: 'var(--color-primary-500)', width: 2, class: 'pm-drop-cursor' }),
 			// TableView WITHOUT columnResizing: a pipe table has no width syntax, so a dragged column
 			// could never be written to the file. It used to move on screen and be silently discarded
 			// on the next parse - a control that lied. The node view is kept because it is what
 			// renders the <colgroup>; only the drag handlers are gone.
 			tableViewOnly,
 			tableEditing(),
+			wholeTableEdits,
+			crossBlockEdits,
+			visualSmartPaste('markdown', mdSchema, pasteMarkdownSource),
+			firstRowHeader,
+			tableAlignment,
 			...createListPlugins({ schema: mdSchema }),
 			listAttrInheritance,
 			history(),
+			// before the list keymap, whose Backspace and Delete act at a block edge: they would join the block after an empty one into it, and a block into a figure
+			keymap({ Backspace: deleteEmptyFirstBlock, Delete: deleteEmptyBlockForward }),
+			keymap({ Backspace: selectFigureBackward, Delete: selectFigureForward }),
+			shiftArrowsPlugin(),
 			keymap(listKeymap),
 			inputRules({ rules: [...listInputRules, ...mdInputRules] }),
 			keymap({
@@ -155,6 +193,8 @@
 				'Mod-a': selectAllScoped,
 				'Mod-Home': selectDocStart,
 				'Mod-End': selectDocEnd,
+				'Shift-Mod-Home': extendToDocStart,
+				'Shift-Mod-End': extendToDocEnd,
 				'Mod-b': toggleMark(mdSchema.marks.strong),
 				'Mod-i': toggleMark(mdSchema.marks.em),
 				'Mod-`': toggleMark(mdSchema.marks.code),
@@ -178,6 +218,7 @@
 			imagePlugin(createMarkdownImageSettings(imageDir === undefined ? undefined : () => imageDir ?? '')),
 			menuUpdatePlugin(),
 			createCursorPlugin(),
+			...lineBreakPlugins(),
 			createLinkPlugin({ onOpen: onOpenLink }),
 			pasteUuidFixPlugin,
 			search(),
@@ -188,15 +229,21 @@
 			createPersistentSelectionPlugin(),
 			spellClickBoundaryPlugin, // must precede proofreadPlugin; see its comment
 			proofreadPlugin,
+			spellProblemKeymap,
 			createBoundaryClickPlugin(),
+			wordSelectionTrim(),
+			dragSelectionPlugin(),
 			// the Notion-style + / drag / delete gutter, with the markdown insert set
 			createBlockHandlePlugin({ items: MD_BLOCK_INSERT_ITEMS }),
+			wholeBlockDragPlugin(),
+			dropPastNodeViewsPlugin(),
 			createNodeFlashPlugin(),
 			// collaborators' carets; VisualCollab feeds it, and is inert outside a shared session
 			remoteCursorsPlugin,
 			...pmComments({
-				onSelect: (id) => onSelectComment?.(id, 'visual'),
+				onSelect: (id) => onSelectComment?.(id),
 				onAdd: onAddComment,
+				sourceAnchor,
 				addLabel: addCommentLabel
 			})
 		];
@@ -225,6 +272,7 @@
 				// already IN the shared doc, so reporting it as a local change would echo it back
 				// out and the two peers would ping-pong the same edit
 				if (onLocalChange && transaction.docChanged && !transaction.getMeta('collabRemotePatch')) onLocalChange(newState.doc);
+				if (transaction.getMeta('collabRemotePatch')) remotePatches++;
 				if (onSelectionChange && (transaction.selectionSet || transaction.docChanged)) onSelectionChange();
 			}
 		});
@@ -241,6 +289,7 @@
 	let mountedPath: string | null = null;
 	/** bumped only on doc SWAPS (see pmCommentsSync); typing maps ranges instead */
 	let docEpoch = $state(0);
+	let remotePatches = $state(0);
 	$effect(() => {
 		const next = localValue;
 		const path = docPath;
@@ -263,9 +312,13 @@
 	// after the swap effect, so the sync reads the newly-installed document
 	syncPmComments({
 		view: () => editorView,
-		threads: () => commentThreads,
-		dialect: 'md',
+		ranges: () => commentRanges,
+		map: () => sourceMap,
+		text: () => texSource,
+		body: () => bodyRange,
+		parse: () => regionParser,
 		epoch: () => docEpoch,
+		patched: () => remotePatches,
 		selected: () => selectedComment,
 		onPlaced: (lost) => onCommentsPlaced?.(lost),
 		pendingActive: () => commentPendingActive
@@ -287,7 +340,7 @@
      nothing, so the viewport upgrades could not run until after it was already on screen -->
 <main bind:this={editor} class={BUILDING_CLASS}></main>
 
-<ContextMenu dialect="markdown" {onAddComment} />
+<ContextMenu dialect="markdown" {onAddComment} {sourceAnchor} />
 
 <style lang="postcss">
 	@reference "../../../../app.css";

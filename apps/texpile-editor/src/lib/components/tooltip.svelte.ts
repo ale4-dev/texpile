@@ -6,7 +6,12 @@
 import { box } from '$lib/runes/box.svelte';
 
 /** `win` is the trigger's window: a TooltipHost draws only the tips raised in its own */
-export type ShownTip = { text: string; rect: DOMRect; win: Window };
+export type ShownTip = { text: string; rect: DOMRect; win: Window; above?: boolean };
+
+/** `above` for a trigger that floats over content of its own, where the usual card below would cover it.
+ *  `grayed` for a control that cannot be used: its hint is the reason, shown at once on hover, and a
+ *  press shows it too rather than closing it, as clicking is asking why */
+export type TipOptions = { above?: boolean; grayed?: boolean };
 
 export const shownTip = box<ShownTip | null>(null);
 
@@ -28,17 +33,20 @@ export function hideTip(): void {
 	owner = null;
 }
 
-function tipFor(node: HTMLElement, text: string): ShownTip {
-	return { text, rect: node.getBoundingClientRect(), win: node.ownerDocument.defaultView ?? window };
+/** a trigger as wide as a settings row hangs its card from the part marked data-tip-anchor (its switch),
+ *  not from the middle of the row */
+function tipFor(node: HTMLElement, text: string, above?: boolean): ShownTip {
+	const anchor = node.querySelector<HTMLElement>('[data-tip-anchor]') ?? node;
+	return { text, rect: anchor.getBoundingClientRect(), win: node.ownerDocument.defaultView ?? window, above };
 }
 
-function show(node: HTMLElement, text: string): void {
+function show(node: HTMLElement, text: string, above?: boolean): void {
 	armed = null;
 	owner = node;
-	shownTip.current = tipFor(node, text);
+	shownTip.current = tipFor(node, text, above);
 }
 
-export function tip(node: HTMLElement, text: string | null | undefined) {
+export function tip(node: HTMLElement, text: string | null | undefined, options?: TipOptions) {
 	let current = text ?? '';
 
 	// what `title` gave an icon-only control for free. Only when nothing else names it: on a
@@ -59,9 +67,9 @@ export function tip(node: HTMLElement, text: string | null | undefined) {
 	function open(instant: boolean) {
 		if (!current) return;
 		clearTimeout(timer);
-		if (instant || Date.now() < warmUntil) return show(node, current);
+		if (instant || Date.now() < warmUntil) return show(node, current, options?.above);
 		armed = node;
-		timer = setTimeout(() => show(node, current), OPEN_DELAY);
+		timer = setTimeout(() => show(node, current, options?.above), OPEN_DELAY);
 	}
 
 	function close() {
@@ -72,15 +80,22 @@ export function tip(node: HTMLElement, text: string | null | undefined) {
 		if (owner === node) hideTip();
 	}
 
-	const onenter = (e: PointerEvent) => e.pointerType !== 'touch' && open(false);
+	function onenter(e: PointerEvent) {
+		return e.pointerType !== 'touch' && open(!!options?.grayed);
+	}
 	// a text field always matches :focus-visible, and a card over the box you are typing in is
 	// not a hint, it is an obstacle
 	const typable = /^(input|textarea)$/i.test(node.tagName) || node.isContentEditable;
-	const onfocus = () => !typable && node.matches(':focus-visible') && open(true);
+	function onfocus() {
+		return !typable && node.matches(':focus-visible') && open(true);
+	}
+	function onpress() {
+		return options?.grayed ? open(true) : close();
+	}
 
 	node.addEventListener('pointerenter', onenter);
 	node.addEventListener('pointerleave', close);
-	node.addEventListener('pointerdown', close);
+	node.addEventListener('pointerdown', onpress);
 	node.addEventListener('focus', onfocus);
 	node.addEventListener('blur', close);
 
@@ -89,16 +104,21 @@ export function tip(node: HTMLElement, text: string | null | undefined) {
 			current = next ?? '';
 			mark(current);
 			if (owner !== node) return;
-			if (current) shownTip.current = tipFor(node, current);
+			if (current) shownTip.current = tipFor(node, current, options?.above);
 			else hideTip();
 		},
 		destroy() {
 			close();
 			node.removeEventListener('pointerenter', onenter);
 			node.removeEventListener('pointerleave', close);
-			node.removeEventListener('pointerdown', close);
+			node.removeEventListener('pointerdown', onpress);
 			node.removeEventListener('focus', onfocus);
 			node.removeEventListener('blur', close);
 		}
 	};
+}
+
+/** `use:unavailableTip={why}` on a grayed control: the reason shows at once, on hover or a click */
+export function unavailableTip(node: HTMLElement, text: string | null | undefined) {
+	return tip(node, text, { grayed: true });
 }

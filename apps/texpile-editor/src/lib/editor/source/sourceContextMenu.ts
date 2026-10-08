@@ -3,15 +3,18 @@
 import type { EditorView as CMView } from '@codemirror/view';
 import { selectAll } from '@codemirror/commands';
 import { openSearchPanel } from '@codemirror/search';
-import { ArrowRight, BookMarked, Scissors, Copy, ClipboardPaste, Search, MessageSquarePlus } from '@lucide/svelte';
+import { ArrowRight, BookMarked, BookPlus, Scissors, Copy, ClipboardPaste, Search, MessageSquarePlus } from '@lucide/svelte';
 import { copySelection, cutSelection, pasteAtCursor } from '$lib/editor/source/cmClipboardUtils';
+import { hasSourcePaste, pasteIntoSource } from '$lib/editor/source/paste/cmSourcePaste';
 import { showContextMenu, type ContextMenuItem } from '$lib/menus/contextMenu.svelte';
 import { m } from '$lib/paraglide/messages';
+import { refineMenuItems } from '$lib/ai/refineMenu';
 
 export type SourceMenuDeps = {
 	onSyncToPdf?: (line: number) => void;
 	onAddComment?: (from: number, to: number) => void;
 	onInsertCitation?: () => void;
+	onCiteByDoi?: () => void;
 	/** preview = the Typst pane, not the PDF viewer */
 	syncTarget?: 'pdf' | 'preview';
 };
@@ -25,7 +28,11 @@ export function openSourceContextMenu(event: MouseEvent, view: CMView, deps: Sou
 	const items: ContextMenuItem[] = [
 		{ label: m.tbar_ctx_cut(), icon: Scissors, keys: 'Mod+X', disabled: !selection, onclick: () => void cutSelection(view) },
 		{ label: m.tbar_ctx_copy(), icon: Copy, keys: 'Mod+C', disabled: !selection, onclick: () => void copySelection(view) },
-		{ label: m.tbar_ctx_paste(), icon: ClipboardPaste, keys: 'Mod+V', onclick: () => void pasteAtCursor(view) },
+		{ label: m.tbar_ctx_paste(), icon: ClipboardPaste, keys: 'Mod+V', onclick: () => void pasteIntoSource(view) },
+		// where Paste converts, the plain one sits beside it
+		...(hasSourcePaste(view.state)
+			? [{ label: m.ctxmenu_paste_without_formatting(), keys: 'Mod+Shift+V', onclick: () => void pasteAtCursor(view) }]
+			: []),
 		{
 			label: m.tbar_ctx_select_all(),
 			keys: 'Mod+A',
@@ -35,6 +42,8 @@ export function openSourceContextMenu(event: MouseEvent, view: CMView, deps: Sou
 			}
 		}
 	];
+	const refine = refineMenuItems(!!selection);
+	if (refine.length) items.push({ separator: true }, ...refine);
 	// the same gesture the margin pill offers, for people who reach for the menu instead; disabled
 	// rather than hidden with nothing selected, so it is discoverable
 	if (deps.onAddComment) {
@@ -49,9 +58,15 @@ export function openSourceContextMenu(event: MouseEvent, view: CMView, deps: Sou
 			}
 		);
 	}
+	// the citation sources share one group
+	if (deps.onInsertCitation || deps.onCiteByDoi) items.push({ separator: true });
 	if (deps.onInsertCitation) {
 		const cite = deps.onInsertCitation;
-		items.push({ separator: true }, { label: m.zotero_insert_citation(), icon: BookMarked, onclick: () => cite() });
+		items.push({ label: m.zotero_insert_citation(), icon: BookMarked, onclick: () => cite() });
+	}
+	if (deps.onCiteByDoi) {
+		const cite = deps.onCiteByDoi;
+		items.push({ label: m.cite_doi_insert(), icon: BookPlus, onclick: () => cite() });
 	}
 	items.push({ separator: true }, { label: m.tbar_ctx_find(), icon: Search, keys: 'Mod+F', onclick: () => void openSearchPanel(view) });
 	if (deps.onSyncToPdf) {

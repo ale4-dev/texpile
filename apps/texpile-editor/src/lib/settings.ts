@@ -10,8 +10,8 @@
 import { browser } from '$lib/runtime';
 import { box } from '$lib/runes/box.svelte';
 import { setLocale as setParaglideLocale } from '$lib/paraglide/runtime';
-import { trailingDebounce } from '$lib/trailingDebounce';
 import { migrateSettingsObject } from '$lib/migration/settings';
+import type { EnglishVariant } from '$lib/editor/spellcheck/config/grammarRules';
 
 export type AppSettings = {
 	/** settings.json's own shape version; absent means pre-restructure and triggers migration */
@@ -21,8 +21,10 @@ export type AppSettings = {
 	autosave: boolean;
 	/** Harper spell-check enabled. */
 	spellcheck: boolean;
-	/** image resize snap step as a fraction of \textwidth (0.25 = 25/50/75/100%). */
-	figureResizeStep: number;
+	/** the English that spelling and grammar follow; '' = the system's own */
+	englishVariant: '' | EnglishVariant;
+	/** grammar rules the user turned on or off; a rule not here follows its default (grammarRules.ts) */
+	grammarRules: Record<string, boolean>;
 	/** check the update feed (updates.texpile.com) for a newer version on launch; downloads stay click-only. */
 	checkForUpdates: boolean;
 	/** let an MCP client (Claude Code, Claude Desktop) read what the editor is showing. Off by
@@ -39,9 +41,10 @@ export type AppSettings = {
 	 * Retargeting the OUTPUT DIRECTORY does not need this - that path goes through
 	 * sanitizeOutputDir and can only ever change where the build lands.
 	 */
-	mcpAllowCompileCommand: boolean;
 	/** whole-window zoom factor (1 = 100%), applied via webContents.setZoomFactor. */
 	uiZoom: number;
+	/** the window's grounds let the blurred desktop through. Text and content stay solid. */
+	transparentWindow: boolean;
 	/** newest changelog version the What's New modal was dismissed for. */
 	whatsNewSeen: string;
 	/** live math preview tooltip in source mode. */
@@ -50,9 +53,12 @@ export type AppSettings = {
 	commentPill: boolean;
 	/** soft-wrap long lines in Source mode instead of scrolling horizontally. */
 	sourceLineWrap: boolean;
-	/** widest the visual editor's text column may grow, in px. Past this the window pads with
-	 *  empty space rather than stretching the measure, which is why it is adjustable. */
-	visualMaxWidth: number;
+	/** paragraphs in the visual editor fill the column edge to edge, with words split where that helps. */
+	visualJustify: boolean;
+	/** long words may split at line ends in justified text. The hyphens are drawn, never written to the file. */
+	visualHyphenate: boolean;
+	/** formatting, tables and Markdown from other apps are converted on paste; off pastes their plain text */
+	smartPaste: boolean;
 	/** the Typst preview scrolls to follow the caret. Off by default, as in tinymist. A pane
 	 *  behavior about YOUR caret, which is why it stays here and not in the project's config. */
 	typstPreviewFollow: boolean;
@@ -64,6 +70,9 @@ export type AppSettings = {
 	/** the Zotero citation picker (Insert menu, palette, topbar). On by default: it only probes
 	 *  Zotero when invoked, so leaving it available costs nothing until it is used. */
 	zoteroEnabled: boolean;
+	/** Cite by DOI or arXiv ID (context menus, palette). On by default: nothing leaves the machine
+	 *  until someone looks an ID up, and then only that ID, to doi.org. */
+	citeByDoiEnabled: boolean;
 	/** modal keybindings for the source editor and code blocks. */
 	editorKeymap: 'default' | 'vim' | 'emacs';
 	/** UI display language. Not the LaTeX document language (see DocumentLanguage). */
@@ -75,6 +84,27 @@ export type AppSettings = {
 	openFolders: string[];
 	/** MCP port override (0 = channel default); a hand-edit escape hatch for port clashes. */
 	mcpPort: number;
+	/** the agent Refine runs, alone in the list; empty or null = none chosen yet. Main reads it, see electron/src/ai */
+	refineAgents: ('claude' | 'codex' | 'agy' | 'custom')[] | null;
+	/** the command line for Refine's custom agent; the prompt goes on its stdin */
+	aiAgentCommand: string;
+	/** each preset agent's --model for Refine, one of the ids it lists; missing or '' = its own default */
+	aiAgentModels: Record<string, string>;
+	/** the agent the dock's Agent tab talks to over ACP, of those it offers; '' until one is picked. Main reads it, see
+	 *  electron/src/ai/acp */
+	agentPanel: '' | 'codex' | 'claude' | 'opencode' | 'copilot' | 'gemini' | 'custom';
+	/** the agents the Agent tab's menu offers; null = the ones installed, [] = the tab turned off */
+	agentPanelAgents: ('codex' | 'claude' | 'opencode' | 'copilot' | 'gemini' | 'custom')[] | null;
+	/** the command line when agentPanel is 'custom'; it speaks ACP on its input and output */
+	agentPanelCommand: string;
+	/** folders searched before PATH; per machine, so never in a project's config */
+	toolDirs: string[];
+	/** look for co-authors' new versions every few minutes while the window is in front (VS Code's
+	 *  git.autofetch, on by default here: a writer's conflicts come from editing before a Sync) */
+	checkForNewVersions: boolean;
+	/** Local History: a copy of each file as it is saved, kept in the app's data. On by default: it
+	 *  is the only way back to text written since the last version, and costs nothing until needed. */
+	localHistory: boolean;
 };
 
 /** default compile command. -cd runs the compile in the main file's own directory, so a main file in
@@ -93,25 +123,37 @@ const DEFAULTS: AppSettings = {
 	reopenLastFolder: true,
 	autosave: true,
 	spellcheck: false,
-	figureResizeStep: 0.25,
+	englishVariant: '',
+	grammarRules: {},
 	checkForUpdates: true,
 	mcpEnabled: false,
-	mcpAllowCompileCommand: false,
 	uiZoom: 1,
+	transparentWindow: false,
 	whatsNewSeen: '',
 	mathPreview: true,
 	commentPill: true,
 	sourceLineWrap: true,
-	// 768px = the max-w-3xl the editor column was pinned to before this became adjustable
-	visualMaxWidth: 768,
+	visualJustify: true,
+	visualHyphenate: true,
+	smartPaste: true,
 	typstPreviewFollow: false,
 	openDockOnCompile: true,
 	zoteroEnabled: true,
+	citeByDoiEnabled: true,
 	editorKeymap: 'default',
 	uiLocale: 'en',
 	collabRelayUrl: DEFAULT_COLLAB_RELAY_URL,
 	openFolders: [],
-	mcpPort: 0
+	mcpPort: 0,
+	refineAgents: null,
+	aiAgentCommand: '',
+	aiAgentModels: {},
+	agentPanel: '',
+	agentPanelAgents: null,
+	agentPanelCommand: '',
+	toolDirs: [],
+	checkForNewVersions: true,
+	localHistory: true
 };
 
 const LS_KEY = 'texpile:settings';
@@ -218,15 +260,12 @@ export function updateSettings(partial: Partial<AppSettings>): void {
 	persist(partial);
 }
 
-// A dragged slider emits a value per pointer move. The STORE has to take every one of them - that
-// is what makes the editor resize under the cursor - but each persist is an IPC round trip and a
-// settings.json rewrite in main, so only the value the user settles on is worth writing.
-const persistSoon = trailingDebounce<Partial<AppSettings>>(250, persist);
-
-/** updateSettings for a continuous control: applies at once, writes to disk once it settles. */
-export function updateSettingsLive(partial: Partial<AppSettings>): void {
+/** updateSettings, resolved once main has taken the change, for a setting main itself acts on */
+export async function updateSettingsSettled(partial: Partial<AppSettings>): Promise<void> {
 	settings.current = { ...settings.current, ...partial };
-	persistSoon(partial);
+	const n = nativeBridge();
+	if (n?.setSettings) await n.setSettings(partial).catch(() => {});
+	else persist(partial);
 }
 
 /**

@@ -1,29 +1,24 @@
 ---
 nav: Typst
-description: Typst in Texpile: the same visual and source editors, compiling and a live preview through tinymist, and what the editor does differently for .typ files.
-blurb: The same editors, with compiling and the preview through tinymist.
+description: Typst in Texpile: a visual and a source editor, and a preview that updates as you type.
+blurb: Edit visually or as source, with a preview that updates as you type.
 icon: type
-order: 12
-section: Formats
+order: 21
+section: Typst
 ---
 
 # Typst
 
-A .typ file opens in the same visual and source editors as a LaTeX file, and compiles and previews through tinymist.
+Write Typst in the visual editor or as source, and watch the preview update as you type.
 
-| Where to find it | Path               | Note                                              |
-| ---------------- | ------------------ | ------------------------------------------------- |
-| In the editor    | Open any .typ file | Set it as the main file to compile or preview it. |
+![A Typst project in Texpile: the file tree, the visual editor, the Live button, and the preview](../../landing/src/lib/assets/showcase/docs/typst/overview.png)
 
-![A Typst document in the visual editor: headings with their labels, formatted text, and lists](../../landing/src/lib/assets/showcase/app/typst-visual.png 'A Typst document in the visual editor: headings with their labels, formatted text, and lists')
+1. **Main file.** The star marks the file Texpile previews and compiles.
+2. **Visual / Source.** Switch editors at any time. Both edit the same file.
+3. **Live.** The preview is on. Click it to close the preview.
+4. **Preview.** The document as it prints, updated as you type.
+5. **Jump to preview.** Shows the cursor's place in the preview. Click the preview to jump back.
 
-## What differs
+## The main file
 
-- A label such as `<sec:intro>` shows under its heading, and @ inserts a reference to a label or a citation key.
-- Anything the visual editor cannot show stays in place as a Typst code chip.
-- Completion, hover help, and errors as you type come from tinymist, for guests in a shared session too.
-
-The [Equations](../visual-editing/math.md), [Images](../visual-editing/images.md), [Tables](../visual-editing/tables.md), and [Citations](../visual-editing/citations.md) pages each end with what differs in Typst.
-
-[Live preview](live-preview.md)
-[Installing tinymist](../installation/typst/README.md)
+The preview always shows the main file, not the file you have open. In a folder with several `.typ` files, Texpile asks once which one it is. To change it, right-click a file and choose **Set as Main File**.

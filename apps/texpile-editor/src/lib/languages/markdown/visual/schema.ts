@@ -49,8 +49,7 @@ for (const name of MD_NODES) nodes[name] = base[name];
 // overrides build NEW spec objects — mutating the imported literals would leak into every dialect
 // a code block created without attrs (shared toolbar button, keybind) must be a FENCE here, not
 // tex's verbatim: fences take an info string, so the language picker works on every md block
-// base attrs first: ORIG_BLOCKS (baseNodes.ts) adds `orig` to code_block, and replacing attrs
-// wholesale dropped it, so a fence never counted as pristine and always regenerated
+// base attrs first, so a dialect override never drops one the shared extensions read
 nodes.code_block = {
 	...base.code_block,
 	attrs: { ...base.code_block.attrs, lang: { default: '' }, env: { default: 'fence' }, args: { default: '' } }
@@ -59,6 +58,9 @@ nodes.raw_latex = {
 	...base.raw_latex,
 	attrs: { ...base.raw_latex.attrs, lang: { default: 'latex' } }
 };
+// `$$` keeps the math and nothing else: no number, label or environment for the equation's menu
+// or settings to set, since none of it would be saved
+nodes.block_math = { ...base.block_math, plainDisplay: true };
 nodes.inline_latex = {
 	...base.inline_latex,
 	attrs: { ...base.inline_latex.attrs, lang: { default: 'latex' } },

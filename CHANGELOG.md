@@ -5,6 +5,76 @@ Release notes for Texpile Desktop. Add notes under `## [Unreleased]` as you work
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-06
+
+- fix: Shift+arrow selection and Ctrl+Home/End in the visual editor (by @louisqli)
+- fix: Typst Universe templates open on Windows again (by @louisqli)
+- fix: Typst tables with merged header cells now match the PDF, also after table edits (by @louisqli)
+- fix: various smaller bugfixes (by @louisqli)
+
+## [1.3.0] - 2026-10-04
+
+- feat: more git support coverage (by @louisqli)
+- feat: version history (by @louisqli)
+- feat: push a repo to GitHub (by @louisqli)
+- feat: cite papers by doi/name...etc (by @louisqli)
+- feat: Typst Universe support for templates (by @louisqli)
+- feat: One click Tinymist install (by @louisqli)
+- feat: expanded Typst visual editor coverage (by @louisqli)
+- feat: Advanced symbol picker (by @louisqli)
+- fix: `\overline`, `\sqrt`, `\hat` and similar typed in the visual math editor put the caret inside them instead of after an empty box (by @hkarlsen06)
+- feat: shift-enter in a display equation starts a new one of the same kind below it (by @hkarlsen06)
+- feat: significantly improved visual math editing experience for LaTeX and Typst (by @louisqli)
+- feat: Agent tab in the dock to work with Claude, Codex, Gemini, Copilot, OpenCode or a custom agent on your project (by @louisqli)
+- feat: various QOL updates to spelling, grammar, bibliography checks and word count (by @louisqli)
+- feat: save the live preview as a PDF, and source folds are remembered (by @louisqli)
+- feat: removed the welcome screen, setup asks where each choice matters (by @louisqli)
+- fix: various smaller UX/UI enhancements and bugfixes (by @louisqli)
+
+## [1.2.0] - 2026-09-25
+
+- feat: suggestion mode (by @louisqli)
+- feat: side by side comments (by @louisqli)
+- feat: collaboration tab in preferences (by @louisqli)
+- feat: allow switching between distributions (by @louisqli)
+- feat: right click an open tab to show right-click menu (by @louisqli)
+- feat: control/command-shift-t reopens closed tab (by @louisqli)
+- feat: justified text in the visual editor (Knuth-Plass line breaks and hyphenation) (by @louisqli)
+- feat: transparent themes available (by @louisqli)
+- feat: a welcome screen (by @louisqli)
+- feat: Refine rewrites selected text with an AI agent already on your computer (by @louisqli)
+- fix: version check before collaborations (by @louisqli)
+- fix: up and down arrows keep their column in the visual editor (by @louisqli)
+- fix: various visual editor improvements and bug fixes (by @louisqli)
+- fix: improved dragging experience for visual editor (by @louisqli)
+- fix: Ctrl+Z, Ctrl+Y and Ctrl+Shift+Z work when the text is not focused (by @louisqli)
+- fix: live preview will not fall back to recompile when typing fast (by @louisqli)
+- fix: visual editor now supports synctex jumping (by @louisqli)
+- fix: `^` in the visual math editor no longer turns into `\^` on Nordic and German Macs after typing a backslash (by @hkarlsen06)
+- fix: `\boxed` and black math in the visual editor are visible in dark themes (by @hkarlsen06)
+- fix: various other minor issues (by @louisqli)
+
+## [1.1.0] - 2026-09-10
+
+- fix: Typst completion issues after a `.`
+- fix: switching languages now reopens the workspace
+- fix: enabled differential updates
+- feat: LaTeX and Typst auto-close pairs such as `{}` and `` `' ``
+- feat: recompile from scratch and clean auxiliary files for LaTeX
+- feat: copying and pasting in the terminal via right-click and keybindings
+- feat: the PDF preview refreshes automatically even when the document is compiled externally
+
+## [1.0.2] - 2026-09-09
+
+- fix: 1.0.1 portable build and installed windows build update issue.
+
+## [1.0.1] - 2026-09-08
+
+- feat: Brazilian Portuguese interface language by @ale4-dev
+- feat: portable Windows build
+- fix: #22
+- fix: #23
+
 ## [1.0.0] - 2026-09-07
 
 - fix: live mode is no longer marked experimental in the compile

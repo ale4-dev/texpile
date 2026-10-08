@@ -70,12 +70,28 @@ function scrimLayers(): string[] {
 }
 
 /**
+ * macOS draws the traffic lights over the page with no overlay to say where: the bar they sit in
+ * gives its height to the stylesheet instead, as --mac-titlebar, which a scrim keeps its dialog below
+ */
+function reportTrafficLightRow(el: HTMLElement): () => void {
+	const root = document.documentElement.style;
+	const ro = new ResizeObserver(() => root.setProperty('--mac-titlebar', `${el.getBoundingClientRect().height}px`));
+	ro.observe(el);
+	return () => {
+		ro.disconnect();
+		root.removeProperty('--mac-titlebar');
+	};
+}
+
+/**
  * Report `el`'s height and colours to the overlay, and keep reporting as they change.
  *
- * Returns a teardown. A no-op on macOS and in the browser build, where there is no overlay.
+ * Returns a teardown. A no-op in the browser build, where there is no overlay; on macOS the row is
+ * reported to the stylesheet instead.
  */
 export function syncWindowOverlay(el: HTMLElement): () => void {
 	const api = nativeBridge() as OverlayApi | undefined;
+	if (isMac && api) return reportTrafficLightRow(el);
 	if (isMac || !api?.windowSetOverlay) return () => {};
 
 	// last values sent: the observers below fire on plenty of changes that move neither, and an IPC
@@ -101,7 +117,9 @@ export function syncWindowOverlay(el: HTMLElement): () => void {
 		// and close keep WORKING while a modal is up, unlike everything else the scrim covers, so
 		// fading the glyphs would advertise them as disabled. Dimming the strip alone puts the
 		// buttons behind the same veil as the rest of the window while leaving them plainly legible.
-		const color = toHex(cs.backgroundColor, ...scrimLayers());
+		// a see-through window (windowGlass.svelte.ts) wants a see-through strip: the bar under it shows, scrim and all
+		const glass = document.documentElement.classList.contains('window-glass');
+		const color = glass ? '#00000000' : toHex(cs.backgroundColor, ...scrimLayers());
 		const symbolColor = toHex(cs.color);
 		// The WINDOW's background, which is a different thing from the bar's. Chromium fills newly
 		// exposed area with it during a resize, before the renderer has painted - so on maximise or

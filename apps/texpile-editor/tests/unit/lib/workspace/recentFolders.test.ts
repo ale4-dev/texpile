@@ -49,6 +49,22 @@ describe('recentFolders', () => {
 		expect(userData.current.recentFolders[0]).toBe('/new');
 	});
 
+	it('removes a folder and persists the shorter list', async () => {
+		seed(['/a', '/b', '/c']);
+		const { userData, removeRecentFolder } = await load();
+		removeRecentFolder('/b');
+		expect(userData.current.recentFolders).toEqual(['/a', '/c']);
+		expect(stored()).toEqual(['/a', '/c']);
+	});
+
+	it('leaves the list alone when removing a folder it does not have', async () => {
+		seed(['/a']);
+		const { userData, removeRecentFolder } = await load();
+		const before = userData.current;
+		removeRecentFolder('/nope');
+		expect(userData.current).toBe(before);
+	});
+
 	it('survives junk in storage rather than throwing at import', async () => {
 		localStorage.setItem(KEY, '{not json');
 		const { userData } = await load();
@@ -59,5 +75,26 @@ describe('recentFolders', () => {
 		seed(['/a', 42, null, '/b']);
 		const { userData } = await load();
 		expect(userData.current.recentFolders).toEqual(['/a', '/b']);
+	});
+
+	// two windows share the blob and each module load is one window's copy of it
+	it('keeps what another window wrote when this one writes', async () => {
+		localStorage.setItem(KEY, JSON.stringify({ v: 1, recentFolders: ['/gone', '/old'], dictionary: [] }));
+		const other = await load();
+		vi.resetModules();
+		const self = await load();
+		self.addRecentFolder('/new');
+		self.updateUserData({ dictionary: ['eigenstrain'] });
+		other.removeRecentFolder('/gone');
+		expect(stored()).toEqual(['/new', '/old']);
+		expect(JSON.parse(localStorage.getItem(KEY)!).dictionary).toEqual(['eigenstrain']);
+	});
+
+	it('shows a folder another window opened', async () => {
+		seed(['/a']);
+		const { userData } = await load();
+		seed(['/b', '/a']);
+		window.dispatchEvent(new StorageEvent('storage', { key: KEY }));
+		expect(userData.current.recentFolders).toEqual(['/b', '/a']);
 	});
 });

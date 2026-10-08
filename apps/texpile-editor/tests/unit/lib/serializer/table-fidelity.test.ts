@@ -28,6 +28,14 @@ describe('table cells', () => {
 	});
 });
 
+describe('a tabular', () => {
+	// [t] and [b] set where the tabular sits against the line, [l] a longtable's alignment
+	it('keeps its position argument', () => {
+		expect(rt('\\begin{tabular}[t]{ll}\na & b \\\\\n\\end{tabular}')).toContain('\\begin{tabular}[t]{ll}');
+		expect(rt('\\begin{longtable}[l]{ll}\na & b \\\\\n\\end{longtable}')).toContain('\\begin{longtable}[l]{ll}');
+	});
+});
+
 describe('table floats', () => {
 	// a \label ahead of \caption binds to the last counter stepped instead of the table, so \ref
 	// resolves to a list item or a section with no undefined-reference warning to show for it
@@ -67,6 +75,22 @@ describe('table floats', () => {
 		expect(out.indexOf('\\caption{Below}')).toBeGreaterThan(out.indexOf('\\end{tabular}'));
 	});
 
+	// every regenerated table gained \vspace{2mm} after its caption: space under a caption below the
+	// tabular, or between caption and tabular the source never had (a real compile moved the page)
+	it('keeps the space the source put after its caption, and adds none it did not have', () => {
+		const table = (cap: string, below = false) =>
+			below
+				? `\\begin{table}\n\\begin{tabular}{l}\na \\\\\n\\end{tabular}\n${cap}\n\\end{table}`
+				: `\\begin{table}\n${cap}\n\\begin{tabular}{l}\na \\\\\n\\end{tabular}\n\\end{table}`;
+		expect(rt(table('\\caption{Below}', true))).not.toContain('\\vspace');
+		expect(rt(table('\\caption{Above}'))).not.toContain('\\vspace');
+		const own = rt(table('\\caption{Above}\\vspace{5mm}'));
+		expect(own).toContain('\\caption{Above}\\vspace{5mm}');
+		expect(count(own, '\\vspace')).toBe(1);
+		// a \label between them sets nothing apart on the page
+		expect(rt(table('\\caption{Above}\n\\label{t}\n\\vspace{1mm}'))).toContain('\\caption{Above}\\vspace{1mm}');
+	});
+
 	it('a short caption survives (40)', () => {
 		const out = rt('\\begin{table}\n\\caption[Short]{Long caption}\n\\begin{tabular}{l}\na \\\\\n\\end{tabular}\n\\end{table}');
 		expect(out).toContain('\\caption[Short]{Long caption}');
@@ -76,5 +100,11 @@ describe('table floats', () => {
 		const out = rt('\\begin{table}\n\\begin{tabular}{l}\na \\\\\n\\end{tabular}\n{\\footnotesize Source: us.}\n\\end{table}');
 		expect(out).toContain('{\\footnotesize Source: us.}');
 		expect(out).not.toContain('{\\small');
+	});
+
+	it('notes after a skip are still notes, so a second save keeps them', () => {
+		const once = rt('\\begin{table}\n\\begin{tabular}{l}\na \\\\\n\\end{tabular}\n\\medskip\n{\\small Source: us.}\n\\end{table}');
+		expect(once).toContain('Source: us.');
+		expect(rt(once)).toBe(once);
 	});
 });

@@ -46,3 +46,6 @@
 		opacity: 0;
 	}
 }
+
+/* a peer's selection is drawn entirely by the range painter (highlight/paintRange.ts); only the
+   caret above is this file's own */

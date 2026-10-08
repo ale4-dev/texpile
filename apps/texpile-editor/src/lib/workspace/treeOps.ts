@@ -27,7 +27,7 @@ export type TreeOpsDeps = {
 	rename(from: string, to: string): Promise<unknown>;
 	copy(from: string, to: string): Promise<unknown>;
 	/** undoable delete: back up (if small enough) then recycle. Absent = no undo at all. */
-	trash?(path: string, root: string): Promise<{ backup: string | null; recycled: boolean }>;
+	trash?(path: string, root: string, keep?: boolean): Promise<{ backup: string | null; recycled: boolean; kept?: boolean }>;
 	/** put a trashed entry back; must refuse rather than overwrite. */
 	restore?(from: string, to: string): Promise<void>;
 	/** whether the two above actually work. Lets a caller pass unconditional closures and report
@@ -84,6 +84,8 @@ export class TreeOps {
 			const path = joinPath(parentDir, finalName);
 			const isTex = fsType === 'file' && finalName.toLowerCase().endsWith('.tex');
 			const content = !isInclude && isTex && this.deps.wantsStarter() ? createStarterLatex() : '';
+			// making a folder succeeds over one already there, which the tree may not show (.github)
+			if (fsType === 'dir' && (await this.deps.stat(path)).exists) throw new Error('EEXIST');
 			await this.deps.create(path, fsType, content);
 			// insert the \input into the current doc BEFORE switching away (the switch flushes its save)
 			if (isInclude && !this.deps.insertIncludeAtCursor(path)) {
@@ -240,16 +242,28 @@ export class TreeOps {
 	// Bytes come from the drag/clipboard payload, so no OS paths are involved.
 	import = async (items: { relPath: string; file: File }[], targetDir: string) => {
 		const written: string[] = [];
+		const replaced: { original: string; trashed: string }[] = [];
 		try {
 			for (const item of items) {
 				const sep = targetDir.includes('\\') ? '\\' : '/';
 				const rel = item.relPath.split('/').join(sep);
 				// a clashing top-level name gets a numbered variant instead of overwriting;
-				// nested paths (folder drops) merge like an OS copy would
-				const dest = rel.includes(sep) ? targetDir.replace(/[\\/]+$/, '') + sep + rel : await this.uniqueDest(targetDir, rel);
+				// nested paths (folder drops) merge, and a file they land on is replaced as a drop replaces
+				const nested = rel.includes(sep);
+				const dest = nested ? targetDir.replace(/[\\/]+$/, '') + sep + rel : await this.uniqueDest(targetDir, rel);
+				if (nested && (await this.deps.stat(dest)).exists) {
+					if (!(await this.deps.confirmReplace(basename(dest)))) continue;
+					// a guest's delete and upload race to the host, which overwrites on its own
+					if (this.undoable) {
+						this.#detach(dest);
+						const { backup } = await this.#trash(dest);
+						if (backup) replaced.push({ original: dest, trashed: backup });
+					}
+				}
 				await this.deps.writeBinary(dest, item.file);
 				written.push(dest);
 			}
+			if (!written.length) return;
 			toaster.success({
 				title:
 					written.length === 1
@@ -261,7 +275,7 @@ export class TreeOps {
 		} finally {
 			// record whatever DID land, even on a partial failure, so a half-finished import is still
 			// one keystroke away from being cleaned up
-			if (written.length) this.#recordAdditions(written, m.filehistory_op_import({ count: written.length }));
+			if (written.length) this.#recordAdditions(written, m.filehistory_op_import({ count: written.length }), replaced);
 			await this.deps.refreshTree();
 		}
 	};
@@ -331,15 +345,17 @@ export class TreeOps {
 		visualDocCache.rename(from, to);
 		this.deps.afterPathMoved?.(from, to);
 		const active = activeFilePath.current;
-		const sep = from.includes('\\') ? '\\' : '/';
-		if (active === from) activeFilePath.current = to;
-		else if (active && active.startsWith(from + sep)) activeFilePath.current = to + active.slice(from.length);
+		function under(p: string, dir: string) {
+			return p.replace(/\\/g, '/').startsWith(dir.replace(/\\/g, '/') + '/');
+		}
+		if (active && samePath(active, from)) activeFilePath.current = to;
+		else if (active && under(active, from)) activeFilePath.current = to + active.slice(from.length);
 		// the main-file pointer follows too: compile, draft mode and the typst preview all target
 		// it, and a rename that left it on the dead path failed every lane with no way to recover
 		// short of re-picking. Covers the file itself and a main inside a renamed folder.
 		const main = mainFile.current;
 		if (main && samePath(main, from)) this.deps.retargetMainFile?.(to);
-		else if (main && main.startsWith(from + sep)) this.deps.retargetMainFile?.(to + main.slice(from.length));
+		else if (main && under(main, from)) this.deps.retargetMainFile?.(to + main.slice(from.length));
 	}
 
 	/** delete one entry, backing it up first when that is possible. */
@@ -428,9 +444,10 @@ export class TreeOps {
 	 * paste can be gone by then (another window closed, the OS clipboard moved on), and the bytes of
 	 * an import only ever existed in a drop payload.
 	 */
-	#recordAdditions(paths: string[], label: string): void {
+	#recordAdditions(paths: string[], label: string, replaced: { original: string; trashed: string }[] = []): void {
 		if (!this.undoable || !paths.length) return;
 		let live = paths.map((p) => ({ original: p, trashed: '' }));
+		let gone = [...replaced];
 		this.history.record({
 			label,
 			undo: async () => {
@@ -443,9 +460,17 @@ export class TreeOps {
 					if (backup) next.push({ original: p.original, trashed: backup });
 				}
 				live = next;
+				for (const r of gone) await this.deps.restore!(r.trashed, r.original);
 				await this.deps.refreshTree();
 			},
 			redo: async () => {
+				const again: { original: string; trashed: string }[] = [];
+				for (const r of gone) {
+					this.#detach(r.original);
+					const { backup } = await this.#trash(r.original);
+					again.push(backup ? { original: r.original, trashed: backup } : r);
+				}
+				gone = again;
 				for (const p of [...live].reverse()) await this.deps.restore!(p.trashed, p.original);
 				await this.deps.refreshTree();
 			}

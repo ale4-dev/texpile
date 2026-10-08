@@ -5,20 +5,43 @@ import { printRaw } from '@unified-latex/unified-latex-util-print-raw';
 import { buildNode, type PmNode, type ConversionOptions } from '../builders';
 import { convertNodesToBlocks } from '../converter';
 import { isBlankCellNode } from './tableConvert';
-import { envArgsRawSource } from './origCapture';
+import { capture, envArgsRawSource, startOf } from './origCapture';
+
+// the keys of the lists being converted, innermost last
+const openLists: string[] = [];
+
+/** the source environment its items came from, which they keep through edits: its kind and text, under the lists around it */
+function listKey(env: Environment, kind: string): string {
+	const text = printRaw(env);
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
+	const own = `${kind}.${(hash >>> 0).toString(36)}`;
+	const around = openLists[openLists.length - 1];
+	return around ? `${around}/${own}` : own;
+}
 
 export function createList(env: Environment, kind: 'bullet' | 'ordered', options: ConversionOptions): PmNode[] {
+	const envKey = listKey(env, kind);
+	openLists.push(envKey);
+	try {
+		return listItems(env, kind, options, envKey);
+	} finally {
+		openLists.pop();
+	}
+}
+
+function listItems(env: Environment, kind: 'bullet' | 'ordered', options: ConversionOptions, envKey: string): PmNode[] {
 	const result: PmNode[] = [];
 	let currentItemContent: Node[] = [];
 	let foundFirstItem = false;
 
 	// content before the first \item (usually whitespace, sometimes real setup like
 	// \setlength\itemsep{0pt}) has nowhere to live in the one-list-node-per-item model; carry it
-	// verbatim as the first emitted node's preBody rather than silently dropping it.
+	// verbatim as every item's preBody rather than silently dropping it.
 	const firstItemIndex = env.content.findIndex((n) => n.type === 'macro' && (n as Macro).content === 'item');
 	const preItemContent = firstItemIndex > 0 ? env.content.slice(0, firstItemIndex) : [];
 	const preBody = preItemContent.some((n) => !isBlankCellNode(n)) ? printRaw(preItemContent).trim() : null;
-	// enumitem options ([resume], [label=(\alph*)], [noitemsep]) ride on the first node too
+	// enumitem options ([resume], [label=(\alph*)], [noitemsep]) ride on every item too
 	const envArgs = env.args && env.args.length ? (envArgsRawSource(env) ?? printRaw(env.args)) : null;
 	const envName = env.env === 'description' ? 'description' : null;
 	// the raw [label] of the item being built, re-emitted as written (the bold text below is
@@ -30,9 +53,10 @@ export function createList(env: Environment, kind: 'bullet' | 'ordered', options
 			order: kind === 'ordered' ? 1 : null,
 			checked: null,
 			collapsed: false,
-			preBody: result.length === 0 ? preBody : null,
-			envArgs: result.length === 0 ? envArgs : null,
-			envName: result.length === 0 ? envName : null,
+			preBody,
+			envArgs,
+			envName,
+			envKey,
 			itemLabel,
 			...extra
 		};
@@ -67,13 +91,18 @@ export function createList(env: Environment, kind: 'bullet' | 'ordered', options
 						content: 'texpileItemLabel',
 						args: [{ type: 'argument', content: optionalArg.content, openMark: '{', closeMark: '}' }]
 					};
-					currentItemContent.push({ type: 'group', content: [syntheticLabel] });
+					// the group stands where the label's bytes are, so the item's first block spans them: its
+					// leaf runs do, and a block whose runs lie before it is not believed (see soundLeaves)
+					const placed = optionalArg.content.filter((n) => n.position);
+					const position =
+						placed.length > 0 ? { start: placed[0].position!.start, end: placed[placed.length - 1].position!.end } : undefined;
+					currentItemContent.push({ type: 'group', content: [syntheticLabel], ...(position ? { position } : {}) });
 				}
 
 				// the parser puts the item body in an argument with no delimiters
 				for (const arg of macro.args) {
 					if (arg.openMark === '' && arg.closeMark === '' && arg.content.length > 0) {
-						currentItemContent.push(...arg.content);
+						currentItemContent.push(...(optionalArg ? bodyAfterLabel(optionalArg.content, arg.content) : arg.content));
 					}
 				}
 			}
@@ -95,6 +124,35 @@ export function createList(env: Environment, kind: 'bullet' | 'ordered', options
 	}
 
 	return result;
+}
+
+/**
+ * The parser puts a whitespace node between an item's `[label]` and its body whether or not the
+ * file has any: with none, the body starts right after the bracket and the node goes; with some,
+ * the node takes the bytes, so the space the editor shows is the file's and edits to it reach it
+ */
+function bodyAfterLabel(label: Node[], body: Node[]): Node[] {
+	const first = body[0];
+	const src = capture.rawSource;
+	if (!src || first.type !== 'whitespace' || first.position) return body;
+	let labelEnd = -1;
+	for (const n of label) {
+		const end = (n as { position?: { end?: { offset?: number } } }).position?.end?.offset;
+		if (end != null) labelEnd = Math.max(labelEnd, end);
+	}
+	const close = labelEnd < 0 ? -1 : src.indexOf(']', labelEnd);
+	const bodyStart = body
+		.slice(1)
+		.map(startOf)
+		.find((at) => at != null);
+	if (close < 0 || bodyStart == null || bodyStart < close + 1) return body;
+	const gap = src.slice(close + 1, bodyStart);
+	if (gap === '') return body.slice(1);
+	if (!/^\s+$/.test(gap)) return body;
+	return [
+		{ ...first, position: { start: { offset: close + 1, line: 0, column: 0 }, end: { offset: bodyStart, line: 0, column: 0 } } } as Node,
+		...body.slice(1)
+	];
 }
 
 export function createListItem(content: Node[], options: ConversionOptions): PmNode[] {

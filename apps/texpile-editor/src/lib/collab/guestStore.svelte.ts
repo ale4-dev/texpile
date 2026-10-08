@@ -8,12 +8,14 @@ import { isValidShareCode } from './e2e/shareCode';
 import { CollabSession, manifestOf, locksOf, metaOf, textOf, type PeerInfo, type ManifestEntry } from './session';
 import { GhostDirs } from './guestGhostDirs';
 import { GuestFileCache } from './guestFileCache';
-import { guestColor } from './guestColors';
+import { presenceIdentity } from './identity';
 import { GuestSyncRequests } from './guestSyncRequests';
+import { LocalFork } from './localFork';
 import { RelayTransport } from './transport';
+import { forgetJoinCode, rememberJoinCode } from './joinLink.svelte';
+import { commentLogOf } from './sharedComments';
 import type { SharedCompileIntel } from './editSession';
 import type { ControlPayload, PreviewPayload } from './protocol';
-import type { CommentEvent } from '$lib/comments/log';
 import { settings } from '$lib/settings';
 
 export type GuestFile = {
@@ -45,6 +47,8 @@ class GuestCollabController {
 	/** why the session ended, for the goodbye screen. */
 	endedReason = $state<'host-ended' | 'relay-closed' | 'quota' | 'error' | ''>('');
 	joinError = $state('');
+	/** the version a host-outdated or app-outdated join error names */
+	joinErrorVersion = $state('');
 	hostOnline = $state(true);
 	files = $state<GuestFile[]>([]);
 	peers = $state<PeerInfo[]>([]);
@@ -60,9 +64,6 @@ class GuestCollabController {
 	typstPreviewOffered = $state(false);
 	/** the raw preview page the host shipped (blob 'typst-page'); null until asked for and answered */
 	previewPage = $state<string | null>(null);
-	/** WorkspaceView wires these to its comment controller. */
-	onCommentEvent: ((event: CommentEvent) => void) | null = null;
-	onCommentLog: ((log: string) => void) | null = null;
 	/** the remote preview pane wires this; host-origin preview frames land here */
 	onPreviewFrame: ((p: PreviewPayload) => void) | null = null;
 	/** WorkspaceView wires this: this guest clicked the streamed preview and the host's tinymist
@@ -79,6 +80,8 @@ class GuestCollabController {
 	private pdfMaster: Uint8Array | null = null;
 
 	private doc: Y.Doc | null = null;
+	/** where the visual editor's changes are made before they join the shared doc */
+	fork: LocalFork | null = null;
 	private session: CollabSession | null = null;
 	private transport: RelayTransport | null = null;
 	private seenPdfRev = 0;
@@ -111,27 +114,27 @@ class GuestCollabController {
 			return;
 		}
 		this.status = 'joining';
-		this.selfName = name.trim() || 'Guest';
+		rememberJoinCode(code);
+		this.selfName = presenceIdentity('guest', 0, name).name;
 		try {
 			const keys = await deriveSessionKeys(code);
 			const relayUrl = settings.current.collabRelayUrl.trim();
 			const doc = new Y.Doc();
+			const fork = new LocalFork(doc);
 			const transport = new RelayTransport(relayUrl, keys.roomId, keys.joinProof);
 			const session = new CollabSession({
 				doc,
 				transport,
 				key: keys.contentKey,
 				role: 'guest',
-				user: { name: name.trim() || 'Guest', color: guestColor(doc.clientID) },
+				user: presenceIdentity('guest', doc.clientID, name),
 				events: {
 					onPeersChange: (peers) => {
 						this.peers = [...peers.values()];
 						this.noteHost();
 					},
 					onBlob: (blobName, rev, bytes) => {
-						if (blobName === 'comments') {
-							this.onCommentLog?.(new TextDecoder().decode(bytes));
-						} else if (blobName === 'typst-page') {
+						if (blobName === 'typst-page') {
 							this.previewPage = new TextDecoder().decode(bytes);
 						} else if (blobName === 'pdf') {
 							this.seenPdfRev = Math.max(this.seenPdfRev, rev);
@@ -143,8 +146,7 @@ class GuestCollabController {
 					},
 					onPreview: (p) => this.onPreviewFrame?.(p),
 					onControl: (payload) => {
-						if (payload.kind === 'comment-event') this.onCommentEvent?.(payload.event);
-						else if (payload.kind === 'synctex-inverse-result' || payload.kind === 'synctex-forward-result') {
+						if (payload.kind === 'synctex-inverse-result' || payload.kind === 'synctex-forward-result') {
 							this.syncRequests.resolve(payload);
 						} else if (payload.kind === 'typst-jump') this.onTypstJump?.(payload);
 						else if (payload.kind === 'lsp-result' || payload.kind === 'lsp-notify') {
@@ -161,12 +163,19 @@ class GuestCollabController {
 						} else if (s === 'host-gone') this.hostOnline = false;
 						else if (s === 'host-back') this.hostOnline = true;
 					},
-					onSessionEnd: (reason) => {
+					onSessionEnd: (reason, detail) => {
 						this.clearJoinTimer();
 						// a join-time rejection (unknown code, full room) is a join failure, not a
 						// mid-session end — surface it on the join form instead of the goodbye screen
-						if (reason === 'no-session' || reason === 'full') {
-							this.joinError = reason === 'full' ? 'session-full' : 'no-session';
+						if (
+							reason === 'no-session' ||
+							reason === 'full' ||
+							reason === 'host-outdated' ||
+							reason === 'guest-outdated' ||
+							reason === 'app-outdated'
+						) {
+							this.joinError = reason === 'full' ? 'session-full' : reason;
+							this.joinErrorVersion = detail ?? '';
 							this.teardown(false);
 							this.status = 'idle';
 						} else {
@@ -184,8 +193,11 @@ class GuestCollabController {
 			metaOf(doc).observe(() => this.onMeta());
 
 			this.doc = doc;
+			this.fork = fork;
 			this.session = session;
 			this.transport = transport;
+			session.setSuggesting(this.suggesting);
+			session.setAuthor(this.author);
 			transport.connect();
 
 			// belt-and-braces: the relay now closes with a specific code for a bad join, but if it's
@@ -197,6 +209,7 @@ class GuestCollabController {
 				}
 			}, 8000);
 		} catch (e) {
+			forgetJoinCode();
 			this.status = 'idle';
 			this.joinError = e instanceof Error ? e.message : String(e);
 		}
@@ -255,20 +268,9 @@ class GuestCollabController {
 		this.session?.sendControl({ kind: 'file-op', op, from, to });
 	}
 
-	/**
-	 * A review-comment event of ours, up to the host.
-	 *
-	 * Sent, not applied here first - the host owns the log and echoes it back to everyone, so a
-	 * guest's own comment reaches it the same way anyone else's does. It also means an event made
-	 * while the host is away is simply lost rather than silently local-only.
-	 */
-	sendComment(event: CommentEvent): void {
-		this.session?.sendControl({ kind: 'comment-event', event });
-	}
-
-	/** ask for the whole log; the host answers on the blob channel. */
-	requestComments(): void {
-		this.session?.requestBlob('comments');
+	/** the session's comment log, which the host keeps on its disk */
+	get sharedComments(): Y.Array<string> | null {
+		return this.doc ? commentLogOf(this.doc) : null;
 	}
 
 	/**
@@ -316,6 +318,34 @@ class GuestCollabController {
 	/** hand the viewer a fresh, intact copy (call before re-showing a PDF pane that was closed). */
 	refreshPdfView(): void {
 		if (this.pdfMaster) this.pdf = this.pdfMaster.slice().buffer;
+	}
+
+	/** the host records suggestions for its guests; a host from before that advertises no mode */
+	get hostRecords(): boolean {
+		return this.peers.some((p) => p.role === 'host' && p.suggesting !== undefined);
+	}
+
+	private suggesting = false;
+
+	/** this guest's mode, which the host records its edits in */
+	setSuggesting(on: boolean): void {
+		this.suggesting = on;
+		this.session?.setSuggesting(on);
+	}
+
+	private author = '';
+
+	/** the name this guest signs comments with, which the host records its suggestions under */
+	setAuthor(name: string): void {
+		this.author = name;
+		this.session?.setAuthor(name);
+	}
+
+	/** who made a change this guest received and in which mode, or null for its own */
+	remoteAuthorOf(origin: unknown): ReturnType<CollabSession['authorOf']> | null {
+		const session = this.session;
+		const from = session?.senderOf(origin) ?? null;
+		return session && from !== null ? session.authorOf(from) : null;
 	}
 
 	ytextFor(rel: string): Y.Text | null {
@@ -383,6 +413,13 @@ class GuestCollabController {
 		}
 	}
 
+	refreshIdentity(): void {
+		if (!this.session) return;
+		const me = presenceIdentity('guest', this.doc?.clientID ?? 0);
+		this.selfName = me.name;
+		this.session.setIdentity(me);
+	}
+
 	/** back to a clean slate (from the goodbye screen). */
 	reset(): void {
 		this.teardown(true);
@@ -392,6 +429,7 @@ class GuestCollabController {
 	}
 
 	private teardown(destroySession: boolean): void {
+		forgetJoinCode();
 		this.clearJoinTimer();
 		this.hostSeen = false;
 		this.fileWatchers.clear();
@@ -403,6 +441,8 @@ class GuestCollabController {
 		this.session = null;
 		this.transport = null;
 		this.doc = null;
+		this.fork?.destroy();
+		this.fork = null;
 		this.files = [];
 		this.peers = [];
 		this.pdf = null;

@@ -8,13 +8,15 @@ import { stopWorkspaceWatch } from '../fs/workspaceWatch';
 import { orderForPlatform } from '../ipc/messageBoxOrder';
 import { forgetWindow } from '../mcp/windowState';
 import { forgetWindowChrome, watchWindowState } from '../windowChrome';
+import { applySavedGlass, GLASS_AT_CREATION } from '../windowGlass';
 import { releaseDraftOwnerFor } from '../ipc/draftIpc';
 import { windowRoots, pendingOpens, pendingCloses, isQuitting, cancelQuit, persistOpenFolders, type PendingOpen } from './windowRegistry';
 
 export function chromeColors(): { height: number; color: string; symbolColor: string; background: string } {
 	const s = readSettings();
+	// eight digits too: a transparent window saves its button strip as #00000000
 	function hex(v: unknown, fallback: string): string {
-		return typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? v : fallback;
+		return typeof v === 'string' && /^#(?:[0-9a-f]{6}|[0-9a-f]{8})$/i.test(v) ? v : fallback;
 	}
 	const h = Number(s.chromeHeight);
 	return {
@@ -43,6 +45,7 @@ export function createWindow(url: string, pending?: PendingOpen): BrowserWindow 
 		title: 'Texpile',
 		icon: path.join(__dirname, '..', 'icon.png'),
 		backgroundColor: chromeColors().background,
+		...GLASS_AT_CREATION,
 		// Custom title bar (TitleBar.svelte). Frameless on Windows/Linux so the menus, the app icon
 		// and the window buttons share one row instead of costing two - VS Code's layout, and the
 		// reason its chrome is a third the height of ours was.
@@ -84,6 +87,7 @@ export function createWindow(url: string, pending?: PendingOpen): BrowserWindow 
 			preload: path.join(__dirname, 'preload.js'),
 			contextIsolation: true,
 			nodeIntegration: false,
+			spellcheck: false,
 			// explicit (it IS the default): the preload/bridges must never reach any subframe;
 			// the renderer CSP forbids frames entirely (frame-src 'none'), this backs that up
 			nodeIntegrationInSubFrames: false,
@@ -95,6 +99,7 @@ export function createWindow(url: string, pending?: PendingOpen): BrowserWindow 
 	// capture now: webContents is gone by the time 'closed' fires
 	const wcId = win.webContents.id;
 	watchWindowState(win); // feeds the title bar's maximise / restore state
+	applySavedGlass(win, chromeColors().background);
 	windowRoots.set(wcId, null);
 	if (pending) pendingOpens.set(wcId, pending);
 	win.loadURL(url);
@@ -129,7 +134,8 @@ export function createWindow(url: string, pending?: PendingOpen): BrowserWindow 
 					titleBarStyle: 'default',
 					autoHideMenuBar: true,
 					icon: path.join(__dirname, '..', 'icon.png'),
-					backgroundColor: chromeColors().background
+					backgroundColor: chromeColors().background,
+					...GLASS_AT_CREATION
 				}
 			};
 		}
@@ -142,6 +148,7 @@ export function createWindow(url: string, pending?: PendingOpen): BrowserWindow 
 	win.webContents.on('did-create-window', (child) => {
 		const z = Number(readSettings().uiZoom);
 		if (Number.isFinite(z) && z > 0) child.webContents.setZoomFactor(z);
+		applySavedGlass(child, chromeColors().background);
 		child.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 		child.webContents.on('will-navigate', (e) => e.preventDefault());
 		child.webContents.on('will-frame-navigate', (event) => {
@@ -225,7 +232,7 @@ export function createWindow(url: string, pending?: PendingOpen): BrowserWindow 
 			.then(({ response }) => {
 				if (win.isDestroyed()) return;
 				if (order.original[response] !== 0) return win.destroy();
-				if (root) pendingOpens.set(wcId, { kind: 'folder', path: root.raw });
+				if (root) pendingOpens.set(wcId, { kind: root.file ? 'file' : 'folder', path: root.raw });
 				win.webContents.reload();
 			});
 	});

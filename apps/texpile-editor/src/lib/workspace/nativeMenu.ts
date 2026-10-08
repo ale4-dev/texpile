@@ -62,8 +62,15 @@ export type MenuStateInput = {
 	canNewFile: boolean;
 	/** the compile target is Typst: File > New offers .typ instead of .tex/.cls/.sty */
 	typstProject: boolean;
+	/** File > Export… for a Typst main file */
+	canExportTypst: boolean;
 	canInsertImage: boolean;
 	canOpenFolder: boolean;
+	/** File > Save as template: a host in the desktop app */
+	canSaveTemplate: boolean;
+	canClone?: boolean;
+	canLocalHistory?: boolean;
+	fileOpen?: boolean;
 	canTutorial: boolean;
 	recentFolders: string[];
 };
@@ -90,11 +97,17 @@ function labels(tool: 'latexindent' | 'typstyle'): Record<string, string> {
 		newCls: m.menubar_new_cls(),
 		newSty: m.menubar_new_sty(),
 		openFolder: m.menubar_open_new_folder(),
+		clone: m.menubar_clone_repository(),
+		localHistory: m.history_menu_open(),
+		restoreDeleted: m.history_menu_restore_deleted(),
 		recent: m.menubar_recent_heading(),
 		newWindow: m.menubar_new_window(),
 		openFolderNewWindow: m.menubar_open_folder_new_window(),
+		closeWindow: m.menubar_close_window(),
 		share: m.menubar_share_session(),
 		save: m.menubar_save(),
+		saveAsTemplate: m.menubar_save_as_template(),
+		exportTypst: m.typst_export_menu(),
 		closeWorkspace: m.menubar_close_workspace(),
 		preferences: m.menubar_preferences(),
 		palette: m.palette_open(),
@@ -113,6 +126,31 @@ function labels(tool: 'latexindent' | 'typstyle'): Record<string, string> {
 		image: m.menubar_insert_image(),
 		table: m.menubar_insert_table(),
 		citation: m.menubar_insert_citation(),
+		crossRef: m.menubar_insert_cross_reference(),
+		footnote: m.drawn_chip_footnote_label(),
+		label: m.menubar_insert_label(),
+		pageBreak: m.drawn_chip_page_label(),
+		verticalSpace: m.drawn_chip_space_vertical(),
+		horizontalSpace: m.drawn_chip_space_horizontal(),
+		abstract: m.blockmenu_abstract(),
+		appendix: m.drawn_chip_appendix_title(),
+		bibliography: m.drawn_chip_bib_title(),
+		includeFile: m.menubar_insert_include_file(),
+		sourceComment: m.menubar_insert_source_comment(),
+		hrefLink: m.drawn_chip_hyperref_title(),
+		references: m.menubar_insert_references(),
+		breaksSpaces: m.menubar_insert_breaks_spaces(),
+		symbolPicker: m.menubar_insert_symbol_picker(),
+		documentParts: m.menubar_insert_document_parts(),
+		latexSource: m.menubar_insert_latex_source(),
+		comment: m.drawn_chip_comment_title(),
+		textStyle: m.menubar_format_text_style(),
+		smallCaps: m.drawn_chip_style_small_caps(),
+		sansSerif: m.drawn_chip_style_sans_serif(),
+		slanted: m.drawn_chip_style_slanted(),
+		textSize: m.drawn_chip_style_size(),
+		framed: m.drawn_chip_style_framed(),
+		together: m.drawn_chip_style_together(),
 		link: m.menubar_insert_link(),
 		codeBlock: m.menubar_insert_code_block(),
 		hrule: m.menubar_insert_hrule(),
@@ -130,6 +168,7 @@ function labels(tool: 'latexindent' | 'typstyle'): Record<string, string> {
 		formatDocument: m.menubar_format_document({ tool }),
 		checkSpelling: m.menubar_check_spelling(),
 		dictionary: m.menubar_edit_dictionary(),
+		spellingSettings: m.menubar_spelling_settings(),
 		compile: m.menubar_terminal_compile(),
 		configureCompile: m.menubar_configure_compile_command(),
 		newTerminal: m.menubar_new_terminal(),
@@ -139,7 +178,7 @@ function labels(tool: 'latexindent' | 'typstyle'): Record<string, string> {
 		whatsNew: m.whatsnew_menu_label(),
 		documentation: m.menubar_documentation(),
 		discord: m.menubar_join_discord(),
-		support: m.menubar_contact_support(),
+		report: m.menubar_report_problem(),
 		updates: m.menubar_check_for_updates(),
 		// Roles carry a label of Electron's own, hardcoded English in a table inside Electron, and
 		// macOS never gets asked for its translation - a role only registers the menu, it does not

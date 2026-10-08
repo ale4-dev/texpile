@@ -1,90 +1,31 @@
-// Format-neutral doc assembly: verbatim `orig` substitution over top-level blocks, shared by the
-// LaTeX, Markdown and Typst serializers. Knows nothing about any syntax — it deals in opaque
-// source slices (orig.latex), parse-time normal forms (orig.norm), seq chains and inter-block gaps.
-import { Fragment } from 'prosemirror-model';
+// Format-neutral doc assembly: verbatim substitution over top-level blocks, shared by the LaTeX,
+// Markdown and Typst serializers. Knows nothing about any syntax — it deals in what the parse
+// remembers of each block (its bytes, the gap before them, its place in the parse's order) and in
+// the deterministic text the dialect writes for a block the parse no longer knows.
+//
+// The round trip is a lens: the parse is `get`, this assembly is `put`, and `put` reads the old
+// file as well as the document, never the document alone. Two laws hold it together:
+//   put(file, get(file)) == file          an untouched document writes its file back byte for byte
+//   get(put(file, doc)) ~ doc             what was written reads back as what was shown
+// The first holds by construction: every block the parse still knows is its bytes, joined on the
+// file's own gaps. The second is checked before a save (see workspace/verifiedSerialize.ts) on
+// what a reader sees, since the bytes may legitimately differ from what the dialect would write;
+// a block that fails it is written whole, and nothing untouched is ever regenerated for it.
 import type { Node } from 'prosemirror-model';
 import type { Ctx } from './types';
+import type { Segment, SourceMap } from '$lib/editor/visual/sourceSpans';
+import type { BlockOrigin } from '$lib/editor/visual/parseOrigins';
+import { createDocAssembly } from './docAssembly';
+import { createLeafSplice } from './leafSplice';
+import { createMemberSplice } from './memberSplice';
+import { createSegmentSplice } from './segmentSplice';
+import { createVerbatimParts } from './verbatimParts';
 
-/**
- * Fills orig.norm on top-level blocks: the block's deterministic serialization at parse time.
- * The serializer re-emits the original orig.latex slice only while the block still serializes
- * to exactly norm, so any edit falls back to regeneration. A block that fails to serialize
- * keeps norm null and always regenerates.
- */
-export function fillOrigNorms(doc: Node, serializeNode: (node: Node, ctx: Ctx) => string): Node {
-	let changed = false;
-	const kids: Node[] = [];
-	for (let i = 0; i < doc.childCount; i++) {
-		const child = doc.child(i);
-		const orig = (child.attrs as { orig?: { latex?: unknown; norm?: unknown } | null }).orig;
-		if (orig && typeof orig.latex === 'string' && orig.norm == null) {
-			try {
-				const norm = serializeNode(child, {
-					parent: doc,
-					index: i,
-					isLastChild: i === doc.childCount - 1,
-					inTableCell: false
-				});
-				kids.push(child.type.create({ ...child.attrs, orig: { ...orig, norm } }, child.content, child.marks));
-				changed = true;
-				continue;
-			} catch {
-				// leave norm unset, the safe direction: this block always regenerates
-			}
-		}
-		kids.push(child);
-	}
-	return changed ? doc.copy(Fragment.fromArray(kids)) : doc;
-}
+export { blankLineAt, follows, isLastOfParse } from './blockAssemblyUtils';
 
-// verbatim source preservation: the `orig` attr the importer stamps on top-level blocks
-// (see ORIG_BLOCKS in schema.ts). `latex` is historically named; it holds the original source
-// slice in whichever dialect the file is.
-type OrigAttr = {
-	latex?: string | null;
-	norm?: string | null;
-	pre?: string | null;
-	seq?: number | null;
-	group?: number | null;
-	groupIndex?: number | null;
-	groupSize?: number | null;
-	/** Body-relative source offset of the block's slice. not read here; positional consumers only. */
-	start?: number | null;
-};
-
-function origOf(node: Node): OrigAttr | null {
-	const o = (node.attrs as { orig?: unknown }).orig;
-	return o && typeof o === 'object' ? (o as OrigAttr) : null;
-}
-
-/**
- * How many children starting at `i` may be emitted verbatim: 1 for a plain block whose current
- * serialization still equals its parse-time `norm`; the whole group for a multi-block source
- * unit (one itemize is N list nodes), but only when EVERY member is present, in pristine order
- * and unchanged, so a deleted/edited item can never be resurrected. 0 means regenerate.
- */
-function verbatimRun(doc: Node, parts: string[], i: number): number {
-	const orig = origOf(doc.child(i));
-	if (!orig || typeof orig.latex !== 'string' || typeof orig.norm !== 'string') return 0;
-	if (orig.group == null) return parts[i] === orig.norm ? 1 : 0;
-	const size = orig.groupSize;
-	if (orig.groupIndex !== 0 || typeof size !== 'number' || size < 1 || i + size > doc.childCount) return 0;
-	for (let k = 0; k < size; k++) {
-		const o = origOf(doc.child(i + k));
-		if (!o || o.group !== orig.group || o.groupIndex !== k || typeof o.norm !== 'string' || parts[i + k] !== o.norm) return 0;
-	}
-	return size;
-}
-
-type DocTail = {
-	text?: string | null;
-	afterSeq?: number | null;
-};
-
-function docTailOf(doc: Node): DocTail | null {
-	const t = (doc.attrs as { docTail?: unknown }).docTail;
-	return t && typeof t === 'object' ? (t as DocTail) : null;
-}
+/** a top-level block as the dialect hooks see it: the node, what the parse still knows it as, and
+ *  what it most likely replaced when the parse no longer knows it */
+export type Neighbour = { node: Node; origin: BlockOrigin | null; was: BlockOrigin | null };
 
 export type DocSerializeResult = {
 	text: string;
@@ -93,24 +34,84 @@ export type DocSerializeResult = {
 	leadProtected: boolean;
 	/** Same, for the trailing edge. */
 	tailProtected: boolean;
+	/** The gap the body had at that edge, when the block standing there is still the one that stood
+	 *  there at parse time. An EDITED edge block loses its protection but not its gap, and a caller
+	 *  that falls back to a separator of its own would drop the blank line that was in the file. */
+	leadGap: string | null;
+	tailGap: string | null;
+	trailingRegenerated: Neighbour | null;
+	/** where every run and block of the doc landed in `text` */
+	map: SourceMap;
 };
-
-function neighborKey(sib: Node | null): string {
-	if (!sib) return '';
-	if (sib.type.name !== 'list') return sib.type.name;
-	// the LaTeX list handler coalesces only within one source group (see sameSourceList)
-	const group = (sib.attrs.orig as { group?: number | null } | null)?.group;
-	return `list:${String(sib.attrs.kind ?? '')}:${group == null ? '' : String(group)}`;
-}
 
 export type BlockAssemblyOptions = {
 	/**
 	 * The separator between two adjacent emissions when at least one of them regenerated, or
 	 * they are pristine but no longer source-adjacent. `contiguous` says whether `next` still
-	 * directly followed `prev` in the source (consecutive seq). null keeps the default: a hard
-	 * blank line.
+	 * directly followed `prev` in the source. `before` is the end of what was written so far (its
+	 * last 64 characters at least). null keeps the default: a hard blank line.
 	 */
-	boundary?: (prev: Node, next: Node, contiguous: boolean) => string | null;
+	boundary?: (prev: Neighbour, next: Neighbour, contiguous: boolean, before: string) => string | null;
+	/** the text of the last block written, before a blank line goes after it: what a paragraph's
+	 *  end should be once something follows */
+	beforeBreak?: (text: string, last: Neighbour, next: Neighbour) => string;
+	/** the leaf runs of a block the dialect regenerated, against that block's own text, positions
+	 *  relative to the block node; null when they could not be told apart */
+	mapLeaves?: (node: Node, ctx: Ctx, text: string) => Segment[] | null;
+	/** in a shadow run, what stands for a child written out as its bytes inside a regenerated
+	 *  block; the bytes themselves otherwise */
+	shadowChunk?: (node: Node, bytes: string) => string;
+	/** whether a container's bytes around its children still hold for it as it is now; false writes it whole */
+	frameHolds?: (node: Node, parsed: Node) => boolean;
+	/** whether a changed child may be rendered on its own inside its container's frame; false
+	 *  for one the container's handler renders together with its frame (an item's label) */
+	spliceChild?: (parent: Node, index: number, was: Node | null) => boolean;
+	/** what goes before every line but the first of a child written afresh inside its container's
+	 *  frame, told from the bytes the child had (`text`) and what stood on its first line before
+	 *  it (`head`: a list marker, a quote prefix, indentation); null or '' for nothing. Dialects
+	 *  whose blocks continue by indentation or a line prefix provide it */
+	continuation?: (parent: Node, text: string, head: string) => string | null;
+	/** what separates two children of `parent` when the file shows no gap to copy (a container that
+	 *  had one child): null for a blank line prefixed with `prefix`, the dialect's own otherwise (a
+	 *  \par between the paragraphs of a LaTeX table cell) */
+	childGap?: (parent: Node, prefix: string) => string | null;
+	/** the bytes a text leaf is written as, on its own, its marks left to the wrappers around
+	 *  it: the dialect's escaping for prose, the text itself inside a formula or a chip. Null
+	 *  when the leaf cannot be written on its own. `atStart` says the bytes begin the block's
+	 *  content, where a dialect's line-start markup binds */
+	leafBytes?: (leaf: Node, parent: Node, atStart: boolean, block: Node, ctx?: Ctx) => string | null;
+	/** inline `nodes` of a textblock, written as the dialect writes a run of inline content, with
+	 *  no block-level decoration; null when they cannot be written on their own (a comment chip,
+	 *  which owns its line) */
+	inlineBytes?: (block: Node, nodes: Node[], atStart: boolean, ctx: Ctx) => string | null;
+	/** the leaf runs of that text, positions relative to a block holding just those nodes; null
+	 *  when they could not be told apart */
+	mapInlineLeaves?: (block: Node, nodes: Node[], text: string, atStart: boolean, ctx: Ctx) => Segment[] | null;
+	/** the fresh `bytes` as they must be written between the file's bytes before them (`head`) and
+	 *  after them (`tail`), so no two of the three read as one (a LaTeX control word before a
+	 *  letter takes a space); `bytes` is empty where the change only took bytes out, and the two
+	 *  sides then meet; `gone` is what the change took out from between them, `parent` the node
+	 *  they are written in. Null for a seam the dialect cannot write, which gives up the splice and
+	 *  writes the block afresh */
+	keepApart?: (bytes: string, tail: string, head: string, gone: string, parent: Node) => string | null;
+	/** whether `text` ends on something that owns the rest of its line (a LaTeX comment), so
+	 *  what follows it must begin a line of its own */
+	endsLine?: (text: string) => boolean;
+	/** whether the dialect writes `parent`'s child at `index` as more of the construct before it (a
+	 *  LaTeX item joining the itemize above), so neither may be written as bytes that close or open it */
+	continues?: (parent: Node, index: number) => boolean;
+	/** whether the bytes the parse recorded for `parsed` read as that block wherever they are written:
+	 *  not a LaTeX item's labelled first paragraph, whose bytes close the label's bracket */
+	standsAlone?: (parsed: Node) => boolean;
+};
+
+/** how a dialect's own rendering of a container's children is joined */
+export type PartsOptions = {
+	/** join pristine neighbours on the bytes the file had between them, leaving '' for the parts
+	 *  folded into the one before; off for a dialect that prefixes every part itself */
+	join?: boolean;
+	/** children whose part must stay the dialect's own, whatever the parse knows */
+	keep?: (i: number) => boolean;
 };
 
 /**
@@ -118,113 +119,17 @@ export type BlockAssemblyOptions = {
  * cache is keyed by node identity, and the same node object must never resolve to another
  * dialect's cached text.
  *
- * Assembly semantics: a block still serializing to its parse-time norm re-emits its source
- * slice; pristine neighbours (consecutive seq) re-join on their original inter-block source
- * (`pre`); every verbatim/regenerated boundary gets a hard blank line so paragraphs can't merge
- * on re-parse, unless the dialect's `boundary` hook decides otherwise. with no orig attrs this
- * equals plain concatenation. also reproduces the body's leading/trailing gaps (they belong to
- * no node) and does the final trim, ONLY at edges that aren't verbatim-protected.
+ * Assembly semantics: a block the parse still knows re-emits the bytes it came from; pristine
+ * neighbours (consecutive in the parse) re-join on their original inter-block bytes; every
+ * verbatim/regenerated boundary gets a hard blank line so paragraphs can't merge on re-parse,
+ * unless the dialect's `boundary` hook decides otherwise. with no parse this equals plain
+ * concatenation. also reproduces the body's leading/trailing gaps (they belong to no node) and
+ * does the final trim, ONLY at edges that aren't verbatim-protected.
  */
 export function createBlockAssembly(serializeNode: (node: Node, ctx: Ctx) => string, options: BlockAssemblyOptions = {}) {
-	// per-block memo. PM nodes are immutable and structurally shared across transactions, so an
-	// untouched top-level block keeps its object identity keystroke to keystroke: serializing the
-	// whole doc becomes O(edited blocks), not O(doc). a block's output depends only on itself plus
-	// the neighbour facts handlers read via prevSibling/nextSibling (heading adjacency for
-	// paragraph, type+kind for list coalescing) — captured in `key`. if a handler ever reads more
-	// of Ctx at the top level, widen the key.
-	const blockCache = new WeakMap<Node, { key: string; text: string }>();
-
-	function serializeTopBlock(doc: Node, i: number, n: number): string {
-		const node = doc.child(i);
-		const key = neighborKey(i > 0 ? doc.child(i - 1) : null) + '>' + neighborKey(i < n - 1 ? doc.child(i + 1) : null);
-		const hit = blockCache.get(node);
-		if (hit && hit.key === key) return hit.text;
-		const text = serializeNode(node, { parent: doc, index: i, isLastChild: i === n - 1, inTableCell: false });
-		blockCache.set(node, { key, text });
-		return text;
-	}
-
-	function serializeDocChildrenDetailed(doc: Node): DocSerializeResult {
-		const n = doc.childCount;
-		const parts: string[] = [];
-		for (let i = 0; i < n; i++) {
-			parts.push(serializeTopBlock(doc, i, n));
-		}
-		let out = '';
-		// seq of the last verbatim-emitted child; null once anything regenerated lands in between.
-		// blocks serializing to '' (empty paragraphs) don't break the chain, so pristine neighbours
-		// separated by a since-emptied paragraph still re-join on their original whitespace.
-		let prevSeq: number | null = null;
-		// the last child that emitted anything, verbatim or not; what the boundary hook sees
-		let lastNode: Node | null = null;
-		let leadProtected = false;
-		let i = 0;
-		function dialectBoundary(next: Node): string | null {
-			if (!options.boundary || !lastNode) return null;
-			const a = origOf(lastNode)?.seq;
-			const b = origOf(next)?.seq;
-			return options.boundary(lastNode, next, typeof a === 'number' && b === a + 1);
-		}
-		function trimmedEnd(): string {
-			let end = out.length;
-			while (end > 0 && out[end - 1] === '\n') end--;
-			return out.slice(0, end);
-		}
-		while (i < n) {
-			const run = verbatimRun(doc, parts, i);
-			if (run > 0) {
-				const node = doc.child(i);
-				const orig = origOf(node)!;
-				const contiguous = prevSeq != null && orig.seq === prevSeq + 1;
-				if (out === '') {
-					// if the doc's first emission truly starts at pristine block 0, its `pre` IS the
-					// body's original leading gap; reproduce it before the generic trim can strip it.
-					if (orig.seq === 0 && typeof orig.pre === 'string') {
-						out = orig.pre + orig.latex!;
-						leadProtected = true;
-					} else {
-						out = orig.latex!;
-					}
-				} else if (contiguous && typeof orig.pre === 'string') {
-					out += orig.pre + orig.latex;
-				} else {
-					// hard boundary after regenerated output: exactly one blank line (a guaranteed
-					// parbreak; without it a verbatim paragraph could merge into its neighbour).
-					out = trimmedEnd() + (dialectBoundary(node) ?? '\n\n') + orig.latex;
-				}
-				const lastSeq = origOf(doc.child(i + run - 1))?.seq;
-				prevSeq = typeof lastSeq === 'number' ? lastSeq : null;
-				lastNode = doc.child(i + run - 1);
-				i += run;
-			} else {
-				if (parts[i] !== '') {
-					const node = doc.child(i);
-					const sep = out === '' ? null : dialectBoundary(node);
-					if (sep != null) out = trimmedEnd() + sep + parts[i].replace(/^\n+/, '');
-					else out += prevSeq != null ? '\n\n' + parts[i].replace(/^\n+/, '') : parts[i];
-					prevSeq = null;
-					lastNode = node;
-				}
-				i++;
-			}
-		}
-
-		// the trailing gap after the ORIGINAL last block belongs to no node; reproduce it iff the
-		// doc's actual last emission is still, unbroken, that same pristine block (seq match).
-		let tailProtected = false;
-		const docTail = docTailOf(doc);
-		if (docTail && typeof docTail.text === 'string' && typeof docTail.afterSeq === 'number' && prevSeq === docTail.afterSeq) {
-			out += docTail.text;
-			tailProtected = true;
-		}
-
-		// trim ONLY unprotected edges (identical to a blanket .trim() when no orig/docTail data
-		// exists: editor-created docs, direct converter callers). ascii whitespace only: a
-		// leading BOM or a no-break space is content, not a gap
-		if (!leadProtected) out = out.replace(/^[ \t\r\n]+/, '');
-		if (!tailProtected) out = out.replace(/[ \t\r\n]+$/, '');
-		return { text: out, leadProtected, tailProtected };
-	}
-
-	return { serializeDocChildrenDetailed };
+	const leafSplice = createLeafSplice(options);
+	const segmentSplice = createSegmentSplice(options);
+	const { frameSplice, constructSplice } = createMemberSplice(serializeNode, options, leafSplice, segmentSplice);
+	const { verbatimRun, verbatimParts } = createVerbatimParts(options, leafSplice, segmentSplice, frameSplice);
+	return createDocAssembly(serializeNode, options, { leafSplice, segmentSplice, frameSplice, constructSplice, verbatimRun, verbatimParts });
 }

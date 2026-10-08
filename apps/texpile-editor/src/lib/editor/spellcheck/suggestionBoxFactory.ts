@@ -2,6 +2,8 @@
 import { mount, unmount } from 'svelte';
 import type { CreateSuggestionBox, Problem as ProofreadProblem } from 'prosemirror-proofread';
 import SuggestionBox from './SuggestionBox.svelte';
+import { readableSpellText } from './blockSpellText';
+import { ruleOfReplacements } from './linter';
 
 // shapes match prosemirror-proofread
 type Position = {
@@ -22,6 +24,8 @@ export type Problem = {
 	type: string;
 	replacements: string[];
 	text: string; // the error text itself
+	/** the Harper rule that found it */
+	rule?: string;
 };
 
 export type SuggestionBoxOptions = {
@@ -39,8 +43,13 @@ let currentCleanup: (() => void) | null = null;
 // the lib allows { value } objects in replacements; harper hands us plain strings, normalize anyway.
 // a word too far from anything known comes with no list at all, and the box still has to open
 // for it: ignore and add-to-dictionary are what it is there for
-function normalizeProblem(p: ProofreadProblem): Problem {
-	return { ...p, replacements: (p.replacements ?? []).map((r) => (typeof r === 'string' ? r : r.value)) };
+function normalizeProblem(p: ProofreadProblem & { rule?: string }): Problem {
+	return {
+		...p,
+		rule: p.rule ?? ruleOfReplacements(p.replacements) ?? undefined,
+		text: readableSpellText(p.text),
+		replacements: (p.replacements ?? []).map((r) => (typeof r === 'string' ? r : r.value))
+	};
 }
 
 export function createHarperSuggestionBox(options: Parameters<CreateSuggestionBox>[0]): { destroy: () => void } {
