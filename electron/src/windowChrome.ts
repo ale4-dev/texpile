@@ -12,8 +12,9 @@
 // description of its own menu state (which items are enabled, which are checked, the recent folder
 // list) and this module turns that into a native template. Clicking a native item sends the same
 // value string the in-app menu would have produced, so both paths land in one handler.
-import { app, BrowserWindow, Menu, MenuItemConstructorOptions, ipcMain } from 'electron';
+import { app, BrowserWindow, Menu, MenuItemConstructorOptions, ipcMain, screen } from 'electron';
 import { isGlassOn } from './windowGlass';
+import { childOwners } from './windows/windowRegistry';
 
 /** what the renderer tells us about its menus. Everything optional: a window on the start screen
  *  has no file open and reports almost nothing. */
@@ -32,6 +33,9 @@ export type MenuState = {
 	/** the caret is inside a CodeMirror view, where Insert/Format do not apply */
 	cursorInCm: boolean;
 	spellcheck: boolean;
+	/** Spelling > Folder Language, labeled, Automatic first; absent from a renderer predating it */
+	spellLanguages?: { value: string; label: string; checked: boolean }[];
+	canChooseSpellLanguage?: boolean;
 	terminalAvailable: boolean;
 	terminalVisible: boolean;
 	canShare: boolean;
@@ -412,6 +416,24 @@ function template(win: BrowserWindow, s: MenuState): MenuItemConstructorOptions[
 					checked: s.spellcheck,
 					click: () => fire(win, 'spelling:toggle')
 				},
+				...(s.spellLanguages?.length
+					? [
+							{
+								...doc,
+								label: label(s, 'folderLanguage', 'Folder Language'),
+								submenu: s.spellLanguages.flatMap((item, i) => [
+									{
+										label: item.label,
+										type: 'checkbox' as const,
+										checked: item.checked,
+										enabled: s.canChooseSpellLanguage !== false,
+										click: () => fire(win, `spelling:lang:${item.value}`)
+									},
+									...(i === 0 ? [{ type: 'separator' as const }] : [])
+								])
+							}
+						]
+					: []),
 				{ type: 'separator' },
 				{ label: label(s, 'dictionary', 'Edit Dictionary…'), click: () => fire(win, 'spelling:dictionary') },
 				{ label: label(s, 'spellingSettings', 'Spelling and Grammar Settings…'), click: () => fire(win, 'spelling:settings') }
@@ -473,7 +495,9 @@ function template(win: BrowserWindow, s: MenuState): MenuItemConstructorOptions[
 /** rebuild the application menu from the focused window's reported state (macOS only) */
 function rebuild(): void {
 	if (!isMac) return;
-	const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
+	const focused = BrowserWindow.getFocusedWindow();
+	// a popup has no menu of its own: the bar is its window's, whose renderer acts for it
+	const win = (focused && childOwners.get(focused.webContents.id)) ?? focused ?? BrowserWindow.getAllWindows()[0] ?? null;
 	const s = win ? states.get(win.webContents.id) : undefined;
 	// Nothing reported yet (launching, or a window that never mounted the menu bar): keep the
 	// minimal bar so Cmd+Q and copy/paste in native inputs still work.
@@ -515,6 +539,7 @@ export function registerWindowChrome(onChrome?: (c: ChromeColors) => void, home?
 		BrowserWindow.fromWebContents(e.sender)?.close();
 	});
 	ipcMain.handle('window:isMaximized', (e) => BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false);
+	ipcMain.handle('window:cursorScreenPoint', () => screen.getCursorScreenPoint());
 
 	/**
 	 * Repaint the window-controls overlay, and the window behind it, to match the renderer.

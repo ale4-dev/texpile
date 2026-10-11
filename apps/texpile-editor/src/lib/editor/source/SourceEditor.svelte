@@ -4,7 +4,8 @@
 </script>
 
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { spellingFor } from '$lib/editor/spellcheck/languages/spellingLanguage.svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { EditorView, type ViewUpdate } from '@codemirror/view';
 	import { EditorState, Compartment } from '@codemirror/state';
 	import { setCommentRanges, focusCommentThread, type CommentRange } from '$lib/editor/visual/extensions/comments';
@@ -15,8 +16,9 @@
 	import { bindModalKeymap, modalKeymapCompartment } from '$lib/editor/source/extensions/keybindings/modalKeymap';
 	import { typstServerGen } from '$lib/languages/typst/intellisense/lspClient';
 	import { sourceCmView } from '$lib/stores/editorStore';
+	import { showSourceEditor } from '$lib/editor/editorsOnScreen.svelte';
 	import { docText } from '$lib/editor/source/docText';
-	import { setSourceDocCount, setSourceSelectionCount, sourceCounting } from '$lib/stores/countStore.svelte';
+	import { countedByEditor, setSourceDocCount, setSourceSelectionCount, sourceCounting } from '$lib/stores/countStore.svelte';
 	import { trailingDebounce } from '$lib/trailingDebounce';
 	import { settings } from '$lib/settings';
 	import * as Y from 'yjs';
@@ -32,7 +34,6 @@
 
 	// gotoLine: token makes repeat jumps to the same line re-fire; selectText anchors against line drift.
 	// initialScrollPos: one-shot mode-switch sync applied at mount.
-	// onHistoryBoundary: called when CM undo/redo is exhausted; return true if the workspace history handled it.
 	let {
 		value = '',
 		onInput,
@@ -41,7 +42,6 @@
 		gotoLine,
 		onSyncToPdf,
 		initialScrollPos = null,
-		onHistoryBoundary,
 		diagnostics = [],
 		onJumpToFile,
 		onOpenFileAt,
@@ -54,7 +54,8 @@
 		onCiteByDoi,
 		onSelectComment,
 		readOnly = false,
-		changeBaseline = null
+		changeBaseline = null,
+		live = true
 	}: {
 		value?: string;
 		onInput?: (v: string) => void;
@@ -64,7 +65,6 @@
 		gotoLine?: { line: number; token: number; selectText?: string; column?: number; path?: string };
 		onSyncToPdf?: (line: number) => void;
 		initialScrollPos?: { scroll: number | null; cursor: number | null } | null;
-		onHistoryBoundary?: (dir: 'undo' | 'redo') => boolean;
 		diagnostics?: SourceDiagnostic[];
 		/** go-to-definition hooks: \input targets and cross-file definition jumps */
 		onJumpToFile?: (name: string) => void;
@@ -88,9 +88,12 @@
 		readOnly?: boolean;
 		/** the file as it was in the last saved version, for the change bars in the margin; null for none */
 		changeBaseline?: string | null;
+		/** false in a parked editor group: read only, and not the app's source editor */
+		live?: boolean;
 	} = $props();
 
 	/** last position reported to onCaretMove, so redundant selection updates do not spray requests */
+	const NO_MARKS: typeof activeSuggestions.current = [];
 	let lastCaretLine = -1;
 	let lastCaretChar = -1;
 
@@ -102,6 +105,7 @@
 
 	let host = $state<HTMLDivElement>();
 	let view: EditorView | null = null;
+	let unlistView: (() => void) | null = null;
 	const langConf = new Compartment();
 	const roConf = new Compartment();
 	// soft wrap is a compartment, not a mounted-once extension: toggling it in Preferences has to
@@ -121,7 +125,7 @@
 	const counting = $derived(sourceCounting(fileFor));
 	// a LaTeX or Typst file's whole count comes from the workspace, in either view (countOpenFile)
 	const deferredDocCount = trailingDebounce(300, (text: string) => {
-		if (counting === 'text') setSourceDocCount(text);
+		if (countedByEditor(counting)) setSourceDocCount(text, counting);
 	});
 	// throttle-ish: scrolling and arrow keys fire constantly, and only the resting place matters
 	const deferredRememberPosition = trailingDebounce<void>(400, () => positions.remember(view, docPath, !!collab));
@@ -136,6 +140,8 @@
 	let undoManager: Y.UndoManager | null = null;
 
 	function onViewUpdate(u: ViewUpdate): void {
+		// a parked editor takes its file's changes from elsewhere: the counts and the caret are the focused one's
+		if (!live) return;
 		if (u.docChanged) {
 			const text = docText(u.state.doc);
 			if (!sync.syncing) {
@@ -162,9 +168,8 @@
 	}
 
 	onMount(() => {
-		// collab mode: the Y.Text is the document, CRDT undo replaces CM history (plain CM undo
-		// would revert other people's edits)
-		undoManager = collab ? new Y.UndoManager(collab.ytext) : null;
+		// the file's own history, not CM's: CM undo would revert other people's edits
+		undoManager = collab ? collab.undo : null;
 		const initialDoc = collab ? collab.ytext.toString() : value;
 		// folded into EditorState.create, not dispatched after mount, so the first paint is already
 		// in the right place
@@ -185,31 +190,32 @@
 					wrapConf,
 					lspConf,
 					keymapConf,
-					readOnly,
+					readOnly: readOnly || !live,
 					lineWrap: settings.current.sourceLineWrap !== false,
 					onAddComment,
 					onSelectComment,
 					onJumpToFile,
 					onOpenFileAt,
-					onHistoryBoundary,
 					onScroll: () => deferredRememberPosition(),
+					spellLanguage: (source) => spellingFor(fileFor, source).language,
 					updateListener: onViewUpdate
 				})
 			})
 		});
 		window.texpile.debug.codemirror = view;
-		view.focus();
+		unlistView = showSourceEditor(view);
+		if (live) view.focus();
 		if (restored && offset) reapplyScrollOffset(() => view, restored.scroll, offset);
 		unbindKeymap = bindModalKeymap(view, keymapConf);
 		// collab mount: the Y.Text may be ahead of the caller's value (guest edits landed while
 		// the file was closed) — hand the truth back so the save pipeline starts aligned
 		if (collab && onInput && collab.ytext.toString() !== value) onInput(collab.ytext.toString());
 		// seed the counts now; the updateListener only fires on later changes
-		if (counting === 'text') setSourceDocCount(docText(view.state.doc));
-		setSourceSelectionCount(null);
-		if (initialScrollPos != null) applyModeSwitchAnchor(view, initialScrollPos);
+		if (live && countedByEditor(counting)) setSourceDocCount(docText(view.state.doc), counting);
+		if (live) setSourceSelectionCount(null);
+		if (live && initialScrollPos != null) applyModeSwitchAnchor(view, initialScrollPos);
 		// publish this CM as the source-mode editor so menuBarCommands can route Insert/Format to it
-		sourceCmView.current = view;
+		if (live) sourceCmView.current = view;
 		applySourceLanguage(() => view, fileFor, langConf);
 		// never awaited: a missing or slow tinymist must not delay the editor appearing. started by
 		// the FILE, not the compile command, so a Makefile-driven Typst project still gets intellisense
@@ -218,6 +224,18 @@
 
 	$effect(() => {
 		lsp.onServerGen(typstServerGen.current, fileFor);
+	});
+
+	// the editor of the group that takes focus becomes the app's source editor
+	const isLive = $derived(live);
+	$effect(() => {
+		const claims = isLive;
+		const own = view;
+		if (!own) return;
+		untrack(() => {
+			if (claims) sourceCmView.current = own;
+			else if (sourceCmView.current === own) sourceCmView.current = null;
+		});
 	});
 
 	// follow the Preferences toggle in the open editor rather than only at mount
@@ -234,7 +252,7 @@
 
 	// live read-only flips: the host opened/closed this file in its visual editor, or it is not UTF-8
 	$effect(() => {
-		const ro = readOnly || (collab?.readOnly ?? false);
+		const ro = readOnly || !live || (collab?.readOnly ?? false);
 		if (view) {
 			view.dispatch({ effects: roConf.reconfigure(ro ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []) });
 		}
@@ -267,8 +285,10 @@
 	});
 
 	let lastSuggestions: typeof activeSuggestions.current | null = null;
+	// the marks are the focused editor's: a parked one draws the file's plain comments only
+	const marksHere = $derived(live ? activeSuggestions.current : NO_MARKS);
 	$effect(() => {
-		const marks = activeSuggestions.current;
+		const marks = marksHere;
 		const v = view;
 		void value;
 		if (!v || !onAddComment || marks === lastSuggestions) return;
@@ -318,15 +338,14 @@
 		// this teardown IS the tab switch: last chance to record where the user was, and the
 		// debounce below is about to be cancelled, so take the snapshot synchronously first
 		positions.remember(view, docPath, !!collab);
-		sourceCmView.current = null;
+		if (sourceCmView.current === view) sourceCmView.current = null;
+		unlistView?.();
 		lsp.release();
 		unbindKeymap?.();
 		unbindKeymap = null;
-		// collab teardown: drop our cursor from awareness so peers don't see a ghost, and reap the
-		// undo manager's doc observer before the view goes
-		if (collab) collab.awareness.setLocalStateField('cursor', null);
-		undoManager?.clear();
-		undoManager?.destroy();
+		// drop our cursor from awareness so peers don't see a ghost; a parked editor never published one, and the
+		// cursor it would drop is the focused editor's
+		if (collab && live) collab.awareness.setLocalStateField('cursor', null);
 		undoManager = null;
 		view?.destroy();
 		view = null;
@@ -354,14 +373,14 @@
 	}
 	/* position only: FindBar brings the card, and .cm-panels paints one behind it. !important on top:
 	   CodeMirror writes top: 0 inline on the container it creates, which beat this rule and left the
-	   panel hugging the editor edge while the visual and PDF bars sit 12px down */
+	   panel hugging the editor edge */
 	.source-editor :global(.cm-panels.cm-panels-top) {
 		position: absolute;
-		top: calc(var(--spacing) * 3) !important;
-		right: calc(var(--spacing) * 3);
+		top: var(--find-top, calc(var(--spacing) * 3)) !important;
+		right: var(--find-right);
 		left: auto;
 		width: max-content;
-		max-width: calc(100% - 1.5rem);
+		max-width: calc(100% - var(--find-right) - var(--spacing) * 3);
 		background: none;
 		border: none;
 		z-index: 20;

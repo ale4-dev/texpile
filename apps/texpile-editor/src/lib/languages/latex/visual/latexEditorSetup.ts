@@ -6,7 +6,8 @@ import { schema } from '$lib/languages/latex/schema/latexPMSchema';
 import { isMac } from '$lib/platform';
 import { keymap } from 'prosemirror-keymap';
 import { baseKeymap, toggleMark } from 'prosemirror-commands';
-import { undo as historyUndo, redo as historyRedo, history } from 'prosemirror-history';
+import { history } from 'prosemirror-history';
+import { undoVisual, redoVisual } from '$lib/editor/visual/visualUndo';
 import { toggleBlockQuote, toggleHeading, cycleParagraphIndent, splitBlockWithoutDuplicates } from '$lib/editor/visual/helperCommands';
 import { selectAllScoped } from '$lib/editor/visual/selectAllScoped';
 import { extendToDocEnd, extendToDocStart, selectDocEnd, selectDocStart } from '$lib/editor/visual/selectDocBoundary';
@@ -41,6 +42,7 @@ import { createTocPlugin } from '$lib/editor/visual/extensions/tableofcontents/t
 import { createPersistentSelectionPlugin } from '$lib/editor/visual/extensions/persistentSelection/persistentSelectionPlugin';
 import { createSuggestPlugin } from '$lib/editor/visual/extensions/suggest/suggestPlugin';
 import { proofreadPlugin, spellChipPlugin, spellClickBoundaryPlugin, spellProblemKeymap } from '$lib/editor/spellcheck/spellcheckplugin';
+import type { SpellLanguage } from '$lib/editor/spellcheck/languages/spellLanguages';
 import { createTemplateEditorSettings, createLocalImageSettings } from '$lib/editor/visual/extensions/image/imageplugin.svelte';
 import { createWordCountPlugin } from '$lib/editor/visual/extensions/wordcount/wordCountPlugin';
 import { latexProse } from '$lib/workspace/wordCount/proseWords';
@@ -86,12 +88,13 @@ export type LatexEditorSetup = {
 	mlarrowHandlers: Plugin;
 	imageDir?: () => string;
 	placeholder: string;
-	onHistoryBoundary?: (dir: 'undo' | 'redo') => boolean;
 	onSelectComment?: (id: string) => void;
 	onAddComment?: (anchor: CommentAnchor | null) => void;
 	/** the selection as a range of the file; see pmComments */
 	sourceAnchor?: SourceAnchorFn;
 	addCommentLabel: string;
+	/** read at each check: the editor's file can change its language */
+	spellLanguage: () => SpellLanguage | null;
 };
 
 export function latexEditorPlugins(setup: LatexEditorSetup): Plugin[] {
@@ -100,11 +103,11 @@ export function latexEditorPlugins(setup: LatexEditorSetup): Plugin[] {
 		mlarrowHandlers,
 		imageDir,
 		placeholder,
-		onHistoryBoundary,
 		onSelectComment,
 		onAddComment,
 		sourceAnchor,
-		addCommentLabel
+		addCommentLabel,
+		spellLanguage
 	} = setup;
 	return [
 		parseCarryPlugin,
@@ -139,11 +142,9 @@ export function latexEditorPlugins(setup: LatexEditorSetup): Plugin[] {
 			] as readonly InputRule[]
 		}),
 		keymap({
-			// PM history first, then the workspace snapshot history (survives mode switches).
-			// consume the key even at the stack edge so the browser's native undo can't fire.
-			'Mod-z': (state, dispatch) => historyUndo(state, dispatch) || (onHistoryBoundary ? (onHistoryBoundary('undo'), true) : false),
-			'Mod-y': (state, dispatch) => historyRedo(state, dispatch) || (onHistoryBoundary ? (onHistoryBoundary('redo'), true) : false),
-			'Mod-Shift-z': (state, dispatch) => historyRedo(state, dispatch) || (onHistoryBoundary ? (onHistoryBoundary('redo'), true) : false),
+			'Mod-z': undoVisual,
+			'Mod-y': redoVisual,
+			'Mod-Shift-z': redoVisual,
 			Backspace: undoInputRule,
 			'Mod-a': selectAllScoped,
 			'Mod-Home': selectDocStart,
@@ -206,7 +207,7 @@ export function latexEditorPlugins(setup: LatexEditorSetup): Plugin[] {
 		createTocPlugin(),
 		createPersistentSelectionPlugin(),
 		spellClickBoundaryPlugin, // must precede proofreadPlugin; see its comment
-		proofreadPlugin,
+		proofreadPlugin(spellLanguage),
 		spellProblemKeymap,
 		spellChipPlugin,
 		createBoundaryClickPlugin(),

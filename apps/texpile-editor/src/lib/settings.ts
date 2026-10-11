@@ -12,17 +12,18 @@ import { box } from '$lib/runes/box.svelte';
 import { setLocale as setParaglideLocale } from '$lib/paraglide/runtime';
 import { migrateSettingsObject } from '$lib/migration/settings';
 import type { EnglishVariant } from '$lib/editor/spellcheck/config/grammarRules';
+import type { SpellLanguage } from '$lib/editor/spellcheck/languages/spellLanguages';
 
 export type AppSettings = {
 	/** settings.json's own shape version; absent means pre-restructure and triggers migration */
 	v: 1;
 	reopenLastFolder: boolean;
-	/** autosave edits (debounced); when off the user is warned before switching files. */
-	autosave: boolean;
 	/** Harper spell-check enabled. */
 	spellcheck: boolean;
 	/** the English that spelling and grammar follow; '' = the system's own */
 	englishVariant: '' | EnglishVariant;
+	/** the language spelling is checked in when a document names none and its folder chose none */
+	spellLanguage: SpellLanguage;
 	/** grammar rules the user turned on or off; a rule not here follows its default (grammarRules.ts) */
 	grammarRules: Record<string, boolean>;
 	/** check the update feed (updates.texpile.com) for a newer version on launch; downloads stay click-only. */
@@ -62,11 +63,6 @@ export type AppSettings = {
 	/** the Typst preview scrolls to follow the caret. Off by default, as in tinymist. A pane
 	 *  behavior about YOUR caret, which is why it stays here and not in the project's config. */
 	typstPreviewFollow: boolean;
-	/** Compile opens the dock: the terminal on start, Problems when the run reports errors. Off
-	 *  silences BOTH - a chronically-erroring LaTeX doc that still produces its PDF would otherwise
-	 *  have the dock stolen on every build; the topbar Problems badge stays as the passive signal.
-	 *  Personal ergonomics, so it lives here and not in the project's config. */
-	openDockOnCompile: boolean;
 	/** the Zotero citation picker (Insert menu, palette, topbar). On by default: it only probes
 	 *  Zotero when invoked, so leaving it available costs nothing until it is used. */
 	zoteroEnabled: boolean;
@@ -121,9 +117,9 @@ export const DEFAULT_COLLAB_RELAY_URL = 'wss://collab.texpile.com';
 const DEFAULTS: AppSettings = {
 	v: 1,
 	reopenLastFolder: true,
-	autosave: true,
 	spellcheck: false,
 	englishVariant: '',
+	spellLanguage: 'en',
 	grammarRules: {},
 	checkForUpdates: true,
 	mcpEnabled: false,
@@ -137,7 +133,6 @@ const DEFAULTS: AppSettings = {
 	visualHyphenate: true,
 	smartPaste: true,
 	typstPreviewFollow: false,
-	openDockOnCompile: true,
 	zoteroEnabled: true,
 	citeByDoiEnabled: true,
 	editorKeymap: 'default',

@@ -1,6 +1,8 @@
+// @vitest-environment jsdom
 // the top bar used to count words its own way; now it gives the details' number in either view
 import { describe, expect, it, vi } from 'vitest';
 import { EditorState, TextSelection } from 'prosemirror-state';
+import { EditorView } from 'prosemirror-view';
 import { createWordCountPlugin } from '$lib/editor/visual/extensions/wordcount/wordCountPlugin';
 import {
 	countOpenFile,
@@ -11,6 +13,7 @@ import {
 } from '$lib/stores/countStore.svelte';
 import { latexProse, latexCount, tallyTotal, typstCount } from '$lib/workspace/wordCount/proseWords';
 import { parseLatexFile } from '$lib/workspace/latexRoundtrip';
+import { parseMarkdownFile } from '$lib/languages/markdown/visual/roundtrip';
 
 function topBar(path: string, text: string): number {
 	countOpenFile(path, text);
@@ -104,17 +107,58 @@ describe('a selection counts by the same rule', () => {
 		expect(documentCountStore.selectionWords).toBeNull();
 	});
 
-	it('in the visual editor, which leaves the whole file to countOpenFile', () => {
+	it('in the visual editor, which leaves the whole file to countOpenFile', async () => {
+		vi.useFakeTimers();
 		const doc = parseLatexFile(CITED).doc;
 		documentCountStore.words = -1;
 		const state = EditorState.create({ doc, plugins: [createWordCountPlugin((raw) => latexProse(raw, false))] });
+		const view = new EditorView(document.createElement('div'), { state });
 		expect(documentCountStore.words).toBe(-1);
 		// the whole document selected: the same words as the file's count
-		EditorState.create({
-			doc,
-			selection: TextSelection.create(doc, 1, doc.content.size - 1),
-			plugins: state.plugins
-		});
+		view.updateState(state.apply(state.tr.setSelection(TextSelection.create(doc, 1, doc.content.size - 1))));
+		await vi.runAllTimersAsync();
+		vi.useRealTimers();
+		view.destroy();
 		expect(documentCountStore.selectionWords).toBe(11);
 	});
+});
+
+const NOTES = `---
+title: Notes
+---
+# Heat Transfer in Thin Films
+
+Notes for the October group meeting. The paper draft is in \`main.tex\`; this file keeps the plan.
+
+## What we measure
+
+Thin films conduct heat differently from [bulk material](https://example.org/bulk). We compare the result with a model:
+
+$$
+\\frac{\\partial T}{\\partial t} = \\alpha \\, \\nabla^2 T
+$$
+
+where $\\alpha$ is the thermal diffusivity.
+
+| Thickness (nm) | Conductivity (W/mK) |
+| -------------- | ------------------- |
+| 10             | 12.4                |
+
+![Conductivity against film thickness](figures/conductivity.png)
+
+> A quote about **heat**.
+
+- [x] Measure the 50 nm film again
+- [ ] Send the draft by *Friday*
+1. First_step
+`;
+
+// the source view counted the markup too: 154 words against the visual editor's 101 for the same notes
+it('counts a Markdown file the same in the source view as in the visual editor', () => {
+	const { doc } = parseMarkdownFile(NOTES);
+	new EditorView(document.createElement('div'), { state: EditorState.create({ doc, plugins: [createWordCountPlugin()] }) }).destroy();
+	const visual = { words: documentCountStore.words, characters: documentCountStore.characters };
+	expect(sourceCounting('/p/notes.md')).toBe('markdown');
+	setSourceDocCount(NOTES, 'markdown');
+	expect({ words: documentCountStore.words, characters: documentCountStore.characters }).toEqual(visual);
 });

@@ -12,7 +12,7 @@ import {
 } from '@codemirror/view';
 import type { ViewUpdate } from '@codemirror/view';
 import { EditorState, type Compartment, type Extension } from '@codemirror/state';
-import { defaultKeymap, history, historyKeymap, indentWithTab, redo } from '@codemirror/commands';
+import { defaultKeymap, indentWithTab } from '@codemirror/commands';
 import { bracketMatching, codeFolding, indentOnInput, foldGutter, LanguageDescription } from '@codemirror/language';
 import { cmSyntaxHighlight } from '$lib/editor/source/cmHighlight';
 import { languages as cmlangdata } from '@codemirror/language-data';
@@ -29,6 +29,7 @@ import { typstColorSwatches } from '$lib/languages/typst/intellisense/actions/co
 import { guestSession } from '$lib/collab/guestSession';
 import { mdPathCompletion } from '$lib/languages/markdown/pathCompletion';
 import { cmSpellcheck } from '$lib/editor/spellcheck/cmSpellcheck';
+import type { SpellLanguage } from '$lib/editor/spellcheck/languages/spellLanguages';
 import { lintGutter } from '@codemirror/lint';
 import { comments, commentGutterHandlers } from '$lib/editor/visual/extensions/comments';
 import { mathPreview } from '$lib/editor/source/extensions/math-preview/mathPreview';
@@ -44,7 +45,6 @@ import type * as Y from 'yjs';
 import { gutterTheme, yRemoteLayoutFix } from './sourceEditorThemes';
 import type { CollabBinding } from './sourceEditorTypes';
 import { tocCaretListener } from '$lib/editor/visual/extensions/tableofcontents/tocCaretListener';
-import { cmDecisionSteps } from './extensions/cmDecisionStep';
 import { cmConflicts } from './cmConflicts';
 import { cmChangeMarkers } from './cmChangeMarkers';
 import { sourcePaste } from './paste/cmSourcePaste';
@@ -65,12 +65,13 @@ export type SourceSetupDeps = {
 	keymapConf: Compartment;
 	lineWrap: boolean;
 	readOnly?: boolean;
+	/** the language the file's text is checked in; read at each check, as the text can change it */
+	spellLanguage: (source: string) => SpellLanguage | null;
 	onAddComment?: (from: number, to: number) => void;
 	onSelectComment?: (id: string) => void;
 	/** the thread behind a comment id, for the hover card over its text and line number */
 	onJumpToFile?: (name: string) => void;
 	onOpenFileAt?: (file: string, line: number) => void;
-	onHistoryBoundary?: (dir: 'undo' | 'redo') => boolean;
 	onScroll: () => void;
 	updateListener: (u: ViewUpdate) => void;
 };
@@ -82,7 +83,7 @@ function pasteDialectOf(fileFor: string): PasteDialect | null {
 }
 
 export function buildSourceExtensions(deps: SourceSetupDeps): Extension[] {
-	const { fileFor, collab, onAddComment, onSelectComment, onHistoryBoundary } = deps;
+	const { fileFor, collab, onAddComment, onSelectComment } = deps;
 	const pasteDialect = pasteDialectOf(fileFor);
 	return [
 		// gutters render in extension order: lint goes before lineNumbers so it lands on their left
@@ -110,9 +111,7 @@ export function buildSourceExtensions(deps: SourceSetupDeps): Extension[] {
 		codeFolding({ placeholderText: '···' }),
 		...(deps.foldsOf ? [foldMemory(deps.foldsOf)] : []),
 		highlightActiveLine(),
-		...(collab
-			? [yCollab(collab.ytext, collab.awareness, { undoManager: deps.undoManager! }), yRemoteLayoutFix]
-			: [history(), cmDecisionSteps()]),
+		...(collab ? [yCollab(collab.ytext, collab.awareness, { undoManager: deps.undoManager! }), yRemoteLayoutFix] : []),
 		deps.roConf.of(deps.readOnly || collab?.readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
 		// what a merge left marked, with a choice at each place; a read-only view has no choice to offer
 		...(deps.readOnly || collab?.readOnly ? [] : [cmConflicts()]),
@@ -142,7 +141,7 @@ export function buildSourceExtensions(deps: SourceSetupDeps): Extension[] {
 					latexListContinuation(),
 					mathPreview(),
 					...(!fileFor || /\.tex$/i.test(fileFor) ? [starterGhost()] : []),
-					cmSpellcheck()
+					cmSpellcheck(deps.spellLanguage)
 				]
 			: /\.(md|markdown)$/i.test(fileFor)
 				? // md chords; $-math, spellcheck and project file paths are dialect-free
@@ -151,7 +150,7 @@ export function buildSourceExtensions(deps: SourceSetupDeps): Extension[] {
 						mdSourceShortcuts(),
 						mdPathCompletion(),
 						mathPreview({ comments: false }),
-						cmSpellcheck(),
+						cmSpellcheck(deps.spellLanguage, 'markdown'),
 						foldGutter({ markerDOM: foldMarkerDom }),
 						foldMarkerTheme
 					]
@@ -170,7 +169,7 @@ export function buildSourceExtensions(deps: SourceSetupDeps): Extension[] {
 								// a guest's missing file would be created on its own disk, not the project's
 								typstQuickFix({ onCreateFile: guestSession.active ? undefined : createProjectFile }),
 								typstColorSwatches(),
-								cmSpellcheck('typst'),
+								cmSpellcheck(deps.spellLanguage, 'typst'),
 								foldGutter({ markerDOM: foldMarkerDom }),
 								foldMarkerTheme
 							]
@@ -192,27 +191,11 @@ export function buildSourceExtensions(deps: SourceSetupDeps): Extension[] {
 			{ key: 'Mod-f', run: toggleSearchPanel },
 			{ key: 'Escape', run: closeSearchPanelAnimated },
 			...defaultKeymap,
-			// both redo keys on every platform: CodeMirror splits them by platform, and a missing one falls through to
-			// the workspace history below while CodeMirror still has its own redo
-			...(collab
-				? yUndoManagerKeymap
-				: [...historyKeymap, { key: 'Mod-y', run: redo, preventDefault: true }, { key: 'Mod-Shift-z', run: redo, preventDefault: true }]),
+			// the file's history, which the visual editor and the disk share; a view with no text binding is read-only
+			...(collab ? yUndoManagerKeymap : []),
 			...searchKeymap,
 			indentWithTab
 		]),
-		// lower precedence than historyKeymap, so CM's own undo/redo runs first; these fire only
-		// when it's exhausted and the workspace snapshot history takes over. consume the key even
-		// at the stack edge: a failed redo falling through to another binding is worse than a no-op.
-		// collab mode: the CRDT undo manager owns the whole stack, never fall through.
-		keymap.of(
-			collab
-				? []
-				: [
-						{ key: 'Mod-z', run: () => (onHistoryBoundary ? (onHistoryBoundary('undo'), true) : false) },
-						{ key: 'Mod-y', run: () => (onHistoryBoundary ? (onHistoryBoundary('redo'), true) : false) },
-						{ key: 'Mod-Shift-z', run: () => (onHistoryBoundary ? (onHistoryBoundary('redo'), true) : false) }
-					]
-		),
 		deps.wrapConf.of(deps.lineWrap ? EditorView.lineWrapping : []),
 		// opt-in diagnostic for "the caret moved and I didn't move it"; see caretDoctor
 		caretDoctor(),

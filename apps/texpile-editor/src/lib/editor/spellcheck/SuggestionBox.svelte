@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onWindowOf } from '$lib/childWindows/childWindowRegistry.svelte';
 	import { tip } from '$lib/components/tooltip.svelte';
 	import IconBookText from '@lucide/svelte/icons/book-text';
 	import IconX from '@lucide/svelte/icons/x';
@@ -9,7 +10,9 @@
 	import IconHelpCircle from '@lucide/svelte/icons/help-circle';
 	import IconBookPlus from '@lucide/svelte/icons/book-plus';
 	import IconCircleOff from '@lucide/svelte/icons/circle-off';
-	import { addWordToDocumentDictionary } from '$lib/editor/spellcheck/harper';
+	import { addToDictionary } from '$lib/editor/spellcheck/languages/personalWords';
+	import { spellLanguageName } from '$lib/editor/spellcheck/languages/spellingLanguage.svelte';
+	import { isDictionaryLanguage, type SpellLanguage } from '$lib/editor/spellcheck/languages/spellLanguages';
 	import { ruleName, SPELLING_RULE } from '$lib/editor/spellcheck/config/grammarRules';
 	import { setGrammarRule } from '$lib/editor/spellcheck/config/spellcheckConfig';
 	import { settings } from '$lib/settings';
@@ -28,6 +31,7 @@
 		replacements: string[];
 		text: string; // the error text itself
 		rule?: string; // the Harper rule that found it
+		language?: SpellLanguage; // the language it was checked in
 	};
 
 	type Props = {
@@ -66,8 +70,8 @@
 	$effect(() => {
 		if (boxElement) {
 			const rect = boxElement.getBoundingClientRect();
-			const viewportWidth = window.innerWidth;
-			const viewportHeight = window.innerHeight;
+			const viewportWidth = (boxElement.ownerDocument.defaultView ?? window).innerWidth;
+			const viewportHeight = (boxElement.ownerDocument.defaultView ?? window).innerHeight;
 
 			let adjustedX = position.x;
 			let adjustedY = position.y + 5;
@@ -139,7 +143,7 @@
 		console.log('[Harper] Adding word to dictionary:', word);
 
 		try {
-			await addWordToDocumentDictionary(word);
+			await addToDictionary(word, error.language);
 
 			invalidateCache();
 
@@ -192,7 +196,8 @@
 
 	// close on scroll of the editor (either mode) or any scrollable ancestor
 	$effect(() => {
-		const prosemirror = document.querySelector('.ProseMirror') ?? document.querySelector('.cm-scroller');
+		const doc = boxElement?.ownerDocument ?? document;
+		const prosemirror = doc.querySelector('.ProseMirror') ?? doc.querySelector('.cm-scroller');
 		if (prosemirror) {
 			const scrollableElements = [prosemirror];
 			let parent = prosemirror.parentElement;
@@ -217,9 +222,10 @@
 			};
 		}
 	});
+	// in the window the editor is in, which may be one of its own
+	onWindowOf(() => boxElement, 'click', handleWindowClick);
+	onWindowOf(() => boxElement, 'keydown', handleWindowKeydown);
 </script>
-
-<svelte:window onclick={handleWindowClick} onkeydown={handleWindowKeydown} />
 
 <div
 	bind:this={boxElement}
@@ -308,7 +314,9 @@
 			<button
 				class="btn btn-xs preset-outlined-surface-200-800 hover:preset-tonal flex-1 justify-center gap-1 text-xs"
 				onclick={handleAddToDictionary}
-				use:tip={m.harper_add_to_dictionary_title({ word: error.text })}
+				use:tip={isDictionaryLanguage(error.language)
+					? m.spelling_add_to_language_dictionary({ word: error.text, language: spellLanguageName(error.language) })
+					: m.harper_add_to_dictionary_title({ word: error.text })}
 			>
 				<IconBookPlus size={13} />
 				<span class="cap-center">{m.harper_add_to_dictionary_button()}</span>

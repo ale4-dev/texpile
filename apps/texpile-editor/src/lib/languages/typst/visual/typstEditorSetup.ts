@@ -13,7 +13,8 @@ import { extendToDocEnd, extendToDocStart, selectDocEnd, selectDocStart } from '
 import { TypstBibliographyView, isTypstBibliography } from './extensions/typstBibliographyView.svelte';
 import { keymap } from 'prosemirror-keymap';
 import { baseKeymap, toggleMark } from 'prosemirror-commands';
-import { undo as historyUndo, redo as historyRedo, history } from 'prosemirror-history';
+import { history } from 'prosemirror-history';
+import { undoVisual, redoVisual } from '$lib/editor/visual/visualUndo';
 import { gapCursor } from 'prosemirror-gapcursor';
 import { dropCursor } from 'prosemirror-dropcursor';
 import { tableEditing, goToNextCell } from 'prosemirror-tables';
@@ -61,6 +62,7 @@ import { typstProse } from '$lib/workspace/wordCount/proseWords';
 import { createTocPlugin } from '$lib/editor/visual/extensions/tableofcontents/tocPlugin';
 import { createPersistentSelectionPlugin } from '$lib/editor/visual/extensions/persistentSelection/persistentSelectionPlugin';
 import { proofreadPlugin, spellClickBoundaryPlugin, spellProblemKeymap } from '$lib/editor/spellcheck/spellcheckplugin';
+import type { SpellLanguage } from '$lib/editor/spellcheck/languages/spellLanguages';
 import { createBoundaryClickPlugin } from '$lib/editor/visual/extensions/boundary-click-plugin';
 import { wordSelectionTrim } from '$lib/editor/visual/extensions/wordSelectionTrim';
 import { dragSelectionPlugin } from '$lib/editor/visual/extensions/dragSelection/dragSelectionPlugin';
@@ -142,13 +144,14 @@ export type TypstEditorSetup = {
 	mlarrowHandlers: Plugin;
 	docDir: () => string;
 	placeholder: string;
-	onHistoryBoundary?: (dir: 'undo' | 'redo') => boolean;
 	onOpenLink?: (href: string) => boolean;
 	onSelectComment?: (id: string) => void;
 	onAddComment?: (anchor: CommentAnchor | null) => void;
 	/** the selection as a range of the file; see pmComments */
 	sourceAnchor?: SourceAnchorFn;
 	addCommentLabel: string;
+	/** read at each check: the editor's file can change its language */
+	spellLanguage: () => SpellLanguage | null;
 };
 
 export function typstEditorPlugins(setup: TypstEditorSetup): Plugin[] {
@@ -157,12 +160,12 @@ export function typstEditorPlugins(setup: TypstEditorSetup): Plugin[] {
 		mlarrowHandlers,
 		docDir,
 		placeholder,
-		onHistoryBoundary,
 		onOpenLink,
 		onSelectComment,
 		onAddComment,
 		sourceAnchor,
-		addCommentLabel
+		addCommentLabel,
+		spellLanguage
 	} = setup;
 	return [
 		parseCarryPlugin,
@@ -195,10 +198,9 @@ export function typstEditorPlugins(setup: TypstEditorSetup): Plugin[] {
 		keymap(listKeymap),
 		inputRules({ rules: typInputRules }),
 		keymap({
-			// PM history first, then the workspace snapshot history (survives mode switches)
-			'Mod-z': (state, dispatch) => historyUndo(state, dispatch) || (onHistoryBoundary ? (onHistoryBoundary('undo'), true) : false),
-			'Mod-y': (state, dispatch) => historyRedo(state, dispatch) || (onHistoryBoundary ? (onHistoryBoundary('redo'), true) : false),
-			'Mod-Shift-z': (state, dispatch) => historyRedo(state, dispatch) || (onHistoryBoundary ? (onHistoryBoundary('redo'), true) : false),
+			'Mod-z': undoVisual,
+			'Mod-y': redoVisual,
+			'Mod-Shift-z': redoVisual,
 			Backspace: undoInputRule,
 			'Mod-a': selectAllScoped,
 			'Mod-Home': selectDocStart,
@@ -240,7 +242,7 @@ export function typstEditorPlugins(setup: TypstEditorSetup): Plugin[] {
 		createTocPlugin(),
 		createPersistentSelectionPlugin(),
 		spellClickBoundaryPlugin, // must precede proofreadPlugin; see its comment
-		proofreadPlugin,
+		proofreadPlugin(spellLanguage),
 		spellProblemKeymap,
 		createBoundaryClickPlugin(),
 		wordSelectionTrim(),
